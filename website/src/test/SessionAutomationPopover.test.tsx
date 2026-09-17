@@ -1,4 +1,6 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { flushSync } from 'react-dom'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SessionAutomationPopover from '../components/SessionAutomationPopover'
@@ -177,9 +179,16 @@ describe('SessionAutomationPopover', () => {
       renderPopover(activeLegacyLoop, vi.fn(), true, vi.fn(), sessionMode)
 
       expect(screen.getByRole('textbox', { name: 'Goal description' })).toBeDisabled()
-      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+      // With writes off, Pause -- the route to Stop on a running loop -- cannot
+      // be pressed, so the row holds Stop itself (behind its confirm) and draws
+      // neither of the dead write controls; the schedule line's Nudge now is
+      // dead too. Stale state stays clearable, nothing is written.
+      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Pause loop' })).toBeNull()
+      expect(screen.getByTestId('auto-nudge-trigger')).toBeDisabled()
       expect(screen.getByRole('button', { name: 'Stop loop' })).toBeEnabled()
-      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Stop loop' }))
+      expect(screen.getByRole('button', { name: 'Clear goal for good' })).toBeEnabled()
       expect(fetchMock).not.toHaveBeenCalled()
     },
   )
@@ -202,6 +211,24 @@ describe('SessionAutomationPopover', () => {
 
     expect(screen.queryByText('Next cycle not yet scheduled')).toBeNull()
     expect(screen.getByText(/Next cycle in/)).toBeInTheDocument()
+  })
+
+  it('carries the stop reason through the compatibility bridge, so a manual pause reads Paused and a bound stop reads Stopped', () => {
+    // The goal editor tells the two apart on `stopped_reason === 'manual'`
+    // alone. A bridge that drops the field makes every inactive loop --
+    // including one the user has just paused -- render as Stopped with an
+    // erase control and no Resume.
+    renderPopover({ ...activeLegacyLoop, active: false, nextDueAt: 0, stoppedReason: 'manual' })
+    expect(screen.getByRole('button', { name: 'Resume loop and nudge now' })).toBeInTheDocument()
+    expect(screen.getByTestId('auto-nudge-loop-paused-manually')).toHaveTextContent('Paused')
+    expect(screen.queryByRole('button', { name: 'Clear stopped goal' })).toBeNull()
+  })
+
+  it('keeps a bound-stopped legacy loop on the Stopped path through the bridge', () => {
+    renderPopover({ ...activeLegacyLoop, active: false, nextDueAt: 0, stoppedReason: 'cycle_cap' })
+    expect(screen.getByTestId('auto-nudge-loop-paused')).toHaveTextContent('Stopped')
+    expect(screen.getByRole('button', { name: 'Clear stopped goal' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Resume loop and nudge now' })).toBeNull()
   })
 
   it('centres the radar glyph and its count in the composer trigger', () => {
@@ -860,14 +887,141 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByRole('spinbutton', { name: 'Seconds between nudges' })).toHaveValue(300)
     expect(screen.getByRole('spinbutton', { name: 'Max cycles (0 = infinite)' })).toHaveValue(24)
 
+    // Edit one field, then Save: the write goes to the LEGACY loop's id and
+    // carries the edited field only -- the untouched interval and cap are not
+    // written back. No `active` on a running loop's save: the field would be
+    // a no-op while the loop runs and a silent revive if it stopped between
+    // render and press.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Goal description' }), {
+      target: { value: 'Keep checking, closely.' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/autonudge/legacy-1', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: 'Keep checking.', idle_secs: 300, max_cycles: 24, active: true,
-      }),
+      body: JSON.stringify({ message: 'Keep checking, closely.' }),
     }))
+  })
+
+  it('a two-leg press (write, then fire) hands the parent ONE record -- the fired one, carrying the armed deadline', async () => {
+    // ChatPage re-identifies `automation` on every hand-off
+    // (`dispatch(sseAutomation(next))`), and this bridge's onChange guard
+    // (`automationRef.current !== automation`) then drops any later hand-off
+    // still running in the pressed render's closure. A press with a write leg
+    // and a fire leg therefore hands up ONE record, once the fire settled: the
+    // fired record with the armed deadline. Two hand-offs lose the second, so
+    // the schedule keeps a full countdown and Trigger never disables on the
+    // due cycle. `flushSync` stands in for the store notification, which
+    // re-renders the parent before the next leg's response can arrive.
+    const written = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'edited', idle_secs: 300, max_cycles: 24,
+      cycle_count: 2, active: true, last_fire_ts: 0, next_due_ts: 1_900_000_300, stopped_reason: '',
+    }
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      const answers = init?.method === 'PATCH' || /\/fire$/.test(String(url))
+      return Promise.resolve(new Response(JSON.stringify(answers ? { ok: true, loop: written } : { loop: null }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const received: (AutomationRecord | null)[] = []
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    function Parent() {
+      const [automation, setAutomation] = useState<AutomationRecord | null>(activeLegacyLoop)
+      return (
+        <QueryClientProvider client={client}>
+          <SessionAutomationPopover
+            slotKey="chat-1"
+            automation={automation}
+            open={true}
+            onOpenChange={() => {}}
+            onChange={next => { received.push(next); flushSync(() => setAutomation(next)) }}
+            creationReady={true}
+            sessionMode=""
+          />
+        </QueryClientProvider>
+      )
+    }
+    render(<Parent />)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Goal description' }), { target: { value: 'edited' } })
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Save edits and nudge now' })) })
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/autonudge/legacy-1/fire', expect.objectContaining({ method: 'POST' })))
+    expect(received).toHaveLength(1)
+    const handed = received[0] as LegacyGoalLoop
+    expect(handed.kind).toBe('legacy_goal_loop')
+    expect(handed.message).toBe('edited')
+    // The armed deadline, not the write response's fresh full countdown.
+    expect(Math.abs((handed.nextDueAt ?? 0) - Date.now() / 1000)).toBeLessThan(5)
+  })
+
+  it('a create whose fire is refused keeps the refusal on screen across the record hand-off that re-keys the popover', async () => {
+    // This bridge keys the goal popover on the record's id, so handing up a
+    // CREATED record replaces the instance that pressed Play with a fresh one
+    // seeded from that record. Before the fix a refusal on the fire leg of
+    // that same press landed on the instance that was gone: the user asked for
+    // create-and-fire, saw a running loop, and no word that the fire was
+    // refused. The parent below re-identifies on the hand-off exactly as
+    // ChatPage does (`flushSync` standing in for the store notification), so
+    // the remount is real here, not simulated.
+    const REFUSAL = 'nudge not sent: the agent is still working, so try again when it finishes'
+    const created = {
+      id: 'legacy-new', slot_key: 'chat-1', message: 'brand new goal', idle_secs: 60, max_cycles: 0,
+      cycle_count: 0, active: true, last_fire_ts: 0, next_due_ts: 1_900_000_060, stopped_reason: '',
+    }
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && String(url) === '/api/autonudge') {
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, loop: created }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      if (/\/fire$/.test(String(url))) {
+        return Promise.resolve(new Response(JSON.stringify({ error: REFUSAL, code: 'session_busy' }), {
+          status: 409, headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      return Promise.resolve(new Response(JSON.stringify({ loop: null }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const received: (AutomationRecord | null)[] = []
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    function Parent() {
+      const [automation, setAutomation] = useState<AutomationRecord | null>(null)
+      return (
+        <QueryClientProvider client={client}>
+          <SessionAutomationPopover
+            slotKey="chat-1"
+            automation={automation}
+            open={true}
+            onOpenChange={() => {}}
+            onChange={next => { received.push(next); flushSync(() => setAutomation(next)) }}
+            creationReady={true}
+            sessionMode=""
+          />
+        </QueryClientProvider>
+      )
+    }
+    render(<Parent />)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Goal description' }), { target: { value: 'brand new goal' } })
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start loop and nudge now' })) })
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/autonudge/legacy-new/fire', expect.objectContaining({ method: 'POST' })))
+    // The create stands and was handed up once: the popover now shows the
+    // created loop's running row, seeded from the record...
+    expect(received).toHaveLength(1)
+    expect((received[0] as LegacyGoalLoop).id).toBe('legacy-new')
+    expect(screen.getByRole('button', { name: 'Pause loop' })).toBeTruthy()
+    expect((screen.getByRole('textbox', { name: 'Goal description' }) as HTMLTextAreaElement).value).toBe('brand new goal')
+    // ...and the refusal is on it, in the inline notice, though the instance
+    // that pressed is gone.
+    await waitFor(() => expect(screen.getByTestId('auto-nudge-error').textContent).toContain(REFUSAL))
+    // Dismissed once, it is gone: the mailbox entry was consumed on the mount.
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByTestId('auto-nudge-error')).toBeNull()
   })
 
   it('applies a mutation response when the captured automation is still current', async () => {
