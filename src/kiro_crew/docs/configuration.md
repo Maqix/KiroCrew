@@ -340,54 +340,6 @@ captive-portal login page cannot become your speech model. Weights live under
 `models/whisper/` in the data home. Deleting one just costs you the download
 again.
 
-#### Running a model that is not in the list
-
-Set `stt.model` to `custom`, `stt.custom_model_url` to the HTTPS address of a
-whisper.cpp ggml model, and `stt.custom_model_sha256` to that file's 64-character
-hex sha256:
-
-```json
-{
-  "stt": {
-    "model": "custom",
-    "custom_model_url": "https://example.com/ggml-my-model.bin",
-    "custom_model_sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
-  }
-}
-```
-
-The digest is not optional, and it is the same gate a catalog model passes: you
-supply the pin instead of Kiro Crew shipping it, and the download is refused
-unless the bytes match. Get it from a copy you trust with `shasum -a 256 <file>`
-(`Get-FileHash <file> -Algorithm SHA256` on Windows). If either half is missing or
-malformed, `custom` degrades to the default model with a warning rather than
-running anything unverified.
-
-Only whisper.cpp ggml weights work — this selects a different model for the
-bundled recognizer, not a different recognizer.
-
-The address must be on the public internet. `config.json` is readable and, at the
-shell, writable by an agent, so a URL taken from it is not an operator statement the
-way an environment variable is: left unscreened, a value written there made the
-gateway fetch whatever internal address it named, before any digest was computed. The
-configured host is resolved and refused if any of its addresses is private, and the
-socket then connects to the address that was approved. If you genuinely mirror weights
-on an internal host, name that origin in `KIROCREW_STT_CUSTOM_MODEL_ALLOW_PRIVATE` in
-the gateway's environment — `https://mirror.internal:8443`, scheme and host, port
-optional — which restores the previous behaviour for that one origin on that one hop.
-It is an origin and not an on/off switch on purpose: a switch would have re-admitted
-every other private address through the same agent-writable config value. A
-redirect stays screened either way, because its address is chosen by whoever answered
-rather than by you.
-
-A custom download will not run through an `https_proxy` at all. On a proxy tunnel
-Kiro Crew is handed the proxy's address rather than the destination's, so screening
-what it sees would approve the proxy and say nothing about where the bytes come
-from — it refuses instead of calling that a screen. `KIROCREW_STT_CUSTOM_MODEL_ALLOW_PRIVATE`
-does not lift this: it re-admits a private ADDRESS on a direct connection, not a
-tunnel. Fetch the weights yourself and serve them from a directly reachable origin,
-or use a catalog model, which still downloads through a proxy normally.
-
 Desktop users install nothing else by hand: the app already carries the
 recognizer, decoder, and AWS client. In a source environment the recognizer and
 AWS client are the optional `voice` extra, installed as its own dependencies
@@ -572,6 +524,54 @@ member-memory sandbox is required.
 | `auto_update` | Enable automatic update checks | `true` |
 | `timezone` | IANA timezone name, e.g. `"America/Los_Angeles"` | `""` (falls back to UTC) |
 | `snapshot_dir` | Where `kirocrew snapshot` writes tarballs | `""` (`~/.kiro/crew/snapshots`) |
+
+## Running a custom speech-to-text model
+
+Set `stt.model` to `custom`, `stt.custom_model_url` to the HTTPS address of a
+whisper.cpp ggml model, and `stt.custom_model_sha256` to that file's 64-character
+hex sha256:
+
+```json
+{
+  "stt": {
+    "model": "custom",
+    "custom_model_url": "https://example.com/ggml-my-model.bin",
+    "custom_model_sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+  }
+}
+```
+
+The digest is not optional, and it is the same gate a catalog model passes: you
+supply the pin instead of Kiro Crew shipping it, and the download is refused
+unless the bytes match. Get it from a copy you trust with `shasum -a 256 <file>`
+(`Get-FileHash <file> -Algorithm SHA256` on Windows). If either half is missing or
+malformed, `custom` degrades to the default model with a warning rather than
+running anything unverified.
+
+Only whisper.cpp ggml weights work — this selects a different model for the
+bundled recognizer, not a different recognizer.
+
+The address must be on the public internet. `config.json` is readable and, at the
+shell, writable by an agent, so a URL taken from it is not an operator statement the
+way an environment variable is: left unscreened, a value written there made the
+gateway fetch whatever internal address it named, before any digest was computed. The
+configured host is resolved and refused if any of its addresses is private, and the
+socket then connects to the address that was approved. If you genuinely mirror weights
+on an internal host, name that origin in `KIROCREW_STT_CUSTOM_MODEL_ALLOW_PRIVATE` in
+the gateway's environment — `https://mirror.internal:8443`, scheme and host, port
+optional — which restores the previous behaviour for that one origin on that one hop.
+It is an origin and not an on/off switch on purpose: a switch would have re-admitted
+every other private address through the same agent-writable config value. A
+redirect stays screened either way, because its address is chosen by whoever answered
+rather than by you.
+
+A custom download will not run through an `https_proxy` at all. On a proxy tunnel
+Kiro Crew is handed the proxy's address rather than the destination's, so screening
+what it sees would approve the proxy and say nothing about where the bytes come
+from — it refuses instead of calling that a screen. `KIROCREW_STT_CUSTOM_MODEL_ALLOW_PRIVATE`
+does not lift this: it re-admits a private ADDRESS on a direct connection, not a
+tunnel. Fetch the weights yourself and serve them from a directly reachable origin,
+or use a catalog model, which still downloads through a proxy normally.
 
 ## Environment Variables
 

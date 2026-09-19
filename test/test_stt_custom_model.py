@@ -211,6 +211,28 @@ def _custom(monkeypatch, tmp_path, digest: str = _DIGEST) -> models.WhisperModel
     return model
 
 
+def test_prewarm_size_uses_the_on_disk_size_for_a_custom_model(monkeypatch, tmp_path):
+    """A custom model has no pinned size, so the boot memory guard must read the
+    file's own size rather than the dead ``size_bytes == 0``.
+
+    A guard fed 0 admits an arbitrarily large local file into the speculative boot
+    warm and re-crashes on every launch (the OOM loop the guard exists to stop).
+    Once the file is present, its on-disk size is what the guard weighs.
+    """
+    model = _custom(monkeypatch, tmp_path)
+    assert model.size_bytes == 0
+    assert models.prewarm_size_bytes(model) == 0, "no file yet -> do not speculate"
+    (tmp_path / model.filename).write_bytes(b"x" * 4096)
+    assert models.prewarm_size_bytes(model) == 4096
+
+
+def test_prewarm_size_is_the_pinned_size_for_a_catalog_model(monkeypatch, tmp_path):
+    """A catalog model publishes its size, so the guard uses the pin verbatim."""
+    model = models._BY_NAME[models.DEFAULT_MODEL]
+    assert model.size_bytes > 0
+    assert models.prewarm_size_bytes(model) == model.size_bytes
+
+
 def test_a_matching_digest_installs_the_custom_model(monkeypatch, tmp_path):
     model = _custom(monkeypatch, tmp_path)
     monkeypatch.setattr(models, "_urlopen", _stub_urlopen(_PAYLOAD))
@@ -677,10 +699,22 @@ def test_a_presigned_url_cannot_be_persisted_into_agent_readable_config():
         (_DIGEST, _DIGEST),
         (_DIGEST.upper(), _DIGEST),
         (f" {_DIGEST}\n", _DIGEST),
+        # The two shapes a user actually has in the clipboard. Rejecting these
+        # cleared the field on save with no error naming the reason, so a paste
+        # that was one prefix away from correct read as lost input.
+        (f"sha256:{_DIGEST}", _DIGEST),
+        (f"SHA-256:{_DIGEST}", _DIGEST),
+        (f"sha256={_DIGEST}", _DIGEST),
+        (f"{_DIGEST}  ggml-model.bin", _DIGEST),
+        # Unwrapping is not widening: the payload still has to be 64 hex.
+        (f"sha256:{_DIGEST[:-1]}", ""),
+        ("sha256:", ""),
+        (f"ggml-model.bin  {_DIGEST}", ""),
         (_DIGEST[:-1], ""),
         (_DIGEST + "a", ""),
         (_DIGEST[:-1] + "g", ""),
         ("", ""),
+        ("   ", ""),
         (None, ""),
         (0, ""),
     ],

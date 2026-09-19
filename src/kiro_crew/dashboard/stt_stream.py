@@ -1270,7 +1270,13 @@ async def _relay_download_progress(
             # rather than on reaching this branch, so a socket where nothing is
             # loading announces nothing and keeps the short budget -- which is the
             # whole reason the two waits are told apart.
-            if not announced and pending_load():
+            #
+            # Off the loop, for the reason the caller offloaded its own pre-check
+            # (see the announce site): `pending_load` resolves the model, and
+            # resolving the CUSTOM selection reads and validates `config.json`
+            # synchronously. Guarded by `not announced` so the blocking read is
+            # paid at most once per relay, never on the announced steady state.
+            if not announced and await asyncio.to_thread(pending_load):
                 announced = True
                 logger.info("Local speech model load began after the pre-check saw it resident")
                 if not await send(

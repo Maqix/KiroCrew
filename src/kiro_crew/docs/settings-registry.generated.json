@@ -1402,7 +1402,7 @@
       "label": "Custom model SHA-256",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.custom_model_sha256",
-      "description": "The 64-character hex SHA-256 of that file. Nothing is stored unless the download matches it, and it is checked again on every load.",
+      "description": "Paste the SHA-256 the model's publisher lists for this file, so a changed download is refused — a `sha256:` value or a `sha256sum` line works too. Or compute it from a copy you trust with `shasum -a 256 <file>` (or `Get-FileHash <file> -Algorithm SHA256` on Windows).",
       "configKey": "stt.custom_model_sha256"
     },
     {
@@ -1410,7 +1410,7 @@
       "label": "Custom model URL",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.custom_model_url",
-      "description": "HTTPS URL of a whisper.cpp ggml model to run instead of one from the list above.",
+      "description": "Link to the model file (.bin) you want to run instead of a listed one — a whisper.cpp ggml build, over HTTPS. Leaving these blank or switching back to a listed model is always safe.",
       "configKey": "stt.custom_model_url"
     },
     {
