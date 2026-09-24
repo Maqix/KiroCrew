@@ -87,6 +87,64 @@ def _write_grant(home, document: object) -> None:
     )
 
 
+def _activate_grant(document: object = None, *, mode: str = "auto") -> None:
+    """Establish trusted provenance for the grant, as an operator would after upgrade.
+
+    Since this PR, a grant document is honoured only once the GATEWAY has recorded
+    provenance for it while the mask was in force AND after this version's anchor. That
+    is a two-boot dance: the first masked boot writes the anchor and refuses (a file
+    present then is distrusted as possibly pre-seeded); the operator (re)writes the
+    keystone; the next boot records the provenance and honours it.
+
+    Most tests here only care that a LEGITIMATE operator grant is honoured, not about the
+    activation mechanics, so this collapses the dance: it drives one refusing boot to lay
+    the anchor, then (re)writes the document with a fresh inode so it post-dates the
+    anchor, so a following :func:`is_declared` records provenance and grants. ``crew_home``
+    fixtures point the readers at a scratch tree, so this operates on that tree.
+
+    Pass *document* to (re)write the grant with specific content; omit it to leave the
+    current on-disk document in place (used when the grant is already written).
+    """
+    # First masked boot: lays the anchor and captures whatever is present as pre-anchor.
+    standing_approval.is_declared(mode)
+    # The operator (re)writes the keystone AFTER the anchor. A fresh write gives a new
+    # inode AND (by default) a distinct granted_at, so the identity leaves the distrusted
+    # pre_anchor set regardless of whether the filesystem recycled the inode -- which keeps
+    # this helper FS-agnostic on CI runners that recycle inodes on unlink+create.
+    if document is not None:
+        _rewrite_grant(document)
+    else:
+        _rewrite_grant({standing_approval.GRANT_FIELD: True, "granted_at": "2026-09-28T00:00:00Z"})
+
+
+def _rewrite_grant(document: object) -> None:
+    """Replace the grant document so it gets a NEW inode (the operator's re-write)."""
+    path = loader.standing_approval_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / (path.name + ".new")
+    tmp.write_text(
+        document if isinstance(document, str) else json.dumps(document),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+def _write_signed_provenance(record: dict) -> None:
+    """Write a provenance record SIGNED under the gateway key currently on disk.
+
+    Since the trusted-init change a provenance record is trusted only if its ``sig``
+    verifies under the gateway-only key. A test that manipulates the record on disk (to
+    exercise the mismatch / recorded-grant paths) must re-sign it, or the reader treats it
+    as a forged record. This mirrors :func:`standing_approval._write_provenance`'s signing.
+    """
+    key = standing_approval._read_provenance_key_bytes()
+    assert key is not None, "provenance key must exist (drive one refusing boot first)"
+    signed = dict(record)
+    signed.pop("sig", None)
+    signed["sig"] = standing_approval._sign_provenance(record, key)
+    standing_approval._provenance_path().write_text(json.dumps(signed, sort_keys=True))
+
+
 class TestKeystonePlacement:
     """Where the leaf sits in the two fences, and that the two agree on its name."""
 
@@ -233,6 +291,7 @@ class TestReadsFailClosed:
 
     def test_an_explicit_boolean_true_grants(self, crew_home):
         _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant()  # gateway records trusted provenance for the operator's grant
         assert standing_approval.is_declared("auto") is True
 
     def test_an_explicit_boolean_false_does_not_grant(self, crew_home):
@@ -243,6 +302,7 @@ class TestReadsFailClosed:
         if os.name != "posix" or os.geteuid() == 0:
             pytest.skip("needs POSIX permission bits and a non-root uid")
         _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant()  # record provenance while the document is still readable
         path = loader.standing_approval_path()
         path.chmod(0o000)
         try:
@@ -262,6 +322,7 @@ class TestReadsFailClosed:
         release a descriptor the read is already finished with.
         """
         _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant()  # record provenance so the control below actually grants
         # Control: the document grants while ``close`` behaves, so the refusal below
         # comes from the close failure and not from the content.
         assert standing_approval.is_declared("auto") is True
@@ -303,6 +364,7 @@ class TestTheReaderRefusesAnAliasedGrant:
         # above came from the link and not from the content.
         (leaf / loader.STANDING_APPROVAL_FILENAME).unlink()
         _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant()
         assert standing_approval.is_declared("auto") is True
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX hard-link semantics")
@@ -313,6 +375,7 @@ class TestTheReaderRefusesAnAliasedGrant:
         another name is writable through that name whatever the mask says.
         """
         _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant()  # record provenance for the sole-link document
         path = loader.standing_approval_path()
         assert standing_approval.is_declared("auto") is True  # sole link: granted
 
@@ -349,6 +412,12 @@ class TestTheMigrationCommandRuns:
     because the defect these tests exist for is a string verified only where it was
     written: the POSIX one-liner reached CI and failed on Windows, where ``mkdir -p``
     and ``printf`` are not commands and POSIX quotes are not quoting characters.
+
+    The notice is deliberately NOT a runnable redirection command on any platform. A
+    ``printf ... > path`` line an operator copy-pastes follows a symlink a pre-upgrade
+    agent can plant at ``path`` (the crew data-home root is agent-writable), overwriting
+    an attacker-chosen target with operator privilege. So both renderings name the path
+    and the exact one line and ask the operator to create the file by hand.
     """
 
     def test_the_command_uses_the_resolved_path_not_an_env_var(self, crew_home):
@@ -367,31 +436,44 @@ class TestTheMigrationCommandRuns:
         notice = standing_approval.migration_notice("auto", windows=True)
         assert "mkdir -p" not in notice
         assert "printf" not in notice
-        assert "'" not in notice.split("containing this one line:")[1]
+        assert "'" not in notice.split("this one line:")[1]
         assert f'{{"{standing_approval.GRANT_FIELD}": true}}' in notice
 
-    def test_the_posix_rendering_gives_a_runnable_command(self, crew_home):
+    def test_the_posix_rendering_is_not_a_runnable_redirection(self, crew_home):
+        """The POSIX text must NOT hand the operator a ``printf ... > path`` line: a
+        copy-pasted redirection follows a symlink a pre-upgrade agent can plant at the
+        keystone path, overwriting an attacker-chosen target with operator privilege.
+        It names the path and the line for manual creation, like the Windows text.
+        """
         notice = standing_approval.migration_notice("auto", windows=False)
-        assert "mkdir -p" in notice
-        assert "printf" in notice
+        assert "printf" not in notice
+        assert ">" not in notice
+        assert "create the file" in notice
+        assert f'{{"{standing_approval.GRANT_FIELD}": true}}' in notice
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell builtins")
-    def test_running_the_posix_command_produces_a_document_that_grants(self, crew_home):
-        """End to end: extract the command from the notice, run it, read the grant back.
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX path creation")
+    def test_creating_the_named_file_by_hand_produces_a_document_that_grants(self, crew_home):
+        """End to end: the notice names the path and the exact line; creating that file
+        by hand (as the operator is told to) yields a document that grants.
 
-        This is the assertion a path-shape mistake cannot pass -- it fails if the command
-        targets the wrong directory, whatever the text looks like.
+        Deliberately does NOT extract and execute a shell command from the notice: the
+        notice emits none, precisely so a copy-pasted redirection cannot follow a
+        planted symlink. This asserts the operator's manual action grants.
         """
         notice = standing_approval.migration_notice("auto", windows=False)
         assert standing_approval.is_declared("auto") is False
-        start = notice.index("mkdir -p")
-        end = notice.index("  (then remove")
-        command = notice[start:end]
+        # The one line the notice tells the operator to put in the file.
+        document = f'{{"{standing_approval.GRANT_FIELD}": true}}'
+        assert document in notice
+        path = loader.standing_approval_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(document + "\n", encoding="utf-8")
 
-        completed = subprocess.run(["/bin/sh", "-c", command], capture_output=True, **UTF8_TEXT)
-
-        assert completed.returncode == 0, completed.stderr
-        assert loader.standing_approval_path().is_file()
+        assert path.is_file()
+        # Since the trusted-init change, creating the file by hand grants only once the
+        # gateway has recorded provenance for it on this version with the mask in force
+        # (the notice tells the operator the next boot activates it). Drive that boot.
+        _activate_grant(document + "\n")
         assert standing_approval.is_declared("auto") is True
 
     def test_the_default_rendering_follows_the_host(self, crew_home):
@@ -466,6 +548,7 @@ class TestStartupHonoursOnlyTheKeystone:
     def test_the_keystone_grants_and_logs_no_migration_warning(self, startup, caplog, crew_home):
         server, calls = startup
         _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant()  # record trusted provenance for the operator's grant
         with caplog.at_level("WARNING"):
             server._apply_startup_yolo(object(), self._cfg(declared=False))
         assert calls == ["granted"]
@@ -541,6 +624,7 @@ class TestTheGrantNeedsTheMaskItRestsOn:
     def test_a_confined_startup_grants(self, startup, crew_home):
         server, calls = startup
         _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant()
         server._apply_startup_yolo(object(), self._cfg(sandbox_mode="auto"))
         assert calls == ["granted"]
 
@@ -548,6 +632,7 @@ class TestTheGrantNeedsTheMaskItRestsOn:
         server, calls = startup
         monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: "cc")
         _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant(mode="off")  # the floor clamps "off" up to a masked tier
         server._apply_startup_yolo(object(), self._cfg(sandbox_mode="off"))
         assert calls == ["granted"]
 
@@ -697,8 +782,36 @@ class TestTheNoticeMatchesTheMask:
 
     def test_a_maskable_host_gets_the_posix_remedy(self, crew_home):
         text = standing_approval.migration_notice("auto", masked=True, windows=False)
-        assert "mkdir -p" in text
+        assert "create the file" in text
+        assert "printf" not in text
         assert "UNAVAILABLE" not in text
+
+    def test_the_masked_remedy_documents_the_two_restart_activation(self, crew_home):
+        """Secondary finding: under trusted-init, the FIRST restart after the file is
+        created only lays the anchor and still requires approvals; activation is
+        RESTART -> REWRITE -> SECOND RESTART. The notice must say so on both platforms, or
+        an operator who wrote the file sees the first restart keep prompting and concludes
+        the keystone is broken.
+
+        The REWRITE step must be a REPLACEMENT (a delete-and-recreate that yields a new
+        inode), not an in-place edit: provenance binds to the file's (st_dev, st_ino,
+        granted_at) identity, and an in-place edit preserves both the inode and the
+        self-declared granted_at, so the document still matches the pre_anchor identity and
+        the second restart refuses it. The notice must not tell the operator an in-place
+        edit is enough.
+        """
+        for windows in (False, True):
+            text = standing_approval.migration_notice("auto", masked=True, windows=windows)
+            low = text.lower()
+            assert "two restarts" in low
+            assert "first restart" in low
+            assert "second time" in low
+            assert "anchor" in low
+            # The remedy must require a distinct file identity, not an in-place edit.
+            assert "replace" in low
+            assert "delete it and create it again" in low
+            assert "inode" in low
+            assert "an edit in place is enough" not in low
 
     def test_a_maskable_host_gets_the_windows_wording(self, crew_home):
         text = standing_approval.migration_notice("auto", masked=True, windows=True)
@@ -719,5 +832,601 @@ class TestTheNoticeMatchesTheMask:
         monkeypatch.setattr(sandbox, "kiro_internal_sandbox_enabled", lambda: False)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
         monkeypatch.setattr(platform_compat, "IS_MACOS", False)
-        assert "mkdir -p" in standing_approval.migration_notice("auto", windows=False)
+        assert "create the file" in standing_approval.migration_notice("auto", windows=False)
         assert "UNAVAILABLE" in standing_approval.migration_notice("off", windows=False)
+
+
+class TestTrustedInitProvenance:
+    """Content on disk does not grant: the gateway must hold TRUSTED PROVENANCE for it.
+
+    On prior releases ``standing-approval/`` was unmasked and agent-writable, so a hostile
+    pre-upgrade agent could plant ``grant.json`` = ``True`` and wait for an upgrade to read
+    it back as the operator's standing authority. The mask stops in-session writes GOING
+    FORWARD but cannot tell an operator-written document from a pre-seeded one. The
+    discriminator is a gateway-held provenance record on a NEW leaf that never existed on a
+    prior release (so a pre-upgrade agent could not seed it), bound to the grant document's
+    vetted inode identity + ``granted_at`` and established only after this version's
+    first-masked-boot anchor. The invariant: no grant is honoured unless the gateway itself
+    recorded provenance for it while the mask was in force and after the anchor.
+
+    The ``maskable_host`` and ``crew_home`` fixtures put the readers on a scratch tree with
+    the mask pinned in force, so every case here is about provenance and not the mask.
+    """
+
+    def _prov_path(self):
+        return standing_approval._provenance_path()
+
+    # (a) content-only grant, no provenance -> REFUSED (the pre-seed case)
+    def test_a_content_only_grant_with_no_provenance_is_refused(self, crew_home):
+        """A grant document present at the first masked boot has no provenance record.
+
+        This is exactly the pre-seeded file: it is on disk before this version ever ran,
+        so the gateway never recorded provenance for it. The first read lays the anchor,
+        captures the document as distrusted ``pre_anchor``, and refuses.
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        assert not self._prov_path().exists()  # no gateway record yet
+        assert standing_approval.is_declared("auto") is False
+        # The anchor was laid, and the pre-seeded document is remembered as distrusted.
+        record = json.loads(self._prov_path().read_text())
+        assert isinstance(record["anchor"], dict)
+        assert record["grant"] is None
+        assert len(record["pre_anchor"]) == 1
+
+    def test_a_preseeded_grant_stays_refused_on_every_subsequent_boot(self, crew_home):
+        """A file present at first boot never becomes trusted just by sitting there.
+
+        The pre-seed attack is defeated only if re-reading the SAME unchanged document
+        keeps refusing it -- otherwise an attacker's file is honoured on boot two.
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        assert standing_approval.is_declared("auto") is False  # anchor + refuse
+        # Boot after boot, the unchanged pre-seeded document stays refused.
+        for _ in range(3):
+            assert standing_approval.is_declared("auto") is False
+
+    # (b) grant WITH valid matching gateway-held provenance -> honoured
+    def test_a_grant_re_established_after_the_anchor_is_honoured(self, crew_home):
+        """The operator's real flow: write, boot (anchor+refuse), re-write, boot (honour).
+
+        Re-writing the keystone AFTER the anchor gives the document a new inode identity
+        that does not match the distrusted ``pre_anchor`` entry, so the gateway records
+        provenance for it and honours it.
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        assert standing_approval.is_declared("auto") is False  # anchor laid
+        # Operator re-establishes with a distinct granted_at, so the identity leaves the
+        # distrusted pre_anchor set regardless of any filesystem inode recycling.
+        _rewrite_grant({standing_approval.GRANT_FIELD: True, "granted_at": "2026-09-28T00:00:00Z"})
+        assert standing_approval.is_declared("auto") is True  # provenance recorded + granted
+        record = json.loads(self._prov_path().read_text())
+        assert isinstance(record["grant"], dict)
+        # And it stays honoured on the next boot from the recorded provenance.
+        assert standing_approval.is_declared("auto") is True
+
+    def test_the_recorded_provenance_binds_the_vetted_inode_identity(self, crew_home):
+        """Provenance names the exact (st_dev, st_ino) the document was read from."""
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant()
+        assert standing_approval.is_declared("auto") is True
+        record = json.loads(self._prov_path().read_text())
+        st = os.stat(loader.standing_approval_path())
+        assert record["grant"]["st_dev"] == st.st_dev
+        assert record["grant"]["st_ino"] == st.st_ino
+
+    # (c) provenance mismatch -> refused
+    def test_a_grant_matching_a_pre_anchor_identity_is_refused(self, crew_home):
+        """The refusal path: a document whose identity matches a distrusted ``pre_anchor``
+        entry is the pre-seeded file and is refused, even though the anchor now exists.
+        Only re-establishing it (a new inode / ``granted_at``, so it leaves ``pre_anchor``)
+        makes the gateway record and honour it.
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        assert standing_approval.is_declared("auto") is False  # anchor + capture pre_anchor
+        record = json.loads(self._prov_path().read_text())
+        st = os.stat(loader.standing_approval_path())
+        # The on-disk document's identity IS the captured pre_anchor entry.
+        assert record["pre_anchor"][0]["st_dev"] == st.st_dev
+        assert record["pre_anchor"][0]["st_ino"] == st.st_ino
+        # So every subsequent boot of the unchanged document is refused.
+        assert standing_approval.is_declared("auto") is False
+        # Re-establishing (new inode AND a fresh granted_at, so the identity leaves
+        # pre_anchor regardless of whether the filesystem recycled the inode) is honoured.
+        _rewrite_grant({standing_approval.GRANT_FIELD: True, "granted_at": "2026-09-28T00:00:00Z"})
+        assert standing_approval.is_declared("auto") is True
+
+    def test_a_grant_whose_recorded_provenance_no_longer_matches_is_not_honoured_blindly(
+        self, crew_home
+    ):
+        """Provenance binds ``granted_at`` too: a recorded ``grant`` whose ``granted_at``
+        differs from the on-disk document does not match, so the stale record cannot honour
+        a changed document. When the changed document is also a distrusted ``pre_anchor``
+        identity, it is refused.
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True, "granted_at": "2026-01-01"})
+        _activate_grant({standing_approval.GRANT_FIELD: True, "granted_at": "2026-01-01"})
+        assert standing_approval.is_declared("auto") is True
+        recorded = json.loads(self._prov_path().read_text())["grant"]
+        assert recorded["granted_at"] == "2026-01-01"
+
+        # Pin the recorded provenance to a DIFFERENT granted_at, and mark the on-disk
+        # document's identity as pre-anchor so the mismatch path is what decides. The
+        # record is RE-SIGNED under the gateway key, so it still verifies -- otherwise the
+        # reader would treat it as a forged record and re-lay the anchor instead of taking
+        # the mismatch branch this test is about.
+        prov = json.loads(self._prov_path().read_text())
+        prov["grant"]["granted_at"] = "1999-12-31"
+        st = os.stat(loader.standing_approval_path())
+        prov["pre_anchor"] = [
+            {"st_dev": st.st_dev, "st_ino": st.st_ino, "granted_at": "2026-01-01"}
+        ]
+        _write_signed_provenance(prov)
+        # The document matches a pre_anchor identity (distrusted) and does NOT match the
+        # recorded grant (granted_at differs), so it is refused.
+        assert standing_approval.is_declared("auto") is False
+
+    # (d) anchor / first-boot behaviour
+    def test_the_first_masked_boot_lays_an_anchor_and_grants_nothing(self, crew_home):
+        """With no grant present, the first boot still refuses and, because there is no
+        grant to honour, does not even need the anchor yet -- an absent grant short-circuits
+        before provenance. The anchor is laid the first time a DECLARED grant is seen.
+        """
+        assert not self._prov_path().exists()
+        assert standing_approval.is_declared("auto") is False
+        # No declared grant -> no anchor written (nothing to distrust).
+        assert not self._prov_path().exists()
+
+    def test_a_corrupt_provenance_leaf_is_treated_as_no_anchor(self, crew_home):
+        """An unparseable provenance record fails closed to 'no anchor', so a declared
+        grant is refused and the anchor is re-laid rather than a corrupt record honoured.
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        self._prov_path().parent.mkdir(parents=True, exist_ok=True)
+        self._prov_path().write_text("{not json")
+        assert standing_approval.is_declared("auto") is False
+        # Re-laid as a fresh valid anchor.
+        record = json.loads(self._prov_path().read_text())
+        assert isinstance(record["anchor"], dict)
+
+    def test_the_provenance_leaf_lives_in_the_masked_keystone_directory(self):
+        """The record inherits the mask because it sits INSIDE ``standing-approval/`` --
+        the same directory the grant lives in, already bind-masked and precreated -- so it
+        needs no new leaf registration and could not have been seeded on a prior release.
+        """
+        assert self._prov_path().parent.name == loader.STANDING_APPROVAL_DIRNAME
+        assert self._prov_path().name == standing_approval._PROVENANCE_FILENAME
+        assert self._prov_path() != loader.standing_approval_path()
+
+    def test_the_provenance_reader_refuses_a_symlinked_leaf(self, crew_home):
+        """The provenance reader keeps the grant reader's nofollow discipline: a symlink
+        at the record's name is refused, so a declared grant with only a symlinked
+        provenance record is not honoured (the anchor is re-laid instead).
+        """
+        if sys.platform == "win32":
+            pytest.skip("POSIX symlink semantics")
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        elsewhere = crew_home.parent / "aliased-provenance.json"
+        elsewhere.write_text(
+            json.dumps(
+                {"anchor": {"established_at": "2026-01-01"}, "grant": None, "pre_anchor": []}
+            )
+        )
+        self._prov_path().parent.mkdir(parents=True, exist_ok=True)
+        self._prov_path().symlink_to(elsewhere)
+        # The symlinked record is refused -> read as no anchor -> declared grant refused.
+        assert standing_approval.is_declared("auto") is False
+
+    def test_the_provenance_writer_swaps_a_planted_symlink_out(self, crew_home):
+        """The writer uses atomic replace, so a symlink pre-planted at the record's name
+        is swapped OUT rather than followed -- the anchor lands on a real regular file.
+        """
+        if sys.platform == "win32":
+            pytest.skip("POSIX symlink semantics")
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        target = crew_home.parent / "writer-target.json"
+        target.write_text("untouched")
+        self._prov_path().parent.mkdir(parents=True, exist_ok=True)
+        self._prov_path().symlink_to(target)
+
+        standing_approval.is_declared("auto")  # first boot writes the anchor
+
+        assert not self._prov_path().is_symlink()  # the symlink was swapped out
+        assert self._prov_path().is_file()
+        assert target.read_text() == "untouched"  # the planted target was not followed
+
+
+class TestTheAnchorIsAuthenticated:
+    """The anchor is not merely a NEW leaf -- it is SIGNED under a gateway-only key.
+
+    GPT 5.6's blocking finding: on a prior release the whole ``standing-approval/``
+    directory was agent-writable and absent, so a pre-upgrade agent could create the
+    directory and plant BOTH ``grant.json`` AND a forged ``provenance.json`` (an empty
+    ``anchor`` dict + empty ``pre_anchor`` + no ``grant``) whose STRUCTURE defeats a
+    structure-only check and yields silent permanent auto-approval. The v1 code trusted any
+    on-disk ``anchor`` object. The fix authenticates the record with an HMAC under a key the
+    gateway generates fresh on the first masked boot -- a key a pre-upgrade agent provably
+    could not have (it never existed on a prior release, and a planted key file is
+    overwritten at anchor time), and cannot read afterwards (this version masks the whole
+    directory). Verification fails closed on an absent/short key or a bad signature.
+
+    The ``maskable_host`` + ``crew_home`` fixtures pin the mask in force on a scratch tree,
+    so every case here is about the signature and nothing else.
+    """
+
+    def _prov_path(self):
+        return standing_approval._provenance_path()
+
+    def _key_path(self):
+        return standing_approval._provenance_key_path()
+
+    # (a) A fully pre-seeded provenance.json + grant.json is REFUSED (bad signature).
+    def test_a_forged_provenance_record_with_no_signature_is_refused(self, crew_home):
+        """The exact GPT defeat: plant grant.json=True AND a forged provenance.json with an
+        empty anchor dict + empty pre_anchor + no grant. The v1 code honoured this. Now the
+        forged record carries no valid ``sig``, so it does not verify -> treated as no
+        anchor -> the anchor is re-laid (SIGNED) and the planted grant is captured as
+        distrusted pre_anchor -> refused. The attacker never had the gateway key.
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        # Attacker plants the directory + a forged provenance record with the winning shape.
+        self._prov_path().parent.mkdir(parents=True, exist_ok=True)
+        self._prov_path().write_text(json.dumps({"anchor": {}, "pre_anchor": [], "grant": None}))
+        assert standing_approval.is_declared("auto") is False
+        # The forged record was replaced by a freshly SIGNED anchor, and the planted grant
+        # is remembered as distrusted -- so it stays refused on every subsequent boot.
+        record = json.loads(self._prov_path().read_text())
+        assert isinstance(record.get("sig"), str) and record["sig"]
+        assert record["grant"] is None
+        assert len(record["pre_anchor"]) == 1
+        assert standing_approval.is_declared("auto") is False
+
+    def test_a_forged_record_carrying_a_wrong_signature_is_refused(self, crew_home):
+        """A pre-upgrade agent that GUESSES a signature string still fails: the HMAC is over
+        the record fields under a key it does not hold, so a fabricated ``sig`` does not
+        verify and the record is treated as no anchor.
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        self._prov_path().parent.mkdir(parents=True, exist_ok=True)
+        st = os.stat(loader.standing_approval_path())
+        self._prov_path().write_text(
+            json.dumps(
+                {
+                    "anchor": {"established_at": "2026-01-01"},
+                    "pre_anchor": [],
+                    "grant": {"st_dev": st.st_dev, "st_ino": st.st_ino, "granted_at": None},
+                    "sig": "deadbeef" * 8,
+                }
+            )
+        )
+        assert standing_approval.is_declared("auto") is False
+
+    # (b) A validly-signed post-anchor grant is honoured.
+    def test_a_gateway_signed_post_anchor_grant_is_honoured(self, crew_home):
+        """The operator's real flow yields a SIGNED record that verifies and is honoured,
+        and it stays honoured on the next boot from the recorded (signed) provenance.
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant()  # anchor (signed) -> re-write -> record grant (signed) -> honour
+        assert standing_approval.is_declared("auto") is True
+        record = json.loads(self._prov_path().read_text())
+        assert isinstance(record.get("sig"), str) and record["sig"]
+        assert standing_approval._verify_provenance(record) is True
+        assert standing_approval.is_declared("auto") is True  # honoured again next boot
+
+    # (c) A tampered signature (record edited after signing) is refused.
+    def test_tampering_the_signed_record_after_signing_is_refused(self, crew_home):
+        """Editing a field of a validly-signed record without re-signing breaks the HMAC,
+        so the record no longer verifies -> treated as no anchor -> the honoured grant stops
+        being honoured (the anchor is re-laid and the now-unchanged grant is distrusted).
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant()
+        assert standing_approval.is_declared("auto") is True
+        # Tamper: flip a byte of the recorded grant's st_ino WITHOUT re-signing.
+        prov = json.loads(self._prov_path().read_text())
+        prov["grant"]["st_ino"] = int(prov["grant"]["st_ino"]) + 1
+        self._prov_path().write_text(json.dumps(prov))  # NOT re-signed
+        assert standing_approval._verify_provenance(prov) is False
+        assert standing_approval.is_declared("auto") is False
+
+    # (d) Verification fails closed when the signing key is absent.
+    def test_verification_fails_closed_when_the_key_is_absent(self, crew_home):
+        """A validly-signed, honoured record must stop being honoured if the gateway key
+        disappears: with no key, nothing can be verified, so the record is not trusted.
+        This is the fail-closed property -- an unauthenticatable record grants nothing.
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant()
+        assert standing_approval.is_declared("auto") is True
+        assert self._key_path().exists()
+        # Remove the key the record was signed under.
+        self._key_path().unlink()
+        assert standing_approval._read_provenance_key_bytes() is None
+        record = json.loads(self._prov_path().read_text())
+        assert standing_approval._verify_provenance(record) is False
+        # With no key the record cannot verify, so it is treated as no anchor and refused.
+        # (A fresh key is then generated, but the once-honoured grant is now distrusted.)
+        assert standing_approval.is_declared("auto") is False
+
+    def test_a_short_key_fails_closed(self, crew_home):
+        """A key file shorter than the required length is not a usable key: verification
+        fails closed rather than accepting a weak or truncated key.
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant()
+        assert standing_approval.is_declared("auto") is True
+        record = json.loads(self._prov_path().read_text())
+        # Overwrite the key with too few bytes.
+        self._key_path().write_bytes(b"x" * (standing_approval._PROVENANCE_KEY_BYTES - 1))
+        assert standing_approval._read_provenance_key_bytes() is None
+        assert standing_approval._verify_provenance(record) is False
+        assert standing_approval.is_declared("auto") is False
+
+    # The key itself is unforgeable: a planted key is overwritten at anchor time.
+    def test_a_pre_seeded_key_is_overwritten_at_anchor_time(self, crew_home):
+        """A pre-upgrade agent could plant a ``provenance.key`` while the dir was writable.
+        The gateway must NOT adopt it: on the anchor-writing boot it generates fresh entropy
+        and swaps the planted key OUT, so the record is signed under a key the attacker never
+        knew. The planted bytes are not the key the record is trusted under.
+        """
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        planted = b"A" * standing_approval._PROVENANCE_KEY_BYTES
+        self._key_path().parent.mkdir(parents=True, exist_ok=True)
+        self._key_path().write_bytes(planted)
+
+        standing_approval.is_declared("auto")  # first masked boot: regenerates the key
+
+        assert self._key_path().read_bytes() != planted  # planted key was overwritten
+        assert len(self._key_path().read_bytes()) >= standing_approval._PROVENANCE_KEY_BYTES
+        # A forged record the attacker signed with the PLANTED key does not verify under the
+        # gateway's fresh key, so it is refused.
+        st = os.stat(loader.standing_approval_path())
+        forged = {
+            "anchor": {"established_at": "2026-01-01"},
+            "pre_anchor": [],
+            "grant": {"st_dev": st.st_dev, "st_ino": st.st_ino, "granted_at": None},
+        }
+        forged["sig"] = standing_approval._sign_provenance(forged, planted)
+        self._prov_path().write_text(json.dumps(forged, sort_keys=True))
+        assert standing_approval._verify_provenance(forged) is False
+        assert standing_approval.is_declared("auto") is False
+
+    def test_the_key_leaf_lives_in_the_masked_keystone_directory(self):
+        """The key inherits the mask because it sits INSIDE ``standing-approval/`` -- the
+        same already-masked, precreated directory -- so it needs no new leaf registration
+        and could not have been read on a prior release once this version masks it.
+        """
+        assert self._key_path().parent.name == loader.STANDING_APPROVAL_DIRNAME
+        assert self._key_path().name == standing_approval._PROVENANCE_KEY_FILENAME
+        assert self._key_path() != self._prov_path()
+        assert self._key_path() != loader.standing_approval_path()
+
+    def test_the_key_is_written_owner_only(self, crew_home):
+        """The freshly generated key is 0o600, like every other keystone secret."""
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        standing_approval.is_declared("auto")  # generate the key
+        if os.name == "posix":
+            assert (self._key_path().stat().st_mode & 0o077) == 0
+
+    def test_the_key_reader_refuses_a_symlinked_key(self, crew_home):
+        """The key reader keeps the nofollow discipline: a symlinked key is refused, so a
+        record cannot be authenticated against a key reached through an operator-planted
+        alias.
+        """
+        if sys.platform == "win32":
+            pytest.skip("POSIX symlink semantics")
+        elsewhere = crew_home.parent / "aliased-key"
+        elsewhere.write_bytes(b"z" * standing_approval._PROVENANCE_KEY_BYTES)
+        self._key_path().parent.mkdir(parents=True, exist_ok=True)
+        self._key_path().symlink_to(elsewhere)
+        assert standing_approval._read_provenance_key_bytes() is None
+
+
+class TestRevalidateStandingOverrideOnLiveSandboxChange:
+    """F1: a LIVE ``agent.sandbox`` flip must revalidate (and revoke) the standing grant.
+
+    ``agent.sandbox`` is not restart-gated -- ``config.sections`` marks it without
+    ``restart`` and its own doc says a change "applies to sessions started after it" -- so
+    a flip from a masked mode to an unmasked one (e.g. ``off``) at runtime removes the mask
+    precondition the declared standing grant rests on. The declared grant is evaluated once
+    at boot and held permanently in memory, so without revalidation a new UNMASKED session
+    would inherit permanent auto-approval AND be able to reach the keystone itself.
+
+    ``safety_override.revalidate_standing_override`` is the trusted-applier hook (wired onto
+    the always-constructed GatewayOrchestrator's live-config watcher). These tests exercise
+    it directly against a real provenanced grant established through the same harness the
+    rest of this module uses.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_override(self):
+        from kiro_crew import safety_override
+
+        safety_override.reset_singleton()
+        yield
+        safety_override.reset_singleton()
+
+    def _arm_declared_grant(self, crew_home, mode: str = "auto"):
+        """Establish a provenanced masked grant AND install the declared override in memory,
+        exactly as ``grant_declared_yolo`` does at boot."""
+        from kiro_crew import safety_override
+
+        _write_grant(crew_home, {standing_approval.GRANT_FIELD: True})
+        _activate_grant(mode=mode)
+        # Sanity: the on-disk declaration is honoured under the masked mode.
+        assert standing_approval.is_declared(mode) is True
+        result = safety_override.grant_declared_yolo()
+        assert result.active is True
+        so = safety_override.safety_override()
+        assert so.is_declared is True  # the LIVE grant is the operator's declared grant
+        return so
+
+    def test_revokes_the_declared_override_when_the_flip_is_to_an_unmasked_mode(self, crew_home):
+        from kiro_crew import safety_override
+
+        so = self._arm_declared_grant(crew_home, mode="auto")
+        # 'off' does not mask the keystone, so the declaration is no longer an authorization.
+        assert standing_approval.is_declared("off") is False
+
+        revoked = safety_override.revalidate_standing_override("off")
+
+        assert revoked is True
+        # The override is dropped from in-memory state BEFORE any 'off' session runs.
+        assert so.is_declared is False
+        assert so.is_active() is False
+
+    def test_retains_the_declared_override_when_the_new_mode_still_masks(self, crew_home):
+        from kiro_crew import safety_override
+
+        so = self._arm_declared_grant(crew_home, mode="auto")
+        # 'strict' still masks the keystone (a masking mode), so the grant is legitimate.
+        assert standing_approval.is_declared("strict") is True
+
+        revoked = safety_override.revalidate_standing_override("strict")
+
+        assert revoked is False
+        assert so.is_declared is True
+        assert so.is_active() is True
+
+    def test_revocation_precedes_any_session_governed_by_the_new_mode(self, crew_home):
+        """The revocation is synchronous in the applier, so by the time it returns the
+        in-memory override is already gone -- a session started under the new mode cannot
+        observe the stale grant."""
+        from kiro_crew import safety_override
+
+        so = self._arm_declared_grant(crew_home, mode="auto")
+        assert so.is_active() is True
+
+        safety_override.revalidate_standing_override("off")
+
+        # No window: the state is dropped the moment the trusted applier returns.
+        assert so.is_active() is False
+        assert so.is_declared is False
+
+    def test_does_not_touch_an_adhoc_grant(self, crew_home):
+        """Only the DECLARED grant is mask-derived. An operator's ad-hoc timed grant is
+        their own decision and must survive a sandbox flip untouched."""
+        from kiro_crew import safety_override
+
+        so = safety_override.safety_override()
+        so.activate(source="dashboard", ttl=3600)
+        assert so.is_active() is True
+        assert so.is_declared is False
+
+        revoked = safety_override.revalidate_standing_override("off")
+
+        assert revoked is False
+        assert so.is_active() is True  # the ad-hoc grant is untouched
+
+    def test_noop_when_no_grant_is_active(self, crew_home):
+        from kiro_crew import safety_override
+
+        so = safety_override.safety_override()
+        assert so.is_active() is False
+
+        assert safety_override.revalidate_standing_override("off") is False
+        assert so.is_active() is False
+
+    # ── DERIVED trust is torn down synchronously on the flip (GPT F1) ──
+    #
+    # ``deactivate`` drops only in-memory grant state. A declared grant is
+    # session-wide, so it also wrote ``approval_policy="auto"`` onto its slots and
+    # into the shared channel-trust mapping, and ``subagent_manager.admission.
+    # parent_trusted`` reads THAT policy directly (gate.py:1270-1272,1288-1290). The
+    # revalidation must invoke the SAME synchronous ``on_policy_revoked`` teardown the
+    # operator-revoke path uses, BEFORE the deactivate, so a spawn admitted right after
+    # the flip cannot read a stale "auto". These mirror the ``on_policy_revoked``-clears-
+    # a-``policies``-dict harness in ``test_approval_modes_enforcement`` and the
+    # gate's own ``approval_policy == "auto"`` read.
+
+    def _derived_trust_model(self):
+        """The two stores the gateway's ``_clear_override_derived_trust`` clears: a
+        per-slot ``approval_policy`` map (what ``admission.parent_trusted`` reads) and
+        the shared channel-trust mapping. Returns them plus a ``_clear`` callback with
+        the same effect the real hook has, and a list recording revalidation order."""
+        policies = {"dashboard:s1": "auto", "channel:telegram:owner": "auto"}
+        channel_mapping = {"channel:telegram:owner"}
+        order: list[str] = []
+
+        def _clear(_source):
+            order.append("clear")
+            for key in list(policies):
+                policies[key] = ""
+            channel_mapping.clear()
+
+        return policies, channel_mapping, order, _clear
+
+    def test_the_flip_clears_slot_and_channel_derived_trust_synchronously(self, crew_home):
+        from kiro_crew import safety_override
+
+        so = self._arm_declared_grant(crew_home, mode="auto")
+        policies, channel_mapping, _order, _clear = self._derived_trust_model()
+        so.on_policy_revoked = _clear
+
+        revoked = safety_override.revalidate_standing_override("off")
+
+        assert revoked is True
+        # By the time the trusted applier returns, a spawn admission read of the
+        # parent slot's policy sees no "auto" -- the exact value gate.py consults.
+        assert policies["dashboard:s1"] == ""
+        # The shared channel-trust mapping (the CHANNEL half a subagent reads) is gone.
+        assert policies["channel:telegram:owner"] == ""
+        assert channel_mapping == set()
+        assert so.is_active() is False
+
+    def test_teardown_runs_before_the_grant_is_deactivated(self, crew_home):
+        """Ordering MUST be clear-derived-trust -> deactivate (safety_override.py
+        docs the grant-first ordering as the unrecoverable one: ``is_active()`` would
+        report no grant while the slots still carry "auto")."""
+        from kiro_crew import safety_override
+
+        so = self._arm_declared_grant(crew_home, mode="auto")
+        _policies, _channel_mapping, order, _clear = self._derived_trust_model()
+
+        # Record when the grant flag actually drops, relative to the teardown.
+        real_deactivate = so.deactivate
+
+        def _recording_deactivate(*a, **kw):
+            order.append("deactivate")
+            return real_deactivate(*a, **kw)
+
+        so.deactivate = _recording_deactivate  # type: ignore[method-assign]
+        so.on_policy_revoked = _clear
+
+        safety_override.revalidate_standing_override("off")
+
+        assert order == ["clear", "deactivate"], (
+            "derived-trust teardown must run BEFORE deactivate, or a spawn in the gap "
+            f"is auto-approved against the unmasked sandbox; saw {order}"
+        )
+
+    def test_a_retained_grant_does_not_tear_down_derived_trust(self, crew_home):
+        """When the new mode still masks (grant retained), the teardown must NOT run --
+        the operator's inherited trust is still legitimate."""
+        from kiro_crew import safety_override
+
+        so = self._arm_declared_grant(crew_home, mode="auto")
+        policies, channel_mapping, order, _clear = self._derived_trust_model()
+        so.on_policy_revoked = _clear
+
+        revoked = safety_override.revalidate_standing_override("strict")
+
+        assert revoked is False
+        assert order == []
+        assert policies["dashboard:s1"] == "auto"
+        assert channel_mapping == {"channel:telegram:owner"}
+
+    def test_a_raising_teardown_fails_closed_and_re_raises(self, crew_home):
+        """The trusted ConfigWatch applier retries on failure, so a teardown that
+        raises must propagate (not be swallowed), like the rest of this fn."""
+        from kiro_crew import safety_override
+
+        so = self._arm_declared_grant(crew_home, mode="auto")
+
+        def _boom(_source):
+            raise RuntimeError("derived-trust store unreachable")
+
+        so.on_policy_revoked = _boom
+
+        with pytest.raises(RuntimeError, match="derived-trust store unreachable"):
+            safety_override.revalidate_standing_override("off")
