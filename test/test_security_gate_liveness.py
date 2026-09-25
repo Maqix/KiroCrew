@@ -116,12 +116,20 @@ def _url_payload_command(n: int) -> str:
 #: are independent additions to the same ratchet, so the number below is re-MEASURED
 #: off the tree rather than being the arithmetic sum of the deltas.
 #:
+#: Re-pinned again, on top of every raise above, for the ``app_backends.pids.json``
+#: leaf added to ``_CREW_SECRET_LEAVES`` in ``paths.py``: the gateway-owned backend
+#: provenance record, which decides which listener a run is allowed to adopt. On a
+#: host with no mount namespace the sandbox bind-mask cannot hold it, so the file-tool
+#: secret floor is the layer that stops a run from authoring or deleting a provenance
+#: row there. One entry plus its reason comment -- fence declaration only, no new
+#: control logic and no new matching pass. Re-MEASURED off the tree, not summed.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 27_863
+_PACKAGE_LINE_BUDGET = 27_875
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
