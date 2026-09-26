@@ -1784,6 +1784,7 @@ function ChatInput({
   // not the callback itself: the handler's identity may change every render
   // and would re-run the effect for nothing.
   const hasAutomation = !!onAutomationClick
+  const hasPursuedGoal = hasAutomation && automation?.kind === 'legacy_goal_loop' && !!automation.goal
   useEffect(() => { remeasureControlRow() }, [hasAutomation, automation, approvalMode, isMobile, remeasureControlRow])
   const ime = useImeGuard()
   const resolvedPlaceholder = placeholder || i18nT('components.chatInput.message_placeholder', { bot: botName })
@@ -4312,6 +4313,7 @@ function ChatInput({
         // not change on focus (maintainer decision; the caret is the indicator).
         // With an approval box attached above, that pane wears `approval-glow`,
         // whose warn glow takes the shadow slot.
+        className="@container/composer"
         style={{ overflow: 'hidden' }}
       >{/* File drag-and-drop target. Drag-drop is inherently pointer-only; the
            keyboard-accessible path is the "Attach files" button that opens the
@@ -4579,8 +4581,11 @@ function ChatInput({
         <PromptLengthNotice value={value} blocks={pasteBlocks} contextWindowTokens={contextWindowTokens} confirmPending={overLimitPending} />
 
         {/* Bottom icon row */}
-        <div className="flex items-center justify-between px-2.5 pb-2 pt-0.5">
-          <div className="flex items-center gap-0.5 min-w-0">
+        <div className={`flex items-center justify-between px-2.5 pb-2 pt-0.5 ${hasPursuedGoal ? 'flex-wrap gap-y-1 @min-[28rem]/composer:flex-nowrap' : ''}`}>
+          {/* At constrained composer widths, the goal shares the full first row
+              with the existing left controls; send/voice keep their own row.
+              CSS preserves the mounted trigger and keyboard order as it grows. */}
+          <div className={`flex items-center gap-0.5 min-w-0 ${hasPursuedGoal ? 'w-full @min-[28rem]/composer:w-auto' : ''}`}>
             {onUploadFiles && (
               <div className="relative shrink-0" ref={plusWrapRef}>
                 {uploadCancelControl || (directFilePicker ? (
@@ -4826,7 +4831,7 @@ function ChatInput({
                 also owns the flex sizing so the scroller keeps filling the
                 row. */}
             <div className="relative min-w-0 flex-1">
-              <div ref={attachControlRow} data-testid="composer-control-row" className="flex items-center gap-0.5 overflow-x-auto">
+              <div ref={attachControlRow} data-testid="composer-control-row" className="flex items-center gap-0.5 overflow-x-auto has-[[data-goal-suggestion]]:flex-wrap">
 
               {onAutomationClick && (
                 <Suspense fallback={null}>
@@ -4871,7 +4876,7 @@ function ChatInput({
               <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} compact openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
             )}
           </div>
-          <div className="flex items-center gap-1 shrink-0">
+          <div className={`flex items-center gap-1 shrink-0 ${hasPursuedGoal ? 'ml-auto' : ''}`}>
             {onVoiceToggle && (
               <button
                 type="button"
