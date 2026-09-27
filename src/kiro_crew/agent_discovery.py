@@ -24,6 +24,7 @@ from typing import Any
 from kiro_crew import agent_state, hooks
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
+    GUEST_AGENT_FILENAME,
     LITE_AGENT_FILENAME,
     OWNED_KIRO_AGENT_FILES,
 )
@@ -1441,7 +1442,7 @@ def _global_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
             pkg_stem = pkg_stem[len("local-") :]
         package = pkg_stem[: -(len(agent_name) + 1)]
 
-    if f.name in (AGENT_FILENAME, LITE_AGENT_FILENAME):
+    if f.name in (AGENT_FILENAME, LITE_AGENT_FILENAME, GUEST_AGENT_FILENAME):
         source = "kirocrew"
     elif is_package_filename:
         source = "package"
