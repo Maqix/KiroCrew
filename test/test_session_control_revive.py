@@ -206,6 +206,75 @@ def test_revive_without_a_folder_keeps_the_previous_placement(tmp_path):
     assert state._slots[key].folder_id == "f1"
 
 
+def test_revive_into_a_bound_folder_is_the_filing_decision_and_refused_before_anything_revives(
+    tmp_path,
+):
+    """A revive that names a folder MOVES the archived session from where it was
+    archived into that folder, and filing is how a session acquires a folder's
+    binding: an agent may not file where the session would inherit a project
+    directory it did not have (the rule every other filing route takes --
+    ``create_session``, fork, the folder PATCH). Decided BEFORE the revive
+    commits: refused, nothing is revived, filed or unhidden and no filing is
+    noted. Red-first on the head before this: the revive committed and the
+    session sat filed under the bound folder, inheriting the person's project
+    directory."""
+    state = _make_state(tmp_path)
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    state._folders.append(
+        {
+            "id": "bound",
+            "name": "Bound",
+            "parent_id": None,
+            "position": 0,
+            "project_dir": str(bound),
+            "hidden": True,
+        }
+    )
+    caller = _slot(state, "chat-1")  # an agent at the top level
+    key = _archive(state, caller, _slot(state, "chat-2"))  # archived at the top level
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, key, folder_id="bound")
+
+    assert exc.value.code == "folder_project_dir_forbidden"
+    assert exc.value.status == 403
+    assert key not in state._slots  # nothing revived
+    assert state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
+    assert not state.conversation_log.get_metadata(f"dashboard:{key}").get("folder_id")
+    assert next(f for f in state._folders if f["id"] == "bound")["hidden"] is True  # not unhidden
+    assert "bound" not in (getattr(state, "_folders_filed_into", None) or set())  # not noted
+
+
+def test_revive_into_a_folder_conferring_the_same_binding_is_filed(tmp_path):
+    """The decision is by what the session inherits, not by a folder's name: a
+    session archived inside a bound folder revived into a child of that folder
+    inherits the same binding and is filed, exactly as the PATCH move admits it."""
+    state = _make_state(tmp_path)
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    state._folders.append(
+        {
+            "id": "bound",
+            "name": "Bound",
+            "parent_id": None,
+            "position": 0,
+            "project_dir": str(bound),
+        }
+    )
+    state._folders.append({"id": "inside", "name": "Inside", "parent_id": "bound", "position": 0})
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    peer.folder_id = "bound"  # archived under the binding
+    key = _archive(state, caller, peer)
+
+    result = _revive(state, caller, key, folder_id="inside")
+
+    assert result["folder_id"] == "inside"
+    assert result["filed"] is True
+    assert state._slots[key].folder_id == "inside"
+
+
 # ── Resolution refusals ──────────────────────────────────────────────────────
 
 
