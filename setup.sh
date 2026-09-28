@@ -439,9 +439,17 @@ if [ "$_kc_start" = 1 ]; then
         echo "→ Your crew lives in $HOME/.kiro/crew"
     fi
     # A gateway already running would be reused as it is, on the code it started
-    # with; stop it so the chat runs this build (a service restarts it itself).
-    if kirocrew stop >/dev/null 2>&1; then
-        echo "→ Restarted your running Kiro Crew so it runs this build"
+    # with, so a plain one on this crew's port is stopped first. An installed
+    # service is never touched: it runs the install it was set up with, and
+    # `kirocrew stop` without a port would stop it whatever crew it serves.
+    _kc_facts="$("$_venv/bin/python" -c 'from kiro_crew import cli_server
+from kiro_crew.service import controller
+print(cli_server.resolve_client_port(None), 1 if controller.installed_unit_path() else 0)' 2>/dev/null || true)"
+    _kc_port="${_kc_facts% *}"
+    if [ "${_kc_facts#* }" = 1 ]; then
+        echo "→ A Kiro Crew service is installed on this machine; it is left as it is"
+    elif [ -n "$_kc_port" ] && kirocrew stop --port "$_kc_port" >/dev/null 2>&1; then
+        echo "→ Restarted the Kiro Crew running on port $_kc_port so it runs this build"
     fi
     echo "→ Starting Kiro Crew; your browser opens on the chat, where setup continues."
     # Under `curl | bash` stdin is this script; give kirocrew the terminal, so
