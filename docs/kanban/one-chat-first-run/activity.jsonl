@@ -1,0 +1,262 @@
+{"timestamp":"2026-09-27T20:50:52.268566376Z","action":"create","task_id":1,"detail":"Review the hatching RFC draft"}
+{"timestamp":"2026-09-27T20:50:52.292274919Z","action":"create","task_id":2,"detail":"Product critique: value/usability/feasibility/viability risks"}
+{"timestamp":"2026-09-27T20:50:52.31555405Z","action":"create","task_id":3,"detail":"Measure today's time-to-first-reply baseline"}
+{"timestamp":"2026-09-27T20:50:52.338044919Z","action":"create","task_id":4,"detail":"Q1: start.sh generated from cli.sh, or cli.sh --hatch plus a wrapper"}
+{"timestamp":"2026-09-27T20:50:52.361837333Z","action":"create","task_id":5,"detail":"Q2: may the installer install a pinned kiro-cli"}
+{"timestamp":"2026-09-27T20:50:52.385882167Z","action":"create","task_id":6,"detail":"Q3: is SOUL.md read-only to in-sandbox code (operator decision)"}
+{"timestamp":"2026-09-27T20:50:52.410348934Z","action":"create","task_id":7,"detail":"Q4: where SOUL.md/USER.md live and how they compose with crewmate souls and theme persona"}
+{"timestamp":"2026-09-27T20:50:52.434220783Z","action":"create","task_id":8,"detail":"Q5: vault secrets across move-in: re-enter or one-time encrypted transfer"}
+{"timestamp":"2026-09-27T20:50:52.45705518Z","action":"create","task_id":9,"detail":"Q6: accept the #13031 dependency for EC2 quick-create"}
+{"timestamp":"2026-09-27T20:50:52.481260276Z","action":"create","task_id":10,"detail":"Q7: does not auto-opening the chapters need its own accepted decision"}
+{"timestamp":"2026-09-27T20:50:52.504160125Z","action":"create","task_id":11,"detail":"Q8: success measures without telemetry"}
+{"timestamp":"2026-09-27T20:50:52.527607763Z","action":"create","task_id":12,"detail":"Q9: hatch/egg/nest vocabulary in UI vs code only"}
+{"timestamp":"2026-09-27T20:50:52.550181282Z","action":"create","task_id":13,"detail":"Open the docs-only RFC pull request"}
+{"timestamp":"2026-09-27T20:50:52.572526562Z","action":"create","task_id":14,"detail":"Maintainer acceptance: flip RFC to accepted and merge"}
+{"timestamp":"2026-09-27T20:50:52.596471747Z","action":"create","task_id":15,"detail":"Write the dated implementation plan"}
+{"timestamp":"2026-09-27T20:50:52.618787586Z","action":"create","task_id":16,"detail":"Phase 1: start.sh (the Egg)"}
+{"timestamp":"2026-09-27T20:50:52.642938241Z","action":"create","task_id":17,"detail":"Phase 2: cards, hatch session, crew-setup skill, soul and profile tools"}
+{"timestamp":"2026-09-27T20:50:52.667532279Z","action":"create","task_id":18,"detail":"Phase 3: credential capture, connect and channel cards"}
+{"timestamp":"2026-09-27T20:50:52.694303527Z","action":"create","task_id":19,"detail":"Phase 4: nest on this machine and BYO over SSH"}
+{"timestamp":"2026-09-27T20:50:52.719421527Z","action":"create","task_id":20,"detail":"Phase 5a: EC2 nest from chat with local credentials"}
+{"timestamp":"2026-09-27T20:50:52.7447572Z","action":"create","task_id":21,"detail":"Phase 5b: EC2 nest via console quick-create"}
+{"timestamp":"2026-09-27T20:50:52.769728664Z","action":"create","task_id":22,"detail":"Phase 6: move-in"}
+{"timestamp":"2026-09-27T20:50:52.797322103Z","action":"create","task_id":23,"detail":"Phase 7: clients"}
+{"timestamp":"2026-09-27T20:50:52.821797786Z","action":"create","task_id":24,"detail":"Phase 8: connector builder"}
+{"timestamp":"2026-09-27T20:50:52.845886001Z","action":"create","task_id":25,"detail":"Phase 9: consolidation"}
+{"timestamp":"2026-09-27T20:50:52.872216355Z","action":"edit","task_id":21,"detail":"Phase 5b: EC2 nest via console quick-create"}
+{"timestamp":"2026-09-27T20:50:52.872358068Z","action":"block","task_id":21,"detail":"waiting on PR #13031 (outbound instance transport)"}
+{"timestamp":"2026-09-27T20:50:52.900194709Z","action":"create","task_id":26,"detail":"Follow-up RFC: egress authority"}
+{"timestamp":"2026-09-27T20:50:52.923958082Z","action":"create","task_id":27,"detail":"Follow-up RFC: grant scopes on approvals"}
+{"timestamp":"2026-09-27T20:51:12.053639335Z","action":"edit","task_id":1,"detail":"Review the hatching RFC draft"}
+{"timestamp":"2026-09-27T20:51:12.053764721Z","action":"claim","task_id":1,"detail":"zedmor"}
+{"timestamp":"2026-09-27T21:13:18.527606667Z","action":"edit","task_id":2,"detail":"Product critique: value/usability/feasibility/viability risks"}
+{"timestamp":"2026-09-27T21:13:18.527729434Z","action":"claim","task_id":2,"detail":"zedmor"}
+{"timestamp":"2026-09-27T21:13:18.560836999Z","action":"move","task_id":2,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-27T21:42:34.111375241Z","action":"edit","task_id":1,"detail":"Review the one-chat first-run RFC draft"}
+{"timestamp":"2026-09-27T21:42:34.136414355Z","action":"edit","task_id":15,"detail":"Write the dated implementation plan"}
+{"timestamp":"2026-09-27T21:42:34.160187043Z","action":"edit","task_id":10,"detail":"Q5: does not auto-opening the chapters need its own recorded decision"}
+{"timestamp":"2026-09-27T21:42:34.185882937Z","action":"edit","task_id":12,"detail":"Q7: plain UI labels (Setup, Home) instead of hatch/egg/nest"}
+{"timestamp":"2026-09-27T21:42:34.209892163Z","action":"edit","task_id":11,"detail":"Q8 (rev 1): success measures without telemetry"}
+{"timestamp":"2026-09-27T21:42:34.232914301Z","action":"move","task_id":11,"detail":"todo -\u003e done"}
+{"timestamp":"2026-09-27T21:42:34.256190792Z","action":"edit","task_id":8,"detail":"Q5: vault secrets across move-in: re-enter or one-time encrypted transfer"}
+{"timestamp":"2026-09-27T21:42:34.280538304Z","action":"edit","task_id":9,"detail":"Q6: accept the #13031 dependency for EC2 quick-create"}
+{"timestamp":"2026-09-27T21:42:34.304761404Z","action":"create","task_id":28,"detail":"Q6: v1 connector family, GitHub or Linear/Atlassian"}
+{"timestamp":"2026-09-27T21:42:34.328139217Z","action":"create","task_id":29,"detail":"Test 1: free-tier quota burn over a first week"}
+{"timestamp":"2026-09-27T21:42:34.351911148Z","action":"create","task_id":30,"detail":"Test 2: 12 Mom-Test interviews plus a landing fake-door split"}
+{"timestamp":"2026-09-27T21:42:34.37603524Z","action":"create","task_id":31,"detail":"Test 3: Wizard-of-Oz first run vs the chapters"}
+{"timestamp":"2026-09-27T21:42:34.39983664Z","action":"edit","task_id":3,"detail":"Test 4 and baseline: stopwatch funnel on clean machines"}
+{"timestamp":"2026-09-27T21:42:34.424004344Z","action":"edit","task_id":16,"detail":"Phase 1: Egg (start.sh, desktop first run, heartbeat value)"}
+{"timestamp":"2026-09-27T21:42:34.448468415Z","action":"edit","task_id":16,"detail":"Phase 1: Egg (start.sh, desktop first run, heartbeat value)"}
+{"timestamp":"2026-09-27T21:42:34.473054255Z","action":"edit","task_id":17,"detail":"Phase 2: first run v1"}
+{"timestamp":"2026-09-27T21:42:34.497921517Z","action":"edit","task_id":17,"detail":"Phase 2: first run v1"}
+{"timestamp":"2026-09-27T21:42:34.522843031Z","action":"edit","task_id":18,"detail":"Phase 3: learn on Stable (4 weeks)"}
+{"timestamp":"2026-09-27T21:42:34.546722441Z","action":"edit","task_id":18,"detail":"Phase 3: learn on Stable (4 weeks)"}
+{"timestamp":"2026-09-27T21:42:34.571926157Z","action":"edit","task_id":19,"detail":"North star 10.1: nest offered when it hurts (BYO SSH + handoff)"}
+{"timestamp":"2026-09-27T21:42:34.620243925Z","action":"edit","task_id":19,"detail":"North star 10.1: nest offered when it hurts (BYO SSH + handoff)"}
+{"timestamp":"2026-09-27T21:42:34.645013599Z","action":"edit","task_id":19,"detail":"North star 10.1: nest offered when it hurts (BYO SSH + handoff)"}
+{"timestamp":"2026-09-27T21:42:34.668647148Z","action":"edit","task_id":20,"detail":"North star 10.2: EC2 nest for developers"}
+{"timestamp":"2026-09-27T21:42:34.718551018Z","action":"edit","task_id":20,"detail":"North star 10.2: EC2 nest for developers"}
+{"timestamp":"2026-09-27T21:42:34.743816773Z","action":"edit","task_id":20,"detail":"North star 10.2: EC2 nest for developers"}
+{"timestamp":"2026-09-27T21:42:34.769349143Z","action":"edit","task_id":21,"detail":"North star 10.2b: EC2 console quick-create without local credentials"}
+{"timestamp":"2026-09-27T21:42:34.82104442Z","action":"edit","task_id":21,"detail":"North star 10.2b: EC2 console quick-create without local credentials"}
+{"timestamp":"2026-09-27T21:42:34.845439902Z","action":"edit","task_id":21,"detail":"North star 10.2b: EC2 console quick-create without local credentials"}
+{"timestamp":"2026-09-27T21:42:34.8694092Z","action":"edit","task_id":22,"detail":"North star 10.5: live move-in"}
+{"timestamp":"2026-09-27T21:42:34.917582039Z","action":"edit","task_id":22,"detail":"North star 10.5: live move-in"}
+{"timestamp":"2026-09-27T21:42:34.942604474Z","action":"edit","task_id":22,"detail":"North star 10.5: live move-in"}
+{"timestamp":"2026-09-27T21:42:34.966744387Z","action":"edit","task_id":23,"detail":"North star 10.4: every device (desktop personalization, PWA, QR)"}
+{"timestamp":"2026-09-27T21:42:35.020287181Z","action":"edit","task_id":23,"detail":"North star 10.4: every device (desktop personalization, PWA, QR)"}
+{"timestamp":"2026-09-27T21:42:35.044761948Z","action":"edit","task_id":23,"detail":"North star 10.4: every device (desktop personalization, PWA, QR)"}
+{"timestamp":"2026-09-27T21:42:35.073456729Z","action":"edit","task_id":24,"detail":"North star 10.3: agent-built connectors"}
+{"timestamp":"2026-09-27T21:42:35.123628512Z","action":"edit","task_id":24,"detail":"North star 10.3: agent-built connectors"}
+{"timestamp":"2026-09-27T21:42:35.149313711Z","action":"edit","task_id":24,"detail":"North star 10.3: agent-built connectors"}
+{"timestamp":"2026-09-27T21:42:35.173542113Z","action":"edit","task_id":25,"detail":"North star 10.5: consolidation onto one install path"}
+{"timestamp":"2026-09-27T21:42:35.220985932Z","action":"edit","task_id":25,"detail":"North star 10.5: consolidation onto one install path"}
+{"timestamp":"2026-09-27T21:42:35.244719004Z","action":"edit","task_id":25,"detail":"North star 10.5: consolidation onto one install path"}
+{"timestamp":"2026-09-27T21:42:35.268118808Z","action":"edit","task_id":19,"detail":"North star 10.1: nest offered when it hurts (BYO SSH + handoff)"}
+{"timestamp":"2026-09-27T21:42:35.290928746Z","action":"edit","task_id":26,"detail":"Follow-up RFC: egress authority (gates north star 10.3)"}
+{"timestamp":"2026-09-27T21:42:35.316182099Z","action":"edit","task_id":24,"detail":"North star 10.3: agent-built connectors"}
+{"timestamp":"2026-09-27T21:42:54.67508804Z","action":"edit","task_id":8,"detail":"North star: vault secrets across a nest handoff (re-enter or one-time encrypted transfer)"}
+{"timestamp":"2026-09-27T21:42:54.700355656Z","action":"edit","task_id":9,"detail":"North star: accept the #13031 dependency for EC2 quick-create"}
+{"timestamp":"2026-09-27T21:42:54.725638718Z","action":"edit","task_id":4,"detail":"Q1: start.sh generated from cli.sh, or cli.sh --first-run plus a wrapper"}
+{"timestamp":"2026-09-27T21:42:54.752446885Z","action":"edit","task_id":18,"detail":"Phase 3: learn on Stable (4 weeks)"}
+{"timestamp":"2026-09-27T21:54:50.652350064Z","action":"create","task_id":32,"detail":"P1.1 kirocrew start: harness check, gateway, URL, browser or QR"}
+{"timestamp":"2026-09-27T21:54:50.678449006Z","action":"create","task_id":33,"detail":"P1.2 start.sh wrapper on cli.sh's trust root"}
+{"timestamp":"2026-09-27T21:54:50.703141939Z","action":"create","task_id":34,"detail":"P1.3 start.ps1 counterpart"}
+{"timestamp":"2026-09-27T21:54:50.731968353Z","action":"create","task_id":35,"detail":"P1.4 start.sh install-path marker and heartbeat value"}
+{"timestamp":"2026-09-27T21:54:50.757010811Z","action":"create","task_id":36,"detail":"P1.5 Desktop first run lands in the first-run session"}
+{"timestamp":"2026-09-27T21:54:50.782048524Z","action":"create","task_id":37,"detail":"P1.6 Docs: install guide, getting started, CLI spec"}
+{"timestamp":"2026-09-27T21:54:50.811464645Z","action":"create","task_id":38,"detail":"P2.1 Pending-action card store and commit/decline endpoints (S1)"}
+{"timestamp":"2026-09-27T21:54:50.837924296Z","action":"create","task_id":39,"detail":"P2.2 Card renderer in the chat (frontend, i18n)"}
+{"timestamp":"2026-09-27T21:54:50.866503907Z","action":"create","task_id":40,"detail":"P2.3 First-run session, state file (S6), privacy card first"}
+{"timestamp":"2026-09-27T21:54:50.894132837Z","action":"create","task_id":41,"detail":"P2.4 crew-setup builtin skill"}
+{"timestamp":"2026-09-27T21:54:50.923377295Z","action":"create","task_id":42,"detail":"P2.5 setup_status, profile_propose, soul_propose + SOUL/USER context block"}
+{"timestamp":"2026-09-27T21:54:50.954615269Z","action":"create","task_id":43,"detail":"P2.6 SCOPE_CATALOG rows for setup tools (S3)"}
+{"timestamp":"2026-09-27T21:54:50.985716453Z","action":"create","task_id":44,"detail":"P2.7 import_scan / import_propose"}
+{"timestamp":"2026-09-27T21:54:51.013356679Z","action":"create","task_id":45,"detail":"P2.8 connect_propose (curated connection card)"}
+{"timestamp":"2026-09-27T21:54:51.057702443Z","action":"create","task_id":46,"detail":"P2.9 credential_request + credential capture card (S2)"}
+{"timestamp":"2026-09-27T21:54:51.089341443Z","action":"create","task_id":47,"detail":"P2.10 channel_propose with /pair pairing (Telegram first)"}
+{"timestamp":"2026-09-27T21:54:51.118830296Z","action":"create","task_id":48,"detail":"P2.11 cron_propose: run once as a preview, then Keep it"}
+{"timestamp":"2026-09-27T21:54:51.145115737Z","action":"create","task_id":49,"detail":"P2.12 service_propose (stay on)"}
+{"timestamp":"2026-09-27T21:54:51.171616446Z","action":"create","task_id":50,"detail":"P2.13 Pasted-secret redaction before the model"}
+{"timestamp":"2026-09-27T21:54:51.200976798Z","action":"create","task_id":51,"detail":"P2.14 S8: setup cards only from user-started turns outside the first run"}
+{"timestamp":"2026-09-27T21:54:51.228867824Z","action":"create","task_id":52,"detail":"P2.15 Guardrails: card budget, stall watchdog, quota card"}
+{"timestamp":"2026-09-27T21:54:51.256570147Z","action":"create","task_id":53,"detail":"P2.16 Owning system spec for the first run"}
+{"timestamp":"2026-09-27T21:54:51.285821498Z","action":"create","task_id":54,"detail":"Demos: end-to-end first run"}
+{"timestamp":"2026-09-27T21:54:51.315164478Z","action":"create","task_id":55,"detail":"D1 Demo: one command to the first-run chat"}
+{"timestamp":"2026-09-27T21:54:51.34317194Z","action":"create","task_id":56,"detail":"D2 Demo: import, connect, preview job, keep it, stay on"}
+{"timestamp":"2026-09-27T21:54:51.369641692Z","action":"create","task_id":57,"detail":"D3 Demo: credentials never reach the chat"}
+{"timestamp":"2026-09-27T21:55:04.619774281Z","action":"edit","task_id":30,"detail":"Test 2: 12 Mom-Test interviews plus a landing fake-door split"}
+{"timestamp":"2026-09-27T21:55:04.619924483Z","action":"block","task_id":30,"detail":"needs recruited human participants; the author runs it"}
+{"timestamp":"2026-09-27T21:55:04.652510468Z","action":"edit","task_id":31,"detail":"Test 3: Wizard-of-Oz first run vs the chapters"}
+{"timestamp":"2026-09-27T21:55:04.652641057Z","action":"block","task_id":31,"detail":"needs recruited human participants; the author runs it"}
+{"timestamp":"2026-09-27T21:55:04.682524703Z","action":"edit","task_id":29,"detail":"Test 1: free-tier quota burn over a first week"}
+{"timestamp":"2026-09-27T21:55:04.682666203Z","action":"block","task_id":29,"detail":"needs a fresh Kiro Free account; the author runs it"}
+{"timestamp":"2026-09-27T21:55:04.714666079Z","action":"edit","task_id":3,"detail":"Test 4 and baseline: stopwatch funnel on clean machines"}
+{"timestamp":"2026-09-27T22:00:11.675318382Z","action":"edit","task_id":3,"detail":"Test 4 and baseline: stopwatch funnel on clean machines"}
+{"timestamp":"2026-09-27T22:17:39.256360223Z","action":"move","task_id":32,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-27T22:17:39.283614519Z","action":"move","task_id":33,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-27T22:17:39.309458095Z","action":"move","task_id":37,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-27T22:17:39.337411801Z","action":"edit","task_id":38,"detail":"P2.1 Pending-action card store and commit/decline endpoints (S1)"}
+{"timestamp":"2026-09-27T22:17:39.337551655Z","action":"claim","task_id":38,"detail":"claude"}
+{"timestamp":"2026-09-27T22:17:39.365679114Z","action":"edit","task_id":40,"detail":"P2.3 First-run session, state file (S6), privacy card first"}
+{"timestamp":"2026-09-27T22:17:39.365836435Z","action":"claim","task_id":40,"detail":"claude"}
+{"timestamp":"2026-09-27T22:17:39.39304044Z","action":"edit","task_id":42,"detail":"P2.5 setup_status, profile_propose, soul_propose + SOUL/USER context block"}
+{"timestamp":"2026-09-27T22:17:39.393164983Z","action":"claim","task_id":42,"detail":"claude"}
+{"timestamp":"2026-09-27T22:18:37.904157885Z","action":"edit","task_id":39,"detail":"P2.2 Card renderer in the chat (frontend, i18n)"}
+{"timestamp":"2026-09-27T22:18:37.904286723Z","action":"claim","task_id":39,"detail":"frontend-agent"}
+{"timestamp":"2026-09-27T22:54:56.347329074Z","action":"edit","task_id":38,"detail":"P2.1 Pending-action card store and commit/decline endpoints (S1)"}
+{"timestamp":"2026-09-27T22:54:56.376959421Z","action":"edit","task_id":40,"detail":"P2.3 First-run session, state file (S6), privacy card first"}
+{"timestamp":"2026-09-27T22:54:56.404496209Z","action":"edit","task_id":42,"detail":"P2.5 setup_status, profile_propose, soul_propose + SOUL/USER context block"}
+{"timestamp":"2026-09-27T22:54:56.434258657Z","action":"edit","task_id":43,"detail":"P2.6 SCOPE_CATALOG rows for setup tools (S3)"}
+{"timestamp":"2026-09-27T22:54:56.434700409Z","action":"claim","task_id":43,"detail":"claude"}
+{"timestamp":"2026-09-27T22:54:56.463542002Z","action":"edit","task_id":44,"detail":"P2.7 import_scan / import_propose"}
+{"timestamp":"2026-09-27T22:54:56.463730382Z","action":"claim","task_id":44,"detail":"claude"}
+{"timestamp":"2026-09-27T22:54:56.492519807Z","action":"edit","task_id":45,"detail":"P2.8 connect_propose (curated connection card)"}
+{"timestamp":"2026-09-27T22:54:56.492663319Z","action":"claim","task_id":45,"detail":"claude"}
+{"timestamp":"2026-09-27T22:54:56.528685363Z","action":"edit","task_id":46,"detail":"P2.9 credential_request + credential capture card (S2)"}
+{"timestamp":"2026-09-27T22:54:56.528915397Z","action":"claim","task_id":46,"detail":"claude"}
+{"timestamp":"2026-09-27T22:54:56.630291775Z","action":"edit","task_id":48,"detail":"P2.11 cron_propose: run once as a preview, then Keep it"}
+{"timestamp":"2026-09-27T22:54:56.63053174Z","action":"claim","task_id":48,"detail":"claude"}
+{"timestamp":"2026-09-27T22:54:56.690961958Z","action":"edit","task_id":49,"detail":"P2.12 service_propose (stay on)"}
+{"timestamp":"2026-09-27T22:54:56.691166254Z","action":"claim","task_id":49,"detail":"claude"}
+{"timestamp":"2026-09-27T22:54:56.720530306Z","action":"edit","task_id":50,"detail":"P2.13 Pasted-secret redaction before the model"}
+{"timestamp":"2026-09-27T22:54:56.720671909Z","action":"claim","task_id":50,"detail":"claude"}
+{"timestamp":"2026-09-27T22:54:56.748962839Z","action":"edit","task_id":51,"detail":"P2.14 S8: setup cards only from user-started turns outside the first run"}
+{"timestamp":"2026-09-27T22:54:56.749101759Z","action":"claim","task_id":51,"detail":"claude"}
+{"timestamp":"2026-09-27T22:54:56.775595031Z","action":"edit","task_id":41,"detail":"P2.4 crew-setup builtin skill"}
+{"timestamp":"2026-09-27T22:54:56.775718733Z","action":"claim","task_id":41,"detail":"claude"}
+{"timestamp":"2026-09-27T22:54:56.808201078Z","action":"edit","task_id":47,"detail":"P2.10 channel_propose with /pair pairing (Telegram first)"}
+{"timestamp":"2026-09-27T22:54:56.83921585Z","action":"edit","task_id":52,"detail":"P2.15 Guardrails: card budget, stall watchdog, quota card"}
+{"timestamp":"2026-09-27T22:54:56.839365513Z","action":"claim","task_id":52,"detail":"claude"}
+{"timestamp":"2026-09-27T22:54:57.258237298Z","action":"create","task_id":58,"detail":"Parallel nest: build the home in the background during the first run"}
+{"timestamp":"2026-09-27T22:54:57.29170382Z","action":"create","task_id":59,"detail":"PN.1 Egg home choice: here / my AWS account / later"}
+{"timestamp":"2026-09-27T22:54:57.322779894Z","action":"create","task_id":60,"detail":"PN.2 Background launch job observable from the gateway"}
+{"timestamp":"2026-09-27T22:54:57.349442732Z","action":"create","task_id":61,"detail":"PN.3 Home progress card in the first-run chat"}
+{"timestamp":"2026-09-27T22:54:57.377846556Z","action":"create","task_id":62,"detail":"PN.4 Move in: hand the crew to the home when it is healthy"}
+{"timestamp":"2026-09-27T22:54:57.405438075Z","action":"create","task_id":63,"detail":"PN.5 Starter tier: measure the smallest instance a home runs on"}
+{"timestamp":"2026-09-27T22:54:57.435208618Z","action":"create","task_id":64,"detail":"PN.6 Simulated launch engine for the demo"}
+{"timestamp":"2026-09-27T22:54:57.465648733Z","action":"create","task_id":65,"detail":"Follow-up RFC: managed hosting provider (no AWS account, credits)"}
+{"timestamp":"2026-09-27T23:13:12.517284614Z","action":"edit","task_id":32,"detail":"P1.1 kirocrew start: harness check, gateway, URL, browser or QR"}
+{"timestamp":"2026-09-27T23:13:12.544465115Z","action":"edit","task_id":33,"detail":"P1.2 start.sh wrapper on cli.sh's trust root"}
+{"timestamp":"2026-09-27T23:13:12.571584837Z","action":"edit","task_id":37,"detail":"P1.6 Docs: install guide, getting started, CLI spec"}
+{"timestamp":"2026-09-27T23:35:34.658901285Z","action":"edit","task_id":4,"detail":"Q1: start.sh generated from cli.sh, or cli.sh --first-run plus a wrapper"}
+{"timestamp":"2026-09-27T23:35:34.709403868Z","action":"edit","task_id":5,"detail":"Q2: may the installer install a pinned kiro-cli"}
+{"timestamp":"2026-09-27T23:35:34.759295492Z","action":"edit","task_id":59,"detail":"PN.1 Egg home choice: here / my AWS account / later"}
+{"timestamp":"2026-09-27T23:35:34.759513876Z","action":"claim","task_id":59,"detail":"claude"}
+{"timestamp":"2026-09-27T23:35:34.82018364Z","action":"edit","task_id":60,"detail":"PN.2 Background launch job observable from the gateway"}
+{"timestamp":"2026-09-27T23:35:34.820494217Z","action":"claim","task_id":60,"detail":"claude"}
+{"timestamp":"2026-09-27T23:35:34.874101036Z","action":"edit","task_id":61,"detail":"PN.3 Home progress card in the first-run chat"}
+{"timestamp":"2026-09-27T23:35:34.87453816Z","action":"claim","task_id":61,"detail":"claude"}
+{"timestamp":"2026-09-27T23:35:34.967544617Z","action":"edit","task_id":64,"detail":"PN.6 Simulated launch engine for the demo"}
+{"timestamp":"2026-09-27T23:35:34.967902516Z","action":"claim","task_id":64,"detail":"claude"}
+{"timestamp":"2026-09-27T23:35:35.026570323Z","action":"edit","task_id":62,"detail":"PN.4 Move in: hand the crew to the home when it is healthy"}
+{"timestamp":"2026-09-27T23:35:35.0268158Z","action":"claim","task_id":62,"detail":"claude"}
+{"timestamp":"2026-09-28T00:06:11.363570803Z","action":"create","task_id":66,"detail":"Main chat: the one place the user works from (RFC 6.9)"}
+{"timestamp":"2026-09-28T00:06:11.396991421Z","action":"create","task_id":67,"detail":"MC.1 Graduation: first-run chat becomes the main chat"}
+{"timestamp":"2026-09-28T00:06:11.434844808Z","action":"create","task_id":68,"detail":"MC.2 [CREW OVERVIEW] in every main-chat turn"}
+{"timestamp":"2026-09-28T00:06:11.462424934Z","action":"create","task_id":69,"detail":"MC.3 Landing, sidebar badge, main_chat notice (frontend)"}
+{"timestamp":"2026-09-28T00:06:11.489559729Z","action":"create","task_id":70,"detail":"MC.4 'Make this my main chat' for installs without a first run"}
+{"timestamp":"2026-09-28T00:06:11.517044994Z","action":"create","task_id":71,"detail":"MC.5 Delegation habit in crew-setup"}
+{"timestamp":"2026-09-28T00:24:27.094758954Z","action":"create","task_id":72,"detail":"Muse snapshot lessons (RFC Appendix F)"}
+{"timestamp":"2026-09-28T00:24:27.62214367Z","action":"create","task_id":73,"detail":"MS.1 Hosted-assistant import: portable profile prompt -\u003e soul card (USER.md)"}
+{"timestamp":"2026-09-28T00:24:27.65557182Z","action":"create","task_id":74,"detail":"MS.2 Side-chat handoff etiquette in crew-setup"}
+{"timestamp":"2026-09-28T00:24:27.688598702Z","action":"create","task_id":75,"detail":"MS.3 First-week note job (one note a day, never a card)"}
+{"timestamp":"2026-09-28T00:24:27.726609996Z","action":"create","task_id":76,"detail":"MS.4 Persona evals for the first run (simulated engine + rubric)"}
+{"timestamp":"2026-09-28T00:24:27.76322124Z","action":"create","task_id":77,"detail":"MS.5 MC.6 Controls elsewhere draft a main-chat message"}
+{"timestamp":"2026-09-28T00:24:27.805731061Z","action":"create","task_id":78,"detail":"MS.6 Q11: should the dashboard refuse to delete the main chat"}
+{"timestamp":"2026-09-28T00:24:27.847997442Z","action":"create","task_id":79,"detail":"MS.7 Connector blueprint for §10.3: ordered credential tool, scaffolder, per-method defaults"}
+{"timestamp":"2026-09-28T00:24:27.904673169Z","action":"create","task_id":80,"detail":"MS.8 Blocked-on-connection state for first-run jobs"}
+{"timestamp":"2026-09-28T00:24:28.008395935Z","action":"create","task_id":81,"detail":"MS.9 Tailnet reach-back from a cloud home (behind the egress authority)"}
+{"timestamp":"2026-09-28T01:31:57.508991741Z","action":"create","task_id":82,"detail":"MC.7 Q13: mount kirocrew-dashboard for the main chat (session tools)"}
+{"timestamp":"2026-09-28T01:31:57.561964068Z","action":"create","task_id":83,"detail":"MC.8 spawn_run rejected in the first-run chat"}
+{"timestamp":"2026-09-28T01:31:57.601889801Z","action":"create","task_id":84,"detail":"PN.9 EC2 home install fails: on-box frontend build"}
+{"timestamp":"2026-09-28T01:31:57.659581053Z","action":"create","task_id":85,"detail":"Fresh install logs a deprecated-field warning in the Egg"}
+{"timestamp":"2026-09-28T01:31:57.781971782Z","action":"create","task_id":86,"detail":"MS.10 AWS sign-in detected in the Egg"}
+{"timestamp":"2026-09-28T01:49:14.499875814Z","action":"create","task_id":87,"detail":"D4 Team demo video v1 (3 min, captions, simulated home)"}
+{"timestamp":"2026-09-28T01:49:24.298206578Z","action":"move","task_id":55,"detail":"todo -\u003e review"}
+{"timestamp":"2026-09-28T01:49:24.329219932Z","action":"move","task_id":56,"detail":"todo -\u003e review"}
+{"timestamp":"2026-09-28T01:49:24.359733159Z","action":"move","task_id":57,"detail":"todo -\u003e review"}
+{"timestamp":"2026-09-28T01:54:48.721349783Z","action":"move","task_id":47,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-28T01:57:20.88077655Z","action":"move","task_id":70,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-28T01:57:27.861456789Z","action":"move","task_id":77,"detail":"backlog -\u003e in-progress"}
+{"timestamp":"2026-09-28T01:57:27.891442437Z","action":"move","task_id":36,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-28T01:59:26.449362971Z","action":"move","task_id":34,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-28T01:59:26.485265439Z","action":"move","task_id":35,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-28T02:03:18.238753409Z","action":"move","task_id":83,"detail":"backlog -\u003e in-progress"}
+{"timestamp":"2026-09-28T02:12:23.207879638Z","action":"move","task_id":82,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-28T02:24:32.491245663Z","action":"edit","task_id":83,"detail":"MC.8 spawn_run rejected in the first-run chat"}
+{"timestamp":"2026-09-28T02:24:32.541597677Z","action":"move","task_id":83,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T02:25:27.599185216Z","action":"edit","task_id":52,"detail":"P2.15 Guardrails: card budget, stall watchdog, quota card"}
+{"timestamp":"2026-09-28T02:25:27.599328887Z","action":"claim","task_id":52,"detail":"guardrails"}
+{"timestamp":"2026-09-28T02:27:45.677379992Z","action":"move","task_id":76,"detail":"backlog -\u003e in-progress"}
+{"timestamp":"2026-09-28T02:33:42.550090116Z","action":"move","task_id":70,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T02:33:42.606115346Z","action":"move","task_id":77,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T02:33:42.650590018Z","action":"move","task_id":36,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T02:42:57.346058967Z","action":"move","task_id":47,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T02:44:46.044481443Z","action":"move","task_id":82,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T03:04:36.976518734Z","action":"edit","task_id":52,"detail":"P2.15 Guardrails: card budget, stall watchdog, quota card"}
+{"timestamp":"2026-09-28T03:04:37.010640108Z","action":"move","task_id":52,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T03:26:03.517417888Z","action":"move","task_id":76,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T03:27:06.627585197Z","action":"edit","task_id":84,"detail":"PN.9 EC2 home install fails: on-box frontend build"}
+{"timestamp":"2026-09-28T03:27:06.657307415Z","action":"move","task_id":84,"detail":"todo -\u003e review"}
+{"timestamp":"2026-09-28T03:27:06.688626364Z","action":"move","task_id":75,"detail":"backlog -\u003e review"}
+{"timestamp":"2026-09-28T03:27:06.718661127Z","action":"create","task_id":88,"detail":"Agent retried a rejected tool call (critical rule added)"}
+{"timestamp":"2026-09-28T03:38:04.681971571Z","action":"move","task_id":39,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T03:38:04.732006131Z","action":"move","task_id":69,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T03:38:04.807349446Z","action":"move","task_id":72,"detail":"in-progress -\u003e done"}
+{"timestamp":"2026-09-28T03:38:04.867519496Z","action":"move","task_id":53,"detail":"todo -\u003e review"}
+{"timestamp":"2026-09-28T03:40:38.789923713Z","action":"edit","task_id":62,"detail":"PN.4 Move in: hand the crew to the home when it is healthy"}
+{"timestamp":"2026-09-28T03:40:38.790183464Z","action":"claim","task_id":62,"detail":"move-in"}
+{"timestamp":"2026-09-28T03:41:42.213689527Z","action":"move","task_id":34,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T03:41:42.247233058Z","action":"move","task_id":35,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T03:44:37.29694592Z","action":"edit","task_id":63,"detail":"PN.5 Starter tier: measure the smallest instance a home runs on"}
+{"timestamp":"2026-09-28T03:44:37.328746589Z","action":"move","task_id":63,"detail":"todo -\u003e review"}
+{"timestamp":"2026-09-28T04:07:28.372594862Z","action":"move","task_id":62,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T05:09:29.144409239Z","action":"create","task_id":89,"detail":"PN.10 Sign the home in by copying this computer's Kiro sign-in (no second login)"}
+{"timestamp":"2026-09-28T05:12:33.801538025Z","action":"move","task_id":84,"detail":"review -\u003e done"}
+{"timestamp":"2026-09-28T05:12:42.884545818Z","action":"create","task_id":90,"detail":"P2.17 Job preview approvals surface on the card"}
+{"timestamp":"2026-09-28T05:12:48.757523804Z","action":"edit","task_id":62,"detail":"PN.4 Move in: hand the crew to the home when it is healthy"}
+{"timestamp":"2026-09-28T05:12:48.75771099Z","action":"claim","task_id":62,"detail":"claude"}
+{"timestamp":"2026-09-28T05:37:26.184855828Z","action":"create","task_id":91,"detail":"PN.4b Home card shows what moved"}
+{"timestamp":"2026-09-28T05:37:36.769022598Z","action":"move","task_id":91,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T05:53:48.103187971Z","action":"move","task_id":90,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T05:53:48.103838068Z","action":"handoff","task_id":90,"detail":"P2.17 Job preview approvals surface on the card"}
+{"timestamp":"2026-09-28T05:53:48.104036086Z","action":"release","task_id":90,"detail":"P2.17 Job preview approvals surface on the card"}
+{"timestamp":"2026-09-28T06:12:50.086584184Z","action":"create","task_id":92,"detail":"MC.9 The main chat hears when a handed-off chat finishes"}
+{"timestamp":"2026-09-28T06:47:55.066194018Z","action":"edit","task_id":92,"detail":"MC.9 The main chat hears when a handed-off chat finishes"}
+{"timestamp":"2026-09-28T06:47:55.095748478Z","action":"edit","task_id":92,"detail":"MC.9 The main chat hears when a handed-off chat finishes"}
+{"timestamp":"2026-09-28T14:39:06.31181816Z","action":"create","task_id":93,"detail":"EG.6 start.sh asks nothing: the home question moves into the Hello"}
+{"timestamp":"2026-09-28T14:39:22.818064234Z","action":"create","task_id":94,"detail":"PN.11 Sign in to AWS from the home card (no terminal)"}
+{"timestamp":"2026-09-28T14:46:22.027980284Z","action":"edit","task_id":93,"detail":"EG.6 start.sh asks nothing: the home question moves into the Hello"}
+{"timestamp":"2026-09-28T14:46:22.02826095Z","action":"claim","task_id":93,"detail":"lead"}
+{"timestamp":"2026-09-28T15:25:18.280148735Z","action":"move","task_id":94,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T15:53:43.834493655Z","action":"edit","task_id":85,"detail":"Fresh install logs a deprecated-field warning in the Egg"}
+{"timestamp":"2026-09-28T15:53:43.837210587Z","action":"claim","task_id":85,"detail":"lead"}
+{"timestamp":"2026-09-28T16:19:02.587526574Z","action":"edit","task_id":92,"detail":"MC.9 The main chat hears when a handed-off chat finishes"}
+{"timestamp":"2026-09-28T16:23:08.546467637Z","action":"create","task_id":95,"detail":"P1.3b start.ps1 hands the app's bundled kiro-cli to kirocrew start (Q14)"}
+{"timestamp":"2026-09-28T16:27:28.60297431Z","action":"edit","task_id":92,"detail":"MC.9 The main chat hears when a handed-off chat finishes"}
+{"timestamp":"2026-09-28T16:43:52.608482575Z","action":"edit","task_id":89,"detail":"PN.10 The home's own Kiro sign-in, one click (token copy is a later spike)"}
+{"timestamp":"2026-09-28T16:43:52.61124794Z","action":"claim","task_id":89,"detail":"aws-signin-card"}
+{"timestamp":"2026-09-28T16:57:27.011028819Z","action":"create","task_id":96,"detail":"PN.12 A new AWS account's home region, not a us-east-1 fallback"}
+{"timestamp":"2026-09-28T17:06:13.827291074Z","action":"create","task_id":97,"detail":"PN.13 Create an AWS account from the home card (signup path)"}
+{"timestamp":"2026-09-28T17:24:39.865833064Z","action":"edit","task_id":97,"detail":"PN.13 Create an AWS account from the home card (signup path)"}
