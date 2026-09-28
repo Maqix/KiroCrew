@@ -94,7 +94,7 @@ if [ ! -d "$_kirocrew_dir/src/kiro_crew" ]; then
         echo "→ Downloading Kiro Crew (branch '$_kc_branch') into $_kc_src"
         _kc_spin "Downloading the code" "$_kc_src.git.log" \
             git clone --progress --depth 1 --branch "$_kc_branch" --single-branch \
-            https://github.com/kirodotdev/KiroCrew.git "$_kc_src" \
+            "${KIROCREW_SOURCE_REPO:-https://github.com/kirodotdev/KiroCrew.git}" "$_kc_src" \
             || { return 1 2>/dev/null || exit 1; }
     fi
     echo "  Code at commit $(git -C "$_kc_src" rev-parse --short HEAD); continuing with its setup.sh"
