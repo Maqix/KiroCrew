@@ -70,7 +70,7 @@ whose payload no longer hashes to its `payload_hash` is read back `expired` with
 | `channel` | agent | the channel (Telegram) | stores the bot token typed into the card as `TELEGRAM_BOT_TOKEN` in `.env` through the Settings save's own helper (`messaging.commit_telegram_writes`), turns `telegram.enabled` on and reconnects the channel, then goes `waiting` with a one-time 4-digit pairing code. A `/pair <code>` DM to the bot adds that sender's id to `telegram.allowed_user_ids` and commits with `{channel, paired, username}`; five wrong codes fail the card, and ten unpaired minutes expire it. See [Channel pairing](#channel-pairing) |
 | `cron` | agent | name, prompt summary, schedule in words, timezone (the full prompt is private) | `preview`: creates the job disabled and silent, runs it once, shows the output (status `success`, `failure` or `timeout`, mapped from the cron run's own status, and `failure` with `reason: approval_not_given` when an approval the run asked for was rejected or went unanswered), returns to `pending`. While it runs, the card shows the run's pending approvals with Allow once and Reject; after a run that asked, `approvals` counts them and the card says the job will ask on every run, in Notifications. See [Job previews](#job-previews). `commit` (Keep it): makes it non-silent and enables it. `decline`: removes the preview job |
 | `service` | agent | platform, the command, whether a terminal is needed, installed | macOS: installs the launchd agent. Linux: verifies the unit exists (the owner runs `kirocrew stop && kirocrew service install`, which needs sudo) |
-| `home` | agent, or the gateway when a script passed `kirocrew start --home cloud` | provider, region, AWS profile, size, estimated monthly cost, who bills it, whether AWS is signed in, whether the run is simulated | two decisions on one card, after **Sign in to AWS** when AWS was not signed in: the `aws_signin` decision runs `aws login` from the card, goes `waiting`, and returns to `pending` with `aws_signed_in: true` in the outcome once AWS answers (see [Signing in to AWS](#signing-in-to-aws)). **Build my home**: records whether the owner's browser is on this machine, starts the launch job (`handlers_cloud.start_launch_job`), goes `waiting`, and a watcher mirrors the build's steps onto the card until it is done (`pending`, `ready`) or fails; while the build waits on the home's own Kiro sign-in, see [The home's Kiro sign-in](#the-homes-kiro-sign-in). A build that finished without that sign-in is not `ready`: the card is `pending` in phase `signin` with `needs_signin`, and its commit is **Sign the home in to Kiro** (`handlers_cloud.restart_signin`). **Move in**: a simulated home walks four steps and moves nothing; a live one is handed the crew and this chat, see [Moving in](#moving-in). Commits with `moved: true` |
+| `home` | agent, or the gateway when a script passed `kirocrew start --home cloud` | provider, region (the account's own, once AWS answers), AWS profile, the size options with what each costs and whether it needs AWS's paid plan (see [The home's size](#the-homes-size)), the account's plan when signed in, estimated monthly cost, who bills it, whether AWS is signed in, whether the run is simulated | two decisions on one card, after **Sign in to AWS** when AWS was not signed in: the `aws_signin` decision runs `aws login` from the card, goes `waiting`, and returns to `pending` with `aws_signed_in: true` in the outcome once AWS answers (see [Signing in to AWS](#signing-in-to-aws)). **Build my home** (`input.size`, one of the offered sizes): records whether the owner's browser is on this machine, checks the size against the plan and the vCPU quota, starts the launch job (`handlers_cloud.start_launch_job`), goes `waiting`, and a watcher mirrors the build's steps onto the card until it is done (`pending`, `ready`) or fails; while the build waits on the home's own Kiro sign-in, see [The home's Kiro sign-in](#the-homes-kiro-sign-in). A build that finished without that sign-in is not `ready`: the card is `pending` in phase `signin` with `needs_signin`, and its commit is **Sign the home in to Kiro** (`handlers_cloud.restart_signin`). **Move in**: a simulated home walks four steps and moves nothing; a live one is handed the crew and this chat, see [Moving in](#moving-in). Commits with `moved: true` |
 
 ## Invariants
 
@@ -182,9 +182,14 @@ governed like every decide):
    refused (`aws_cli_too_old`).
 4. A watcher checks the child and asks AWS again every few seconds. When AWS
    answers, the card returns to `pending` with `aws_signed_in: true` and the
-   account's last four digits in its OUTCOME: the payload, and so its hash, never
-   changes, and the owner presses Build. A child that exits without a sign-in
-   (`aws_signin_failed`) or five minutes without one (`aws_signin_timeout`)
+   account's last four digits in its OUTCOME, and its payload is recomputed now
+   that AWS answers (`setup_flow.refresh_home_payload`): the account's own region,
+   its plan and the size options, under a new hash (`setup_cards.replace_payload`,
+   the one sanctioned payload change, for a `pending` card only). The owner sees
+   the new card before Build; a click carrying the old hash is refused as
+   `card_hash_mismatch`. A child that exits without a sign-in
+   (`aws_signin_failed`) or ten minutes without one (`aws_signin_timeout`, the
+   AWS CLI's own wait, which also leaves time to create an account first)
    returns the card to `pending` with the reason. So does a profile that already
    holds access keys, which `aws login` refuses at once with exit status 253
    (`aws_signin_profile_has_keys`). The card reaches the sign-in only when AWS did
@@ -216,6 +221,52 @@ writable from the agent's sandbox, so nothing on disk names a process to
 signal), which is also why a gateway restart leaves a card `waiting`: once it is
 past `expires_ts`, the card offers Try again and the decide admits a fresh start.
 The sign-in is audited as `setup_card.aws_signin`, with its outcome word only.
+
+## The home's size
+
+The card offers sizes and the owner picks one (`setup_cards.home_size_options`,
+the tiers in `cloud/sizes.py`), measured with a real kiro-cli: the idle gateway is
+1.3 GB, each open chat adds about 0.5 GB and stays alive, three chats plus a
+sub-agent peak at 3.7 GB, and the on-box dashboard build peaks at 2.6 GB.
+
+| Option | Tier | Shape | About | Offered on |
+|---|---|---|---|---|
+| Small | `small` | `t4g.large`, arm64, 2 vCPU, 8 GB | $51/month | the paid plan (its default) |
+| Starter | `starter` | `m7i-flex.large`, x86_64, 2 vCPU, 8 GB | $72/month | the Free plan (its default; `free_plan_ok`: the Free plan's EC2 launches free-tier types only), and the paid plan only when it is no dearer than Small |
+| Standard | `light` | `t4g.xlarge`, arm64, 4 vCPU, 16 GB | $101/month | both; on the Free plan it is marked as needing the paid plan |
+
+Which sizes each plan gets, and its default, is data: `setup_cards.HOME_PLAN_SIZES`
+(per plan: the sizes and the preselected one) and `HOME_SIZE_OFFERS` (per size: a
+plain label and a note code the dashboard words: `free_plan_credits`,
+`few_chats`, `many_chats`). A size is a tier in `cloud/sizes.py` plus those
+entries. A plan not known yet (not signed in, or an unreadable plan) gets the
+Free plan's list, since a new account starts on it and Starter builds on every
+plan. The options are sorted cheapest first, and each carries `key`, `label`,
+`note`, `instance_type`, `vcpu`, `ram_gb`, `monthly_usd` and `free_plan_ok`; a
+Free-plan size also carries `credits_usd` and `credit_weeks` when the plan's
+remaining credits are known. The card heads each option with its label and
+monthly cost ("Small · about $51/month") and preselects `size_default`. A card on
+a machine not signed in to AWS adds a note that a brand-new account starts on the
+Free plan.
+
+Once AWS answers for the profile, `_home_payload` reads, side by side and
+read-only (`cloud/local_signin.py`, through `aws.run_aws`): the region the account
+can build in (`resolve_home_region`: `ec2 describe-availability-zones` in the
+card's region, then the profile's, then us-east-2, eu-north-1 and ap-southeast-2,
+moving on only after an access refusal; a new sign-up account refuses every region
+but its own), which becomes the card's `region` and the build's; and the plan
+(`account_plan`: `freetier get-account-plan-state` gives `{type: FREE|PAID|unknown,
+credits_usd?, expires?}`; an account older than the plans answers
+`ResourceNotFoundException` and is PAID). The plan is never changed from here.
+
+The Build click posts `input.size`. `_chosen_home_size` refuses a size the card
+did not offer (`home_size_not_offered`), a paid-plan size on the Free plan
+(`home_size_needs_paid_plan`; the card links AWS's page on the plans), and a size
+above the account's EC2 on-demand vCPU quota in that region (`vcpu_quota`,
+Service Quotas `L-1216C47A`, read before anything is spent:
+`home_vcpu_quota_low`, with a link to the Service Quotas page). A build that
+fails on the account's spend limit is `home_spend_limit` rather than the generic
+`home_build_failed`. `kirocrew start --home cloud` records no fallback region.
 
 ## The home's Kiro sign-in
 

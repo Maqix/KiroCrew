@@ -20,13 +20,30 @@ class TestTierCatalog:
     def test_default_is_arm64(self):
         assert sizes.default_tier().arch == sizes.ARCH_ARM64
 
-    def test_no_tier_below_working_set(self):
-        # 8 GB is below Kiro Crew's ~10 GB working set and is not offered.
+    def test_no_tier_below_the_measured_peak(self):
+        # 3 chats + a sub-agent peak at 3.7 GB and the dashboard build at 2.6 GB:
+        # 8 GB is the floor, and only the Free plan's Starter sits on it.
         for t in sizes.all_tiers():
-            assert t.ram_gb >= 16
-            assert t.disk_gb >= 40
-            assert t.vcpu >= 4
+            assert t.ram_gb >= 8
+            assert t.disk_gb >= 30
+            assert t.vcpu >= 2
             assert t.approx_usd_per_hr > 0
+
+    def test_small_is_the_paid_plans_cheapest_fit(self):
+        small = sizes.get_tier("small")
+        assert (small.instance_type, small.arch) == ("t4g.large", sizes.ARCH_ARM64)
+        assert (small.vcpu, small.ram_gb) == (2, 8)
+        assert small.free_plan_ok is False
+        # Cheaper than every other tier that fits the measured peak.
+        assert small.approx_usd_per_hr == min(t.approx_usd_per_hr for t in sizes.all_tiers())
+
+    def test_starter_is_the_free_plan_tier(self):
+        starter = sizes.get_tier("starter")
+        assert (starter.instance_type, starter.arch) == ("m7i-flex.large", sizes.ARCH_X86_64)
+        assert (starter.vcpu, starter.ram_gb) == (2, 8)
+        assert [t.key for t in sizes.all_tiers() if t.free_plan_ok] == ["starter"]
+        # Not in the CLI wizard's three-choice menu, which stays paid-plan sizes.
+        assert "starter" not in sizes.INTERACTIVE_TIER_KEYS
 
     def test_ladder_is_cpu_scaled(self):
         # Each arm tier doubles both RAM and vCPU so the sub-agent cap actually

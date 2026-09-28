@@ -273,3 +273,8 @@
 {"timestamp":"2026-09-28T19:16:07.818896385Z","action":"move","task_id":96,"detail":"todo -\u003e in-progress"}
 {"timestamp":"2026-09-28T19:16:07.819570347Z","action":"move","task_id":100,"detail":"todo -\u003e in-progress"}
 {"timestamp":"2026-09-28T19:39:39.755127297Z","action":"create","task_id":103,"detail":"PN.18 Lite (2 GB, ~$12) and Economy (4 GB, ~$25) homes"}
+{"timestamp":"2026-09-28T19:49:00.429020296Z","action":"edit","task_id":96,"detail":"PN.12 A new AWS account's home region, not a us-east-1 fallback"}
+{"timestamp":"2026-09-28T19:49:00.465285892Z","action":"edit","task_id":100,"detail":"PN.16 Home size options the owner chooses on the card (Free vs Paid plan)"}
+{"timestamp":"2026-09-28T19:49:30.133379348Z","action":"edit","task_id":96,"detail":"PN.12 A new AWS account's home region, not a us-east-1 fallback"}
+{"timestamp":"2026-09-28T19:49:46.351372487Z","action":"edit","task_id":100,"detail":"PN.16 Home size options the owner chooses on the card (Free vs Paid plan)"}
+{"timestamp":"2026-09-28T20:05:41.384088693Z","action":"edit","task_id":100,"detail":"PN.16 Home size options the owner chooses on the card (Free vs Paid plan)"}

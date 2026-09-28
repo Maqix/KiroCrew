@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -432,6 +433,14 @@ def _home_payload(settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, A
         except Exception:
             logger.warning("AWS reachability probe failed", exc_info=True)
             signed_in = False
+    plan: dict[str, Any] | None = None
+    if not simulated and signed_in:
+        # The account's own region (a new sign-up account works in one region
+        # only) and its AWS plan (the Free plan launches Starter only).
+        resolved, plan = _account_facts(settings["profile"], settings["region"])
+        if resolved:
+            settings = {**settings, "region": resolved}
+    options, default_size = sc.home_size_options(plan)
     payload = {
         "provider": {"id": "aws_ec2", "label": "Your AWS account"},
         "simulated": simulated,
@@ -449,7 +458,11 @@ def _home_payload(settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, A
         "aws_signed_in": signed_in,
         "aws_account": account,
         "sign_in_commands": ["aws login"],
+        "size_options": options,
+        "size_default": default_size,
     }
+    if plan is not None:
+        payload["plan"] = plan
     if not simulated and not signed_in:
         # A machine with no AWS sign-in may have no AWS account either: the card
         # links the sign-up (the Builder ID one when Kiro signs in with Builder
@@ -462,6 +475,48 @@ def _home_payload(settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, A
         payload["signup_builder_id"] = builder_id
         payload["aws_cli_installed"] = local_signin.aws_cli_present()
     return payload, {"settings": settings, "phase": "build"}
+
+
+def _account_facts(profile: str, preferred_region: str) -> tuple[str, dict[str, Any]]:
+    """The account's buildable region and its AWS plan, asked side by side (read-only)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from kiro_crew.cloud import local_signin
+
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="home-facts") as pool:
+        region = pool.submit(local_signin.resolve_home_region, profile, preferred_region)
+        plan = pool.submit(local_signin.account_plan, profile)
+        try:
+            resolved = region.result()
+        except Exception:
+            logger.warning("home region probe failed", exc_info=True)
+            resolved = ""
+        try:
+            found = plan.result()
+        except Exception:
+            logger.warning("AWS plan probe failed", exc_info=True)
+            found = {"type": local_signin.PLAN_UNKNOWN}
+    return resolved, found
+
+
+async def refresh_home_payload(card: sc.SetupCard) -> sc.SetupCard:
+    """Recompute a pending home card's payload once AWS answers for its profile.
+
+    After a sign-in from the card, the region, the plan and the size options are
+    known; the owner sees them, under a new hash, before Build. The card is
+    returned unchanged when it moved on or the recompute fails.
+    """
+    try:
+        settings = sc.build_home(dict(card.private.get("settings") or {}))
+        payload, private = await asyncio.to_thread(_home_payload, settings)
+        if card.payload.get(HOME_STEP_KEY):
+            payload[HOME_STEP_KEY] = True
+        return await asyncio.to_thread(
+            sc.replace_payload, card.id, payload, settings=private["settings"]
+        )
+    except Exception:
+        logger.warning("home card %s: payload refresh failed", card.id, exc_info=True)
+        return card
 
 
 # ── decide ──────────────────────────────────────────────────────────────────
@@ -1036,6 +1091,15 @@ async def _commit_home(
                 "`aws sso login` if you use IAM Identity Center), then press the button again",
                 "aws_not_signed_in",
             )
+    # The region and size the owner saw and chose: the payload is hash-bound,
+    # the private settings are not.
+    settings["region"] = str(card.payload.get("region") or settings["region"])
+    settings["size"] = await _chosen_home_size(card, input_, settings)
+
+    def _chosen(c: sc.SetupCard) -> None:
+        c.private["settings"] = dict(settings)
+
+    await asyncio.to_thread(sc.update_card, card.id, _chosen)
     if simulation_enabled() and getattr(state, "cloud_launch_engine", None) is None:
         state.cloud_launch_engine = SimulatedLaunchEngine()
     login_target = None if card.payload.get("simulated") else await _inherited_login_target()
@@ -1083,6 +1147,51 @@ async def _commit_home(
     return card
 
 
+async def _chosen_home_size(
+    card: sc.SetupCard, input_: dict[str, Any], settings: dict[str, Any]
+) -> str:
+    """The size the Build click chose, checked against what the card offered.
+
+    Refused: a size the card did not offer, a paid-plan size on the Free plan
+    (whose EC2 launches free-tier types only), and a size above the account's EC2
+    vCPU quota in the home's region (read-only, before anything is spent).
+    """
+    from kiro_crew.cloud import local_signin
+    from kiro_crew.cloud.sizes import get_tier
+
+    offered = [
+        str(o.get("key"))
+        for o in card.payload.get("size_options") or []
+        if isinstance(o, dict) and o.get("key")
+    ]
+    if not offered:
+        return str(settings.get("size") or sc.HOME_DEFAULT_SIZE)
+    size = str(input_.get("size") or card.payload.get("size_default") or offered[0])
+    if size not in offered:
+        raise sc.CardRejected("choose one of the sizes on the card", "home_size_not_offered")
+    tier = get_tier(size)
+    raw_plan = card.payload.get("plan")
+    plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
+    if plan.get("type") == local_signin.PLAN_FREE and not tier.free_plan_ok:
+        raise sc.CardRejected(
+            "this size needs the AWS paid plan, and this account is on the Free plan; "
+            "choose Starter, or upgrade the account on AWS first",
+            "home_size_needs_paid_plan",
+        )
+    if not card.payload.get("simulated"):
+        quota = await asyncio.to_thread(
+            local_signin.vcpu_quota, str(settings.get("profile") or ""), settings["region"]
+        )
+        if quota is not None and quota < tier.vcpu:
+            raise sc.CardRejected(
+                f"this AWS account may run {quota} vCPUs in {settings['region']}, and this "
+                f"size needs {tier.vcpu}; raise the quota in Service Quotas, or choose a "
+                "smaller size",
+                "home_vcpu_quota_low",
+            )
+    return size
+
+
 async def _inherited_login_target() -> Any:
     """The Kiro sign-in the home should use: the one this machine is signed in with.
 
@@ -1104,6 +1213,10 @@ async def _inherited_login_target() -> Any:
         return None
     target = target_from_whoami(identity)
     return None if target is None or target.is_default else target
+
+
+#: How AWS words a refusal from the account's spend limit, in a launch error.
+_SPEND_LIMIT_RE = re.compile(r"spend(?:ing)?[\s_-]*limit", re.IGNORECASE)
 
 
 def _home_outcome(job: Any, **extra: Any) -> dict[str, Any]:
@@ -1165,12 +1278,11 @@ async def _watch_home(
                 broadcast(state, card)
                 return
             if job.terminal:
-                card = await _finish(
-                    card,
-                    sc.STATUS_FAILED,
-                    outcome=outcome,
-                    error=("home_build_failed", str(job.error or "the home could not be built")),
+                message = str(job.error or "the home could not be built")
+                code = (
+                    "home_spend_limit" if _SPEND_LIMIT_RE.search(message) else "home_build_failed"
                 )
+                card = await _finish(card, sc.STATUS_FAILED, outcome=outcome, error=(code, message))
                 broadcast(state, card)
                 await _report(state, card)
                 return

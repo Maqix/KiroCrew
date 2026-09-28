@@ -122,3 +122,130 @@ def configured_region(profile: str = "") -> str:
     section = f"profile {profile}" if profile else "default"
     region = parser.get(section, "region", fallback="").strip()
     return region if _REGION_RE.match(region) else ""
+
+
+# ── the account a home is built in: its region, its plan, its vCPU quota ──────
+
+#: Where AWS's newest sign-up pins a new account, by the owner's country. Tried in
+#: this order when the profile's own region refuses.
+HOME_REGION_CANDIDATES: tuple[str, ...] = ("us-east-2", "eu-north-1", "ap-southeast-2")
+#: The Free plan's API answers in us-east-1 only.
+_PLAN_REGION = "us-east-1"
+#: EC2's "Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances" vCPU quota.
+VCPU_QUOTA_CODE = "L-1216C47A"
+#: Seconds any one of these read-only calls may take.
+_PROBE_TIMEOUT_SECS = 20
+PLAN_FREE = "FREE"
+PLAN_PAID = "PAID"
+PLAN_UNKNOWN = "unknown"
+
+
+def _denied(err: str) -> bool:
+    from kiro_crew.cloud import aws
+
+    return aws.is_access_denied(err) or "AuthFailure" in err or "OptInRequired" in err
+
+
+def resolve_home_region(profile: str, preferred: str = "") -> str:
+    """The region this account can build in, or ``""`` when none answers.
+
+    One read-only ``ec2 describe-availability-zones`` per region: *preferred*,
+    then the profile's own region, then :data:`HOME_REGION_CANDIDATES`. Only an
+    access refusal moves on to the next region (a new sign-up account refuses
+    every region but its own); any other failure means nothing is known.
+    """
+    from kiro_crew.cloud import aws
+
+    seen: list[str] = []
+    for region in (preferred, configured_region(profile), *HOME_REGION_CANDIDATES):
+        if not region or region in seen or not _REGION_RE.match(region):
+            continue
+        seen.append(region)
+        try:
+            rc, _out, err = aws.run_aws(
+                ["ec2", "describe-availability-zones", "--output", "json"],
+                profile,
+                region,
+                timeout=_PROBE_TIMEOUT_SECS,
+            )
+        except Exception:
+            return ""
+        if rc == 0:
+            return region
+        if not _denied(err):
+            return ""
+    return ""
+
+
+def account_plan(profile: str, region: str = _PLAN_REGION) -> dict[str, object]:
+    """The account's AWS plan: ``{type, credits_usd?, expires?}``. Read-only.
+
+    ``type`` is ``FREE``, ``PAID`` or ``unknown``. An account older than the
+    plans has no plan state (``ResourceNotFoundException``) and is PAID. This
+    never changes the plan: upgrading is the owner's, on AWS's own page.
+    """
+    from kiro_crew.cloud import aws
+
+    try:
+        rc, out, err = aws.run_aws(
+            ["freetier", "get-account-plan-state", "--output", "json"],
+            profile,
+            region or _PLAN_REGION,
+            timeout=_PROBE_TIMEOUT_SECS,
+        )
+    except Exception:
+        return {"type": PLAN_UNKNOWN}
+    if rc != 0:
+        if "ResourceNotFoundException" in err:
+            return {"type": PLAN_PAID}
+        if region and region != _PLAN_REGION:
+            return account_plan(profile, _PLAN_REGION)
+        return {"type": PLAN_UNKNOWN}
+    try:
+        state = json.loads(out or "{}")
+    except json.JSONDecodeError:
+        return {"type": PLAN_UNKNOWN}
+    kind = str(state.get("accountPlanType") or "").upper()
+    if kind not in (PLAN_FREE, PLAN_PAID):
+        return {"type": PLAN_UNKNOWN}
+    plan: dict[str, object] = {"type": kind}
+    credits = state.get("accountPlanRemainingCredits")
+    if isinstance(credits, dict) and str(credits.get("unit") or "").upper() == "USD":
+        amount = credits.get("amount")
+        if isinstance(amount, (int, float, str)):
+            try:
+                plan["credits_usd"] = round(float(amount), 2)
+            except ValueError:
+                pass
+    expires = state.get("accountPlanExpirationDate")
+    if isinstance(expires, str) and expires:
+        plan["expires"] = expires[:40]
+    return plan
+
+
+def vcpu_quota(profile: str, region: str) -> int | None:
+    """EC2's on-demand standard vCPU quota in *region*, or ``None`` when unknown."""
+    from kiro_crew.cloud import aws
+
+    try:
+        rc, out, _err = aws.run_aws(
+            [
+                "service-quotas",
+                "get-service-quota",
+                "--service-code",
+                "ec2",
+                "--quota-code",
+                VCPU_QUOTA_CODE,
+                "--output",
+                "json",
+            ],
+            profile,
+            region,
+            timeout=_PROBE_TIMEOUT_SECS,
+        )
+        if rc != 0:
+            return None
+        value = json.loads(out or "{}").get("Quota", {}).get("Value")
+        return int(float(value)) if value is not None else None
+    except Exception:
+        return None

@@ -637,6 +637,14 @@ class TestHomeChoice:
             "profile": "work",
         }
 
+    def test_a_cloud_choice_with_no_region_records_none(self, tmp_path, monkeypatch):
+        # A new AWS account works in its own region only; the home card finds it.
+        from kiro_crew import first_run
+
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-config"))
+        cli_start._choose_home(self._args(home="cloud"))
+        assert first_run.read_state()["home"] == {"choice": "cloud"}
+
     def test_an_explicit_here_choice_is_recorded(self):
         from kiro_crew import first_run
 

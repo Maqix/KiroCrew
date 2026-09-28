@@ -47,6 +47,11 @@ const ERROR_KEY = {
   launch_job_not_found: 'components.setupCard.error_home_signin_unavailable',
   launch_has_no_instance: 'components.setupCard.error_home_signin_unavailable',
   login_target_unreadable: 'components.setupCard.error_login_target_unreadable',
+  // The home's size and the account it is built in (setup_flow._chosen_home_size).
+  home_size_not_offered: 'components.setupCard.error_home_size_not_offered',
+  home_size_needs_paid_plan: 'components.setupCard.error_home_size_needs_paid_plan',
+  home_vcpu_quota_low: 'components.setupCard.error_home_vcpu_quota_low',
+  home_spend_limit: 'components.setupCard.error_home_spend_limit',
   // The live move-in's refusals (dashboard/setup_move_in.py). Each leaves the
   // card pending; the failed step's own detail on the card keeps the server's
   // specifics (the tunnel error, the home's refusal code).

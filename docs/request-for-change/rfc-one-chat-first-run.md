@@ -582,10 +582,19 @@ first run any longer. Five rules shape it:
    named for users who already sign in that way: it needs an organization, and
    creating one ends a new account's Free plan. Kiro Crew never stores or sees
    AWS credentials (SC4); the aws CLI resolves them from the user's profile
-   exactly as `src/kiro_crew/cloud/` does today. The region comes from the
-   profile, because accounts made through AWS's newest sign-up are pinned to one
-   region by country. The home card states the instance size, the region and an
-   estimated monthly cost, and building needs the owner's click on it. A user
+   exactly as `src/kiro_crew/cloud/` does today. Accounts made through AWS's
+   newest sign-up are pinned to one region by country, so once AWS answers the
+   card finds the account's own region with one read-only
+   `ec2 describe-availability-zones` per region: the profile's region first,
+   then us-east-2, eu-north-1 and ap-southeast-2, taking the first that answers;
+   there is no us-east-1 fallback. It also reads the account's plan (read-only
+   `freetier get-account-plan-state`: FREE or PAID, the Free plan's remaining
+   credits; an account older than the plans is PAID) and never changes it. The
+   home card states the size options with what each runs, costs and needs, the
+   region and an estimated monthly cost; the owner picks the size, and building
+   needs their click. The Free plan's EC2 launches free-tier types only, so on
+   it only Starter builds, and a paid-plan size is refused with AWS's upgrade
+   page; the EC2 vCPU quota is read before the launch. A user
    without an AWS account asks for a home and the card walks them through the
    signup: "Create an AWS account" opens AWS's own sign-up page in a new tab
    (never framed or proxied, so Kiro Crew collects nothing), and when this
@@ -647,8 +656,12 @@ first run any longer. Five rules shape it:
 
 Plain words, honest numbers: the non-technical path says "a home in the cloud"
 rather than naming instance types, but the cost card always names who bills the
-user and roughly how much. A smaller "starter" size than today's cheapest tier
-is measured before it is offered (Q8).
+user and roughly how much. The sizes on the card come from measurement (Q8) and
+lead with the cheapest: on the paid plan Small (`t4g.large`, 8 GB, about
+$51/month), preselected, then Standard (`t4g.xlarge`, 16 GB, about $101/month);
+on a new account's Free plan Starter (`m7i-flex.large`, 8 GB, about $72/month,
+paid from its credits), the one size that plan runs, with Standard marked as
+needing the paid plan.
 
 A simulated launch engine walks the same progress steps without AWS, so the
 experience can be reviewed and tested before anyone spends money; it is labelled
@@ -1019,11 +1032,23 @@ with one-step promotion) belong beside it.
   build is given a 6 GB heap. A home installed from the prebuilt wheel `cli.sh`
   ships would not build anything, so the smallest tier depends on the home
   installing the release artifact rather than building from source.
+  *Measured with a real kiro-cli (2026-09-28):* the idle gateway is 1.3 GB, each
+  open chat adds about 0.5 GB and stays alive after its last turn, three chats
+  plus a sub-agent peak at 3.7 GB, and the on-box dashboard build peaks at
+  2.6 GB. *Answer:* 8 GB. On the paid plan the card leads with Small,
+  `t4g.large` (arm64, 2 vCPU, 8 GB, about $49/month plus disk in us-east-1); on
+  the Free plan with Starter, `m7i-flex.large` (x86_64, 2 vCPU, 8 GB, about
+  $70–87/month by region), the smallest type that plan allows that fits;
+  Standard, `t4g.xlarge` (16 GB), is on both. No 2 GB size is offered yet: a
+  "Lite" `t4g.small` (Free-plan eligible, about $12/month) waits on a spike into a
+  slimmed home, and joins as data (a tier and its plan lists) if it fits.
 - **Q10.** Honest free-plan wording. A new account's Free plan (up to $200 in
   credits, no charge unless upgraded, closes after six months) covers only
   small instances such as `t4g.small` (~$18/month); today's smallest home tier
   is not eligible (~$101/month on the paid plan). "Free for six months" is true
-  only if Q8's measurement finds a 2 GB home workable.
+  only if Q8's measurement finds a 2 GB home workable. *Answer:* it does not, so
+  the card says Starter is paid from the Free plan's credits and names about how
+  many weeks the remaining credits cover, never "free".
 - **Q9.** AWS account creation cannot be automated. How much of the signup can
   the Egg smooth (a direct link, a checklist, resuming after signup), and at
   what point does the managed provider (§10.7) replace it?

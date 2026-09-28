@@ -33,6 +33,10 @@ def whoami(monkeypatch):
 
     monkeypatch.setattr(login_target, "discover_local_identity", _discover)
     monkeypatch.setattr(local_signin, "aws_cli_present", lambda: True)
+    # A signed-in card asks AWS for its region and plan; never the real one.
+    monkeypatch.setattr(
+        setup_flow, "_account_facts", lambda profile, region: ("", {"type": "PAID"})
+    )
     return world
 
 

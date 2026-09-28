@@ -110,6 +110,11 @@ def _no_aws_sign_in(monkeypatch):
     monkeypatch.setattr(local_signin, "detect", lambda profile="", **kw: None)
     monkeypatch.setattr(local_signin, "configured_region", lambda profile="": "")
     monkeypatch.setattr(local_signin, "kiro_signs_in_with_builder_id", lambda: False)
+    monkeypatch.setattr(local_signin, "resolve_home_region", lambda profile, preferred="": "")
+    monkeypatch.setattr(
+        local_signin, "account_plan", lambda profile, region="": {"type": "unknown"}
+    )
+    monkeypatch.setattr(local_signin, "vcpu_quota", lambda profile, region: None)
     # The home step after privacy probes AWS for its card; never the real one.
     from kiro_crew.cloud import iam
 

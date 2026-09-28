@@ -371,6 +371,32 @@ def update_card(card_id: str, mutate: Callable[[SetupCard], None]) -> SetupCard:
     raise CardRejected("setup card not found", "card_not_found")
 
 
+def replace_payload(
+    card_id: str, payload: dict[str, Any], *, settings: dict[str, Any] | None = None
+) -> SetupCard:
+    """Show a PENDING card a new payload, under a new hash; returns the card.
+
+    The one sanctioned change to what a card shows, for facts the gateway only
+    learns later (the home card's region, plan and sizes after the owner signs in
+    to AWS from it). A click carrying the old hash is refused as
+    ``card_hash_mismatch``, so nothing commits against a face the owner no
+    longer sees. *settings* replaces ``private["settings"]`` in the same write.
+    """
+    with _locked() as cards:
+        for card in cards:
+            if card.id != card_id:
+                continue
+            if card.status != STATUS_PENDING:
+                raise CardRejected("this card is not waiting for a decision", "card_not_pending")
+            card.payload = dict(payload)
+            card.payload_hash = payload_hash(card.kind, card.payload)
+            if settings is not None:
+                card.private["settings"] = dict(settings)
+            _write_all(_store_path(), cards)
+            return card
+    raise CardRejected("setup card not found", "card_not_found")
+
+
 def claim_pending(card_id: str, card_hash: str, *, to_status: str = STATUS_WORKING) -> SetupCard:
     """Move a PENDING card whose hash matches *card_hash* to *to_status*.
 
@@ -625,6 +651,24 @@ def build_channel(args: dict[str, Any]) -> dict[str, Any]:
 
 #: The home size offered by default: the cheapest tier the launch engine runs.
 HOME_DEFAULT_SIZE = "light"
+#: What a home card says about each size it can offer: a plain label, and a note
+#: code for what the size runs well (the dashboard words each code).
+HOME_SIZE_OFFERS: dict[str, dict[str, str]] = {
+    "starter": {"label": "Starter", "note": "free_plan_credits"},
+    "small": {"label": "Small", "note": "few_chats"},
+    "light": {"label": "Standard", "note": "many_chats"},
+}
+#: The sizes each AWS plan is offered, and the one preselected. A Free-plan size
+#: (``free_plan_ok``) joins the paid plan's list only when it is no dearer than
+#: the paid plan's default. A plan not known yet (not signed in, or unreadable)
+#: gets the Free plan's list: a new account starts on it, and Starter builds on
+#: every plan. Adding a size is a tier in ``cloud/sizes.py`` plus an entry here.
+HOME_PLAN_SIZES: dict[str, tuple[tuple[str, ...], str]] = {
+    "FREE": (("starter", "light"), "starter"),
+    "PAID": (("small", "light", "starter"), "small"),
+}
+_HOME_PLAN_NOT_KNOWN = "FREE"
+_WEEKS_PER_MONTH = 52 / 12
 #: The region a home is built in when neither the card nor the AWS profile names one.
 HOME_DEFAULT_REGION = "us-east-1"
 #: Hours in an average month, for turning an hourly price into a monthly one.
@@ -660,6 +704,44 @@ def monthly_estimate_usd(size_key: str) -> int:
     tier = get_tier(size_key)
     monthly = tier.approx_usd_per_hr * _HOURS_PER_MONTH + tier.disk_gb * _GP3_USD_PER_GB_MONTH
     return int(round(monthly))
+
+
+def home_size_options(plan: dict[str, Any] | None) -> tuple[list[dict[str, Any]], str]:
+    """The size options a home card offers, cheapest first, and the one preselected.
+
+    *plan* is the account's AWS plan (``cloud.local_signin.account_plan``), or
+    ``None`` when not signed in; which sizes each plan gets is
+    :data:`HOME_PLAN_SIZES`. A Free-plan size also carries how many weeks the
+    plan's remaining credits pay for it.
+    """
+    from kiro_crew.cloud.sizes import get_tier
+
+    plan_type = str((plan or {}).get("type") or "")
+    keys, default = HOME_PLAN_SIZES.get(plan_type, HOME_PLAN_SIZES[_HOME_PLAN_NOT_KNOWN])
+    credits = (plan or {}).get("credits_usd")
+    ceiling = monthly_estimate_usd(default)
+    options: list[dict[str, Any]] = []
+    for key in keys:
+        tier = get_tier(key)
+        monthly = monthly_estimate_usd(key)
+        if plan_type == "PAID" and tier.free_plan_ok and key != default and monthly > ceiling:
+            continue
+        option: dict[str, Any] = {
+            "key": key,
+            "label": HOME_SIZE_OFFERS[key]["label"],
+            "note": HOME_SIZE_OFFERS[key]["note"],
+            "instance_type": tier.instance_type,
+            "vcpu": tier.vcpu,
+            "ram_gb": tier.ram_gb,
+            "monthly_usd": monthly,
+            "free_plan_ok": tier.free_plan_ok,
+        }
+        if tier.free_plan_ok and isinstance(credits, (int, float)) and credits > 0 and monthly:
+            option["credits_usd"] = credits
+            option["credit_weeks"] = max(1, int(credits / (monthly / _WEEKS_PER_MONTH)))
+        options.append(option)
+    options.sort(key=lambda o: (o["monthly_usd"], o["key"]))
+    return options, default
 
 
 def validate_slug(slug: Any) -> str:

@@ -60,7 +60,10 @@ minutes.
    in from that card creates the profile. When a user with no AWS account asks
    for a home later, propose `kind: "home"`: its card walks them through
    creating the account and signing in. Say that creating the account is free
-   and that the home then costs the monthly estimate the card states.
+   and that the home then costs the monthly estimate the card states. The card
+   lists the sizes the user can pick from. When they ask which size, explain the
+   card's options in plain words (what each runs well, what it costs, whether it
+   needs AWS's paid plan) and let them choose on the card; never pick for them.
 6. **Save who you are, lightly.** Once the name and language are known, propose
    `kind: "profile"` (name, language, timezone, technical level). Write
    `kind: "soul"` (`file: "SOUL"`) only with things the user actually said:
@@ -194,6 +197,6 @@ What they are working on and what they want from it.
 | `credential` | `name`, `purpose`, `hosts?` |
 | `cron` | `name`, `prompt`, `cron_expr` (5 fields) or `every_secs` (≥ 3600), `timezone?` |
 | `service` | — |
-| `home` | `region?` (default us-east-1), `profile?`, `size?` (default light) |
+| `home` | `region?` (the card finds the account's own region), `profile?`; the user picks the size on the card |
 
 `setup_status` lists this session's cards and their status.

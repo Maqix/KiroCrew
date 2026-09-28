@@ -49,8 +49,9 @@ if TYPE_CHECKING:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-#: How long the card waits for the owner to finish the browser sign-in.
-SIGNIN_WAIT_SECS = 300
+#: How long the card waits for the owner to finish the browser sign-in: the AWS
+#: CLI's own wait, which also leaves time to create an account first.
+SIGNIN_WAIT_SECS = 600
 #: How often the watcher checks the child and asks AWS who the profile is.
 _POLL_SECS = 4.0
 #: A waiting card this long past its ``expires_ts`` has no watcher left (the
@@ -358,7 +359,8 @@ async def _start(
     base = _base(card)
     account = await asyncio.to_thread(_signed_in_account, profile)
     if account is not None:
-        return await sf._finish(card, sc.STATUS_PENDING, outcome=_signed_in_outcome(base, account))
+        card = await sf._finish(card, sc.STATUS_PENDING, outcome=_signed_in_outcome(base, account))
+        return await sf.refresh_home_payload(card)
     if not await asyncio.to_thread(browser_is_here, same_machine):
         return await sf._finish(
             card,
@@ -515,6 +517,9 @@ async def _watch(
         return
     card = await _settle(signin.card_id, signin.run, *verdict)
     if card is not None:
+        if verdict[1] is None:
+            # Signed in: the card now shows the account's region, plan and sizes.
+            card = await sf.refresh_home_payload(card)
         sf.broadcast(state, card)
         outcome = verdict[1][0] if verdict[1] else "signed_in"
         sf._audit("setup_card.aws_signin", outcome, card.session_key, f"kind:home card:{card.id}")

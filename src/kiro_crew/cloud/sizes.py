@@ -1,8 +1,16 @@
 """Instance size tiers for the cloud launcher (constants — no magic numbers).
 
-Kiro Crew uses ~10 GB RAM with spikes beyond that (see
-``docs/guides/remote-and-mobile.md``), so every tier is **≥16 GB RAM** — 8 GB is
-below the working set and gets OOM-killed under load, so it is not offered.
+Measured with a real kiro-cli: an idle gateway is about 1.3 GB, each
+open chat adds about 0.5 GB and stays alive after its last turn, three chats plus
+a sub-agent peak at 3.7 GB, and the on-box dashboard build peaks at 2.6 GB. So
+8 GB carries the main chat, a few other chats and scheduled jobs, and 2 GB does
+not carry the build: nothing below 8 GB is offered.
+
+**Small** (``t4g.large``, arm64, 2 vCPU, 8 GB) is the cheapest tier that fits, on
+the paid plan. **Starter** is the one tier a new AWS account's Free plan allows:
+its EC2 runs free-tier types only, and ``m7i-flex.large`` (x86_64, 2 vCPU, 8 GB)
+is the smallest of those that fits (``free_plan_ok``). Which tiers a home card
+offers on which plan is data in ``setup_cards.HOME_PLAN_SIZES``.
 
 The tiers are laddered by **how much runs at once**, not by GB: the sub-agent
 concurrency cap is CPU-bound (``subagent.py`` derives it from vCPU), so RAM alone
@@ -46,6 +54,8 @@ class SizeTier:
     disk_gb: int  # gp3 root volume size
     approx_usd_per_hr: float  # illustrative on-demand price
     recommended: bool = False
+    #: Launchable on a new AWS account's Free plan, whose EC2 allows free-tier types only.
+    free_plan_ok: bool = False
 
     def summary(self) -> str:
         """One-line human summary for menus and confirmations."""
@@ -62,6 +72,30 @@ class SizeTier:
 # — the ladder was raised (8 GB retired) but the keys did not change, so existing
 # --size values and saved configs keep resolving.
 _TIERS: tuple[SizeTier, ...] = (
+    # The Free plan's tier: x86_64 (the template's Architecture=x86_64 AMI path),
+    # priced at us-east-1 / us-east-2 on-demand; other regions run up to ~$87/mo.
+    SizeTier(
+        key="starter",
+        label="Starter",
+        instance_type="m7i-flex.large",
+        arch=ARCH_X86_64,
+        vcpu=2,
+        ram_gb=8,
+        disk_gb=30,
+        approx_usd_per_hr=0.0958,
+        free_plan_ok=True,
+    ),
+    # The paid plan's cheapest tier that fits: 8 GB on burstable Graviton.
+    SizeTier(
+        key="small",
+        label="Small",
+        instance_type="t4g.large",
+        arch=ARCH_ARM64,
+        vcpu=2,
+        ram_gb=8,
+        disk_gb=30,
+        approx_usd_per_hr=0.0672,
+    ),
     SizeTier(
         key="light",
         label="Light",

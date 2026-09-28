@@ -81,6 +81,13 @@ def _card(monkeypatch, *, phase: str = "build", status: str = sc.STATUS_WAITING,
     from kiro_crew.cloud import iam
 
     monkeypatch.setattr(iam, "reachability_check", lambda p, r: {"reachable": True})
+    # A signed-in card asks AWS for its region, plan and quota; never the real one.
+    monkeypatch.setattr(
+        setup_flow, "_account_facts", lambda profile, region: ("", {"type": "PAID"})
+    )
+    from kiro_crew.cloud import local_signin
+
+    monkeypatch.setattr(local_signin, "vcpu_quota", lambda profile, region: None)
     payload, priv = setup_flow._home_payload(sc.build_home({"region": "eu-west-1"}))
     priv.update({"phase": phase, "job_id": "job-1", **private})
     card = sc.create_card(

@@ -1,19 +1,29 @@
 ---
 id: 96
 title: PN.12 A new AWS account's home region, not a us-east-1 fallback
-status: in-progress
+status: review
 priority: high
 created: 2026-09-28T16:57:27.010360044Z
-updated: 2026-09-28T19:16:07.818661601Z
+updated: 2026-09-28T19:49:30.133157748Z
 tags:
     - parallel-nest
     - aws
     - home
 claimed_by: aws-signin-card
-claimed_at: 2026-09-28T19:16:07.818661519Z
+claimed_at: 2026-09-28T19:49:30.133157335Z
 class: standard
 ---
 
 Finding from the AWS-signup research session (2026-09-28): accounts made through AWS's newest sign-up (Builder ID or social login) are pinned to one region chosen by country (e.g. us-east-2, eu-north-1, ap-southeast-2). When the AWS profile names no region, the home card falls back to setup_cards.HOME_DEFAULT_REGION (us-east-1), which fails for those accounts. Fix: resolve the account's own region before offering or building (how: pending the research's confirmation of a read-only way to learn it), and state it on the card. Related: a brand-new signup takes longer than the 300 s aws login wait (SIGNIN_WAIT_SECS); the card needs a 'creating your account' state with no timer. Blocked on the research report; do not change code yet.
 
 Research 2026-09-28 (public AWS docs; live checks need a real new-signup account): the account's home region is one of us-east-2 / eu-north-1 / ap-southeast-2; EC2, CloudFormation, SSM and S3 work only there, while IAM and sign-in are global. aws login probably does not write the region, and list-regions likely shows every default region as enabled. Plan: probe read-only with ec2 describe-availability-zones — the profile's region first, then the three candidates — and take the first that answers. If none answers, ask the owner. After a sign-in from the card, update the card's region and hash so the owner sees it before Build. Also: SIGNIN_WAIT_SECS 300 → 600 (the AWS CLI waits 600 s); read the EC2 vCPU quota (L-1216C47A) before launching; map spend-limit refusals to a clear error; the cost line should say the new-account credit covers about a month.
+
+Result (in review, uncommitted):
+- `cloud/local_signin.resolve_home_region(profile, preferred)` runs one read-only `ec2 describe-availability-zones` per region: preferred, then the profile's, then us-east-2, eu-north-1, ap-southeast-2. It moves on only after an access refusal, and returns "" when nothing answers.
+- `_home_payload` (signed in) puts the resolved region on the card and in the build's settings. `_commit_home` builds in the payload's (hash-bound) region.
+- After a sign-in from the card, `setup_flow.refresh_home_payload` recomputes region, plan and sizes under a new hash (`setup_cards.replace_payload`, pending cards only) and broadcasts, so the owner sees them before Build.
+- SIGNIN_WAIT_SECS is now 600. `kirocrew start --home cloud` records no us-east-1 fallback.
+- The vCPU quota (L-1216C47A) is read before launch (`home_vcpu_quota_low`), and spend-limit failures map to `home_spend_limit`. Both are on PN.16 (#100).
+- Tests: test/test_home_sizes.py (region order, refresh + rehash), plus a test_cli_start test for no fallback region.
+
+Unverified: which error a region-locked account actually returns in other regions (treated as access refusal: AccessDenied / UnauthorizedOperation / AuthFailure / OptInRequired). When no region answers, the card keeps its region and does not yet ask the owner.

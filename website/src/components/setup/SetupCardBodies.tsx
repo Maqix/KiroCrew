@@ -699,6 +699,8 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
   // The owner opened the AWS sign-up in another tab. Local and untimed: only
   // they know when the account exists, so the card waits for their click.
   const [creatingAccount, setCreatingAccount] = useState(false)
+  // The size the owner picked; until they pick, the one the gateway suggests.
+  const [pickedSize, setPickedSize] = useState<string | null>(null)
   const p = card.payload ?? {}
   const o = card.outcome ?? {}
   const size = (p.size ?? {}) as Record<string, unknown>
@@ -848,7 +850,13 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
   }
 
   // Not built yet: everything the owner is agreeing to, then the build button.
-  const monthly = typeof p.monthly_usd === 'number' ? p.monthly_usd : null
+  const sizeOptions = readSizeOptions(p.size_options)
+  const selected = sizeOptions.find(opt => opt.key === pickedSize)
+    ?? sizeOptions.find(opt => opt.key === str(p.size_default))
+    ?? sizeOptions[0]
+  const plan = (p.plan ?? null) as Record<string, unknown> | null
+  const build = () => (selected ? run('commit', { size: selected.key }) : run('commit'))
+  const monthly = selected ? selected.monthly_usd : typeof p.monthly_usd === 'number' ? p.monthly_usd : null
   const vcpu = typeof size.vcpu === 'number' ? size.vcpu : null
   const ram = typeof size.ram_gb === 'number' ? size.ram_gb : null
   const account = str(o.aws_account) || str(p.aws_account)
@@ -861,7 +869,7 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
   const creating = creatingAccount && !!signupUrl
   const cliMissing = !signedIn && p.aws_cli_installed === false
   const primary = signedIn
-    ? { label: t('components.setupCard.home_build'), onClick: () => run('commit') }
+    ? { label: t('components.setupCard.home_build'), onClick: build }
     : creating
       ? {
           label: t('components.setupCard.home_aws_signup_done'),
@@ -871,7 +879,7 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
           },
         }
       : remoteCommand
-        ? { label: t('components.setupCard.home_build_signed_in'), onClick: () => run('commit') }
+        ? { label: t('components.setupCard.home_build_signed_in'), onClick: build }
         : { label: t('components.setupCard.home_aws_signin'), onClick: () => run('aws_signin') }
   // The first run's own "Where should your crew live?" step: declining it keeps
   // the crew on this machine, so the decline says so.
@@ -890,8 +898,19 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
           })}
         </p>
       )}
+      {sizeOptions.length > 0 && selected && (
+        <HomeSizeOptions
+          name={`home-size-${card.id}`}
+          options={sizeOptions}
+          selected={selected.key}
+          onPick={setPickedSize}
+          planType={plan ? str(plan.type) : ''}
+          signedIn={signedIn}
+          errorCode={card.status === 'pending' ? str(card.error?.code) : ''}
+        />
+      )}
       <dl className="mt-2 grid grid-cols-1 sm:grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[13px]">
-        {(str(size.label) || str(size.instance_type)) && (
+        {sizeOptions.length === 0 && (str(size.label) || str(size.instance_type)) && (
           <div className="contents">
             <dt className="text-muted">{t('components.setupCard.home_size_label')}</dt>
             <dd className="text-text min-w-0 break-words mb-1 sm:mb-0" data-testid="setup-card-home-size">
@@ -972,6 +991,167 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
         ? { primary, secondary: { label: t('components.setupCard.home_aws_signup_back'), onClick: () => setCreatingAccount(false) }, declineLabel }
         : { primary, declineLabel })}
     </>
+  )
+}
+
+interface HomeSizeOption {
+  key: string
+  label: string
+  /** What the size runs well, as a code the card words (`setup_cards.HOME_SIZE_OFFERS`). */
+  note: string
+  instance_type: string
+  vcpu: number
+  ram_gb: number
+  monthly_usd: number
+  free_plan_ok: boolean
+  credit_weeks: number | null
+  credits_usd: number | null
+}
+
+/** The size options the gateway offered (`setup_cards.home_size_options`). */
+function readSizeOptions(raw: unknown): HomeSizeOption[] {
+  if (!Array.isArray(raw)) return []
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  return raw.flatMap((o): HomeSizeOption[] => {
+    if (!o || typeof o !== 'object') return []
+    const opt = o as Record<string, unknown>
+    const key = str(opt.key)
+    const monthly = num(opt.monthly_usd)
+    if (!key || monthly === null) return []
+    return [{
+      key,
+      label: str(opt.label),
+      note: str(opt.note),
+      instance_type: str(opt.instance_type),
+      vcpu: num(opt.vcpu) ?? 0,
+      ram_gb: num(opt.ram_gb) ?? 0,
+      monthly_usd: monthly,
+      free_plan_ok: opt.free_plan_ok === true,
+      credit_weeks: num(opt.credit_weeks),
+      credits_usd: num(opt.credits_usd),
+    }]
+  })
+}
+
+/** AWS's public page on the Free and paid plans, where the upgrade is. A URL, not copy. */
+export const AWS_PLAN_UPGRADE_URL = 'https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/free-tier-plans.html'
+/** The Service Quotas page for EC2's on-demand vCPU quota (L-1216C47A). A URL, not copy. */
+export const AWS_VCPU_QUOTA_URL = 'https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A'
+
+const HOME_SIZE_LABEL_KEY: Record<string, string> = {
+  starter: 'components.setupCard.home_size_starter',
+  small: 'components.setupCard.home_size_small',
+  light: 'components.setupCard.home_size_standard',
+}
+
+/**
+ * The home's size, chosen by the owner: one radio per option with what it runs,
+ * its monthly cost, and whether it needs AWS's paid plan. The paid-plan mark
+ * shows unless the account is known to be on the paid plan; the upgrade link
+ * shows when it is known to be on the Free plan.
+ */
+function HomeSizeOptions({ name, options, selected, onPick, planType, signedIn, errorCode }: {
+  name: string
+  options: HomeSizeOption[]
+  selected: string
+  onPick: (key: string) => void
+  planType: string
+  signedIn: boolean
+  errorCode: string
+}) {
+  const { t } = useTranslation()
+  const legendId = useId()
+  const link = 'inline-flex items-center gap-1 text-accent underline underline-offset-2 hover:text-text'
+  const note = (opt: HomeSizeOption): string => {
+    if (opt.note === 'free_plan_credits') {
+      return opt.credit_weeks !== null && opt.credits_usd !== null
+        ? t('components.setupCard.home_size_starter_note_credits', {
+          time: fmtUnit(opt.credit_weeks, 'week', { unitDisplay: 'long' }),
+          credits: fmtCurrency(opt.credits_usd, 'USD', { maximumFractionDigits: 0 }),
+        })
+        : t('components.setupCard.home_size_starter_note')
+    }
+    if (opt.note === 'few_chats') return t('components.setupCard.home_size_note_few_chats')
+    if (opt.note === 'many_chats') return t('components.setupCard.home_size_standard_note')
+    return ''
+  }
+  return (
+    <fieldset className="mt-3 min-w-0" aria-labelledby={legendId} data-testid="setup-card-home-sizes">
+      <legend id={legendId} className="text-[13px] text-muted">{t('components.setupCard.home_size_label')}</legend>
+      <div className="mt-1.5 flex flex-col gap-1.5 min-w-0">
+        {options.map(opt => {
+          const checked = opt.key === selected
+          const needsPaid = !opt.free_plan_ok && planType !== 'PAID'
+          const text = note(opt)
+          const label = HOME_SIZE_LABEL_KEY[opt.key] ? t(HOME_SIZE_LABEL_KEY[opt.key]) : opt.label
+          return (
+            <label
+              key={opt.key}
+              className={`flex items-start gap-2 rounded-md border px-3 py-2 text-[13px] cursor-pointer min-w-0 ${checked ? 'border-accent bg-bg' : 'border-border'}`}
+              data-testid={`setup-card-home-size-${opt.key}`}
+              data-checked={checked}
+            >
+              <input
+                type="radio"
+                name={name}
+                className="mt-0.5 shrink-0"
+                checked={checked}
+                aria-label={label}
+                onChange={() => onPick(opt.key)}
+              />
+              <span className="min-w-0 break-words">
+                <span className="block font-medium text-text">
+                  {t('components.setupCard.home_size_option_heading', {
+                    label,
+                    amount: fmtCurrency(opt.monthly_usd, 'USD', { maximumFractionDigits: 0 }),
+                  })}
+                </span>
+                {text && <span className="block text-text">{text}</span>}
+                <span className="block text-[12px] text-muted">
+                  {t('components.setupCard.home_size_option_spec', {
+                    instanceType: opt.instance_type,
+                    vcpu: fmtNumber(opt.vcpu),
+                    ram: fmtUnit(opt.ram_gb, 'gigabyte'),
+                  })}
+                </span>
+                {needsPaid && (
+                  <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[12px] text-warn" data-testid={`setup-card-home-size-${opt.key}-paid`}>
+                    {t('components.setupCard.home_size_needs_paid')}
+                    {planType === 'FREE' && (
+                      <a href={AWS_PLAN_UPGRADE_URL} target="_blank" rel="noopener noreferrer" className={link} data-testid="setup-card-home-upgrade">
+                        {t('components.setupCard.home_size_upgrade')}
+                        <ExternalLink className="lucide-inline" aria-hidden="true" />
+                      </a>
+                    )}
+                  </span>
+                )}
+              </span>
+            </label>
+          )
+        })}
+      </div>
+      {!signedIn && (
+        <p className="mt-1.5 text-[12px] text-muted" data-testid="setup-card-home-free-plan-note">
+          {t('components.setupCard.home_size_free_plan_note')}
+        </p>
+      )}
+      {errorCode === 'home_size_needs_paid_plan' && (
+        <p className="mt-1.5 text-[13px]">
+          <a href={AWS_PLAN_UPGRADE_URL} target="_blank" rel="noopener noreferrer" className={link} data-testid="setup-card-home-upgrade-after-error">
+            {t('components.setupCard.home_size_upgrade')}
+            <ExternalLink className="lucide-inline" aria-hidden="true" />
+          </a>
+        </p>
+      )}
+      {errorCode === 'home_vcpu_quota_low' && (
+        <p className="mt-1.5 text-[13px]">
+          <a href={AWS_VCPU_QUOTA_URL} target="_blank" rel="noopener noreferrer" className={link} data-testid="setup-card-home-quota">
+            {t('components.setupCard.home_vcpu_quota_open')}
+            <ExternalLink className="lucide-inline" aria-hidden="true" />
+          </a>
+        </p>
+      )}
+    </fieldset>
   )
 }
 

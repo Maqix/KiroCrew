@@ -175,7 +175,9 @@ def _choose_home(args: argparse.Namespace) -> None:
     profile = getattr(args, "aws_profile", "") or ""
     region = ""
     if choice == "cloud":
-        region = getattr(args, "aws_region", "") or configured_region(profile) or "us-east-1"
+        # No fallback region: a new AWS account works in its own region only, and
+        # the home card finds it once AWS answers (``local_signin.resolve_home_region``).
+        region = getattr(args, "aws_region", "") or configured_region(profile)
         print("   Your home in the cloud will be on its card in the chat; building starts there.")
     first_run.record_home_choice(choice, region=region, profile=profile)
 
