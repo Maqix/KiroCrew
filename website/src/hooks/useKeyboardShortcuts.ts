@@ -750,6 +750,15 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     return () => document.removeEventListener('keyup', onKeyUp)
   }, [])
 
+  // Desktop View > Back/Forward. Not gated on the shortcuts toggle: a menu
+  // click is not a keystroke, so turning shortcuts off must not disable it.
+  useEffect(() => {
+    return window.electronAPI?.onHistoryStep?.(delta => {
+      if (delta === -1 && canGoBack()) guardedHistoryStep(-1)
+      else if (delta === 1 && canGoForward()) guardedHistoryStep(1)
+    })
+  }, [guardedHistoryStep])
+
   // Cancel the stray character a macOS dead-key Alt shortcut would otherwise
   // insert (e.g. Alt+` switching the slot AND typing a backtick). Capture phase
   // so it runs before the focused field handles the input. No-op on
@@ -963,11 +972,11 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         // and claimed on a NARROW viewport as a deliberate no-op: on macOS
         // browsers ⌘←/⌘→ is ALSO native history back/forward, so an unclaimed
         // press would pop past the draft guard whenever its trap is unarmed
-        // (post-reload) and unmount a dirty editor — the arrows are hidden
-        // there (drill-ins navigate by component state), and a keystroke that
-        // walked a stack the visible UI does not reflect is the same wrong in
-        // native form. Only the text-field gate unclaims (see the hit-null
-        // above): the field consumes the caret chord and never navigates.
+        // (post-reload) and unmount a dirty editor — and drill-ins there
+        // navigate by component state, so a keystroke that walked the stack
+        // would move somewhere the visible UI does not reflect. Only the
+        // text-field gate unclaims (see the hit-null above): the field
+        // consumes the caret chord and never navigates.
         'history-back': () => { if (!isNarrowViewport() && canGoBack()) guardedHistoryStep(-1) },
         'history-forward': () => { if (!isNarrowViewport() && canGoForward()) guardedHistoryStep(1) },
         'cycle-agent': () => onCycleAgent?.(),
