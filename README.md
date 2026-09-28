@@ -70,16 +70,24 @@ semantics.
 
 ### One-line install
 
-Install the signed Stable wheel without cloning the repository or building the
-frontend:
+Install the signed Stable wheel, start Kiro Crew and open its chat in your
+browser, without cloning the repository or building the frontend:
+
+```bash
+curl -fsSL https://download.crew.kiro.dev/start.sh | sh
+```
+
+`start.sh` runs the `cli.sh` installer unchanged and then `kirocrew start`. To
+install without starting anything, run `cli.sh` itself:
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
 ```
 
-Then open `http://localhost:5476`. Pass `--version` to pin an exact release —
-the minimum pinnable release is `0.1.2`, because `0.1.0` and `0.1.1` predate
-manifest signing and have no signed manifest to resolve:
+Then run `kirocrew start` (or `kirocrew gateway` and open
+`http://localhost:5476`). Pass `--version` to either script to pin an exact
+release — the minimum pinnable release is `0.1.2`, because `0.1.0` and `0.1.1`
+predate manifest signing and have no signed manifest to resolve:
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --version 0.6.0
@@ -270,7 +278,7 @@ both — when it is set, the dashboard toggle is disabled and says so.
 | Random instance id | `9c75560d…` (UUID4) | Lets us count how many copies ran on a given day. Generated once on first run and derived from nothing — not your hostname, username, MAC, IP, or any account. It identifies an installed copy, never a person. |
 | App version | `0.1.2` | Which releases are still in use. **Release number only** — build stamps like `-nightly.20260731t065756` are stripped before sending, because a per-build timestamp is near-unique and would help identify a specific machine. |
 | Python minor version | `3.12` | When the minimum can move up |
-| Install path | `dmg` | Which distribution format people actually use |
+| Install path | `dmg` | Which distribution format people actually use. `start` when the install came through the one-command `start.sh` or `start.ps1`, read from the `install-origin` marker they leave in the data home |
 | First-send flag | `1` / `0` | First successfully reported install vs returning |
 
 **Official-app install receipts are separate and event-based.** After a

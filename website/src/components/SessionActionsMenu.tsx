@@ -18,6 +18,8 @@ import { useTagPopover } from '../hooks/useTagPopover'
 import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
+import { isMainChatEligible, useMainChatSlot } from '../hooks/useMainChat'
+import { AskInMainChatItem, MakeMainChatItem } from './MainChatMenuItems'
 
 import { i18nT } from '../i18n/t'
 export interface SessionActionsMenuProps {
@@ -97,8 +99,8 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * Canonical order, five groups (each renders only if it has surviving items,
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
- *   [tab modifiers]  Rename · Mark read/unread · Pin · Switch to Autopilot/Chat · Move to folder ▸ · Tags…
- *   [nav / access]   Reveal in sidebar (header only) · Copy link · Send a copy ▸ · Export to a file · Connected surfaces
+ *   [tab modifiers]  Rename · Mark read/unread · Pin · Make this my main chat · Switch to Autopilot/Chat · Move to folder ▸ · Tags…
+ *   [nav / access]   Reveal in sidebar (header only) · Ask about this chat in main chat · Copy link · Send a copy ▸ · Export to a file · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
  */
@@ -146,6 +148,10 @@ export default function SessionActionsMenu({
     a => a.status === 'pending' || a.status === 'running' || a.status === 'tool',
   )
   const reloadBlocked = isRunning || hasActiveSubagents
+  // The main chat (RFC §6.9): offered as a target on every OTHER chat, and
+  // "make this my main chat" on an eligible chat that is not it already.
+  const mainSlot = useMainChatSlot()
+  const isMainChat = !!mainSlot && mainSlot === slotKey
   const currentFolderId = slot?.folder_id
   const colorIndex = slot?.color_index
   const colorHex = slot?.color_hex
@@ -171,6 +177,12 @@ export default function SessionActionsMenu({
       <Item key="pin" onSelect={() => togglePin(slotKey)}>
         <Pin size={13} className="shrink-0 text-muted" /> {isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin')}
       </Item>,
+      // Mounted whenever the chat is eligible, even once it IS the main chat:
+      // the item hides itself then, unless it made it so while this menu is
+      // open, in which case it stays to confirm.
+      isMainChatEligible(slotKey, slot) && (
+        <MakeMainChatItem key="make-main" Item={Item} slotKey={slotKey} isMainChat={isMainChat} />
+      ),
       <Item key="mode" onSelect={() => toggleMode(slotKey)}>
         <Zap size={13} className="shrink-0 text-muted" /> {slot?.mode === 'orchestrator' ? i18nT('components.sessionActionsMenu.switch_to_chat') : i18nT('components.sessionActionsMenu.switch_to_autopilot')}
       </Item>,
@@ -240,6 +252,11 @@ export default function SessionActionsMenu({
         <Item key="reveal" onSelect={onReveal}>
           <Locate size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reveal_in_sidebar')}
         </Item>
+      ),
+      // Draft a question about THIS chat in the main chat (pre-filled, not
+      // sent) — the main chat is where the rest of the crew is run from.
+      mainSlot && !isMainChat && (
+        <AskInMainChatItem key="ask-main" Item={Item} mainSlot={mainSlot} title={slot?.title || slotKey} />
       ),
       // Open as a session TAB on the surface this menu was opened from — the
       // discoverable form of the middle-click/modifier-click gesture. Offered

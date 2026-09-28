@@ -26,11 +26,13 @@ from pathlib import Path, PurePath, PurePosixPath
 
 from kiro_crew import crew_teams, pinned_fs, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.member_memory_backup import hold_stores_for_read
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME, is_host_local_store_state
 from kiro_crew.security import is_sensitive_path
+from kiro_crew.setup_cards import PERSONA_DIR_NAME, SOUL_FILES
 from kiro_crew.snapshot import (
     _DB_SIDECAR_GLOBS,
     EXPORT_MANIFEST_VERSION,
@@ -78,6 +80,11 @@ EXCLUDE_DIRS = frozenset(
         "__pycache__",
     }
 )
+
+
+#: The primary agent's persona files under ``persona/``, the only names that
+#: directory contributes to an export.
+PERSONA_FILE_NAMES: tuple[str, ...] = tuple(f"{stem}.md" for stem in SOUL_FILES)
 
 
 def _mc_dir() -> Path:
@@ -196,6 +203,11 @@ def _keep_for_export(rel: PurePath) -> bool:
     if _is_excluded(PurePosixPath(*rel.parts)):
         return False
     return not (rel.parts[0] == "skills" and "auto" in rel.parts)
+
+
+def _keep_persona_for_export(rel: PurePath) -> bool:
+    """`_keep_for_export` for ``persona/``: ``SOUL.md`` and ``USER.md`` at its top, nothing else."""
+    return len(rel.parts) == 2 and rel.parts[1] in PERSONA_FILE_NAMES and _keep_for_export(rel)
 
 
 def _keep_store_for_export(rel: PurePath) -> bool:
@@ -491,6 +503,18 @@ def create_export_zip() -> tuple[bytes, dict]:
         contents_summary["workspace_files"] = dir_counts.get("workspace", 0)
         contents_summary["plan_memory_files"] = dir_counts.get("plan_memory", 0)
         contents_summary["skill_count"] = dir_counts.get("skills", 0)
+
+        # The persona files, through the same pinned walk filtered to their two names.
+        persona_count = 0
+        for rel, fd in _walk_contained(
+            mc_real, PurePath(PERSONA_DIR_NAME), _keep_persona_for_export
+        ):
+            try:
+                _add_from_fd(zf, fd, f"{prefix}/{rel.as_posix()}")
+            finally:
+                os.close(fd)
+            persona_count += 1
+        contents_summary["persona_files"] = persona_count
 
         # Named memory stores: the same pinned walk, with the tree's own filter and the
         # fence lifted (see `_open_verified`). A store's databases go through the backup
@@ -1052,4 +1076,43 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
                         shutil.copy2(str(item), str(target))
                 summary["items"].append("skills (merged, auto/ skipped)")
 
+        # Both modes: no snapshot component covers the persona, and a persona file
+        # already on this install is the owner's own edit, so it is never replaced.
+        summary["items"].extend(
+            _install_absent_persona(snap / PERSONA_DIR_NAME, mc / PERSONA_DIR_NAME)
+        )
+
     return summary
+
+
+def _install_absent_persona(src_dir: Path, dst_dir: Path) -> list[str]:
+    """Install the archive's ``SOUL.md`` / ``USER.md`` where this install has none.
+
+    Returns one summary item per file the archive carries. A destination
+    ``persona/`` that is a link (a Windows junction included), or not a
+    directory, takes nothing: the write would land wherever the link points.
+    Each file is written with :func:`atomic_write`, whose rename replaces a name
+    rather than following it.
+    """
+    if not src_dir.is_dir() or src_dir.is_symlink():
+        return []
+    if dst_dir.is_symlink() or dst_dir.is_junction() or (dst_dir.exists() and not dst_dir.is_dir()):
+        return ["persona (skipped: the destination is not a plain directory)"]
+    items: list[str] = []
+    for name in PERSONA_FILE_NAMES:
+        src = src_dir / name
+        if src.is_symlink() or not src.is_file():
+            continue
+        dst = dst_dir / name
+        if dst.exists() or dst.is_symlink():
+            items.append(f"persona/{name} (skipped, already exists)")
+            continue
+        try:
+            text = src.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            items.append(f"persona/{name} (skipped: unreadable)")
+            continue
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write(dst, text, mode=0o600)
+        items.append(f"persona/{name} (copied)")
+    return items

@@ -608,6 +608,71 @@ async def api_onboarding_import_scan(request: web.Request) -> web.Response:
     return response
 
 
+async def run_import_apply(
+    state: object,
+    source_ids: list[str],
+    selected: set[tuple[str, str]],
+    conflict_strategy: str = "skip",
+) -> dict[str, Any]:
+    """Apply *selected* from a fresh scan, in the lock order the import needs.
+
+    Shared by the Import chapter and the first-run import card, so both
+    re-scan from disk, import config categories under the config locks and MCP
+    servers after them, and schedule the embedding backfill the same way.
+    Raises :class:`_InvalidSelection` for a pair the fresh scan does not offer.
+    """
+    cron_service = getattr(state, "crons", None)
+    lesson_store = getattr(state, "lessons", None)
+    vector_store = getattr(state, "vector_memory", None)
+    if vector_store is None:
+        context_builder = getattr(state, "context_builder", None)
+        memory = getattr(context_builder, "memory", None)
+        vector_store = getattr(memory, "vector_store", None)
+    async with _IMPORT_LOCK:
+        config_selected = {pair for pair in selected if pair[1] != "mcp_servers"}
+        mcp_selected = {pair for pair in selected if pair[1] == "mcp_servers"}
+        results: list[object] = []
+        if config_selected:
+            # run_config_write, not a manual lock + bare to_thread: the
+            # config-category importer read-modify-writes config.json, and
+            # a cancellation at a bare `await to_thread(...)` would release
+            # _get_config_lock() while the worker is still mid-rewrite --
+            # the same defect class the state handler guards against.
+            results.append(
+                await run_config_write(
+                    _apply_import,
+                    source_ids,
+                    config_selected,
+                    cron_service,
+                    vector_store,
+                    lesson_store,
+                    conflict_strategy,
+                )
+            )
+        if mcp_selected:
+            # MCP handlers acquire the MCP file lock before the config lock.
+            # Keep this phase outside the config lock to avoid lock inversion.
+            results.append(
+                await asyncio.to_thread(
+                    _apply_import,
+                    source_ids,
+                    mcp_selected,
+                    cron_service,
+                    vector_store,
+                    lesson_store,
+                    conflict_strategy,
+                )
+            )
+            await asyncio.to_thread(_rebuild_agent_config)
+        result = _merge_import_results(results, conflict_strategy)
+        # Import wrote episodic rows without vectors so the caller can answer in
+        # ~1s instead of minutes. Embed them on a worker thread now -- inside the
+        # import lock's scope but not awaited.
+        if result.get("embedding_backfill_pending"):
+            _schedule_embedding_backfill(vector_store)
+    return result
+
+
 async def api_onboarding_import_apply(request: web.Request) -> web.Response:
     """POST /api/onboarding/import/apply. Owner-only."""
     operation = "onboarding.import.apply"
@@ -629,59 +694,11 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
             {"error": "invalid request", "code": "invalid_request"}, status=400
         )
 
-    state = request.app.get("state")
-    cron_service = getattr(state, "crons", None)
-    lesson_store = getattr(state, "lessons", None)
-    vector_store = getattr(state, "vector_memory", None)
-    if vector_store is None:
-        context_builder = getattr(state, "context_builder", None)
-        memory = getattr(context_builder, "memory", None)
-        vector_store = getattr(memory, "vector_store", None)
     try:
-        async with _IMPORT_LOCK:
-            config_selected = {pair for pair in selected if pair[1] != "mcp_servers"}
-            mcp_selected = {pair for pair in selected if pair[1] == "mcp_servers"}
-            results: list[object] = []
-            if config_selected:
-                # run_config_write, not a manual lock + bare to_thread: the
-                # config-category importer read-modify-writes config.json, and
-                # a cancellation at a bare `await to_thread(...)` would release
-                # _get_config_lock() while the worker is still mid-rewrite --
-                # the same defect class the state handler guards against.
-                results.append(
-                    await run_config_write(
-                        _apply_import,
-                        source_ids,
-                        config_selected,
-                        cron_service,
-                        vector_store,
-                        lesson_store,
-                        conflict_strategy,
-                    )
-                )
-            if mcp_selected:
-                # MCP handlers acquire the MCP file lock before the config lock.
-                # Keep this phase outside the config lock to avoid lock inversion.
-                results.append(
-                    await asyncio.to_thread(
-                        _apply_import,
-                        source_ids,
-                        mcp_selected,
-                        cron_service,
-                        vector_store,
-                        lesson_store,
-                        conflict_strategy,
-                    )
-                )
-                await asyncio.to_thread(_rebuild_agent_config)
-            result = _merge_import_results(results, conflict_strategy)
-            response = web.json_response(_apply_response(result))
-            # Import wrote episodic rows without vectors so this request could
-            # return in ~1s instead of minutes. Embed them on a worker thread now
-            # — inside the import lock's scope but not awaited, so the response
-            # goes out immediately.
-            if result.get("embedding_backfill_pending"):
-                _schedule_embedding_backfill(vector_store)
+        result = await run_import_apply(
+            request.app.get("state"), source_ids, selected, conflict_strategy
+        )
+        response = web.json_response(_apply_response(result))
     except _InvalidSelection:
         _audit(caller=caller, operation=operation, outcome="failed", error="invalid_request")
         return web.json_response(

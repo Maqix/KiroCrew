@@ -34,6 +34,7 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
 import type { MemoryRecord, MemoryRecordRef, MemoryRecordQuery, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRevision } from '../types/memoryEditing'
 import type { AutoNudgeListResponse } from '../components/autoNudgeLoop'
 import type { TaskDetailResponse, TasksListResponse, TasksSummary } from './tasks'
+import type { FirstRunState, SetupCard, SetupCardApproval, SetupCardList, SetupDecideBody } from './setupCards'
 import { ApiError, friendlyErrText, toApiError } from './apiError'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../lib/sessionControlStatusPath'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
@@ -5160,6 +5161,28 @@ export const api = {
     crewmates_onboarded?: boolean
   }) =>
     put('/api/config/theme', body).then(j),
+  // Setup cards (one-chat first run). Owner-only, cookie-authenticated; errors
+  // are `{error, code}` and reach callers as `ApiError` (read `code` with
+  // `parseErrorCode(err.body)`). The decide body can carry a credential or a
+  // bot token in `input`: it goes on the wire and nowhere else — the response is
+  // the updated card, whose outcome carries a vault reference at most.
+  setupCards: (slot: string) =>
+    get('/api/setup/cards?slot=' + encodeURIComponent(slot)).then(j) as Promise<SetupCardList>,
+  setupCard: (id: string) =>
+    get('/api/setup/cards/' + encodeURIComponent(id)).then(j) as Promise<SetupCard>,
+  decideSetupCard: (id: string, body: SetupDecideBody) =>
+    post('/api/setup/cards/' + encodeURIComponent(id) + '/decide', body).then(j) as Promise<SetupCard>,
+  /** What a job card's running preview waits on; empty when none runs. */
+  setupCardApprovals: (id: string) =>
+    get('/api/setup/cards/' + encodeURIComponent(id) + '/approvals').then(j) as Promise<{ approvals: SetupCardApproval[] }>,
+  firstRun: () => get('/api/setup/first-run').then(j) as Promise<FirstRunState>,
+  /** Send the first-run kickoff again (the kickoff-failed notice's Try again).
+   *  409 `kickoff_answered` / `turn_running` / `privacy_not_acked`, 404 `slot_not_found`. */
+  retryFirstRun: () => post('/api/setup/first-run/retry', {}).then(j) as Promise<{ slot: string }>,
+  /** Make one of the owner's own dashboard chats the main chat (RFC §6.9).
+   *  409 `slot_not_eligible` for a cron/app/channel chat, 404 `slot_not_found`. */
+  makeMainChat: (slot: string) =>
+    post('/api/setup/main-chat', { slot }).then(j) as Promise<{ main_slot: string }>,
   // Voice
   voiceConfig: () => fetch('/api/voice/config').then(j),
   updateVoiceConfig: (body: object) => put('/api/voice/config', body).then(j),

@@ -641,6 +641,20 @@ handlers.push(
     new HttpResponse('', { status: 200, headers: { 'Content-Type': 'application/javascript' } })),
 )
 
+// Setup cards (one-chat first run). The default is "no first run, no cards": a
+// transcript row that points at a card renders the card's not-found state
+// rather than tripping the 501 below, and a suite that exercises a card seeds it
+// with `server.use(...)` (see SetupCard.test.tsx for the fixtures).
+handlers.push(
+  http.get('/api/setup/first-run', () => HttpResponse.json({ slot: null, active: false })),
+  http.get('/api/setup/cards', () => HttpResponse.json({ cards: [] })),
+  http.get('/api/setup/cards/:id', () =>
+    HttpResponse.json({ error: 'setup card not found', code: 'card_not_found' }, { status: 404 })),
+  http.get('/api/setup/cards/:id/approvals', () => HttpResponse.json({ approvals: [] })),
+  http.post('/api/setup/cards/:id/decide', () =>
+    HttpResponse.json({ error: 'setup card not found', code: 'card_not_found' }, { status: 404 })),
+)
+
 handlers.push(
   http.all('*', ({ request }) => {
     const scheme = request.url.slice(0, 5)

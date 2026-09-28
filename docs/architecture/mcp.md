@@ -1293,7 +1293,10 @@ to `hooks.on_tool_call`. `_CONDUCTOR_DASHBOARD_GRANTS` and
 form, and they differ from each other on exactly this axis: the member's list
 includes `session_send` and `session_stop` because `authorize_target` refuses a
 member caller on any session it did not create, and the conductor's withholds them
-because it has no such fence.
+because it has no such fence. `_MAIN_CHAT_DASHBOARD_GRANTS` is the third and the
+narrowest: `session_create` and `session_read_message` only, on `kirocrew-main`, the
+main chat's spec ([first-run](../system-specs/modules/first-run.md)), which mounts
+the server on top of the default agent so no other chat carries it.
 
 CLI commands and their MCP twins:
 

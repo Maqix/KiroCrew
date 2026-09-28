@@ -28,13 +28,25 @@ keyword search and picks up semantic search automatically with no restart.
 
 ## Installation
 
-### Prebuilt wheel from the release CDN (fastest)
+### One command, from install to an open chat (fastest)
+
+```bash
+curl -fsSL https://download.crew.kiro.dev/start.sh | sh
+```
+
+`start.sh` runs the `cli.sh` installer below unchanged, then `kirocrew start`:
+it checks that kiro-cli is installed and signed in, starts the gateway in the
+background and opens the chat in your browser. On a host with no browser it
+prints the sign-in link instead. It passes `cli.sh`'s flags through and adds
+`--no-browser`, `--foreground` and `--skip-install`.
+
+### Prebuilt wheel from the release CDN
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
 ```
 
-This installs a signed, sha256-verified `kirocrew` wheel. `stable` is the
+This installs a signed, sha256-verified `kirocrew` wheel and starts nothing. `stable` is the
 default channel; pass `--channel insider` or `--channel nightly` to track a
 faster one, or `--version X.Y.Z` to pin an exact release. The installer uses
 `pipx` when available, otherwise it creates a managed venv and symlinks
@@ -139,6 +151,17 @@ Every other messaging channel is connected from the dashboard — the roster is 
 doc there.
 
 ## Starting Kiro Crew
+
+### The one command
+
+```bash
+kirocrew start
+```
+
+Checks kiro-cli (installed, signed in), reuses a running gateway or starts one
+in the background, and opens the chat in your browser. `--foreground` runs the
+gateway in this terminal instead, `--no-browser` prints the sign-in link, and
+`kirocrew stop` stops a background gateway.
 
 ### Gateway mode (dashboard + messaging channels)
 

@@ -47,11 +47,12 @@ class ApprovalCoordinator:
         is_background: bool,
         redact_url: _Redactor,
         redact_secret: _Redactor,
+        run_session: str = "",
     ) -> bool:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
         state._approval_futures[approval_id] = future
-        state._pending_approvals[approval_id] = {
+        record: dict[str, Any] = {
             "id": approval_id,
             "source": source,
             "tool": _redact(tool, redact_url, redact_secret),
@@ -60,6 +61,12 @@ class ApprovalCoordinator:
             "slot": slot,
             "ts": time.time(),
         }
+        if run_session:
+            # Provenance only: the session whose turn asked (a cron run's
+            # ``cron:<job id>``), so a job's setup card can find its preview's
+            # approvals. ``slot`` alone decides routing and trust.
+            record["run_session"] = run_session
+        state._pending_approvals[approval_id] = record
         state.broadcast_ws("approval", state._pending_approvals[approval_id])
         # The record names its owning slot, and the slot projection reads the
         # live records through ``pending_coordinator_approvals``: this push is

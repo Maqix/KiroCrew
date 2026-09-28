@@ -2508,6 +2508,7 @@ class GatewayOrchestrator:
         nudge_key: str = "",
         *,
         raise_when_unreachable: bool = False,
+        run_session_key: str = "",
     ) -> ToolApprovalCallback:
         """Return an approval callback that races dashboard vs Slack DM.
 
@@ -2526,6 +2527,12 @@ class GatewayOrchestrator:
         received. Only the spawn gate sets it, because only the spawn gate has a
         terminal path that can report the refusal to the calling agent; a mid-run
         tool approval parks on the prompt instead.
+
+        ``run_session_key`` names the session whose turn raises the requests (a
+        cron run passes ``cron:<job id>``). It is written on the dashboard record
+        as provenance only, so a job's setup card can find its own preview's
+        approvals; it never picks a slot or consults a trust grant, which is why
+        it is a separate argument from ``parent_session_key``.
         """
 
         is_background = source in _BACKGROUND_APPROVAL_SOURCES
@@ -2823,6 +2830,7 @@ class GatewayOrchestrator:
                                 tool_purpose=event.tool_purpose,
                                 slot=approval_slot,
                                 is_background=is_background,
+                                run_session=run_session_key,
                             )
                         )
 
@@ -2901,6 +2909,7 @@ class GatewayOrchestrator:
                     tool_purpose=event.tool_purpose,
                     slot=approval_slot,
                     is_background=is_background,
+                    run_session=run_session_key,
                 )
             if _child_lf:
                 # No human surface answered and none of the (skipped)
@@ -5660,7 +5669,9 @@ class GatewayOrchestrator:
                             on_tool_approval=(
                                 None
                                 if job.approval_mode == "auto"
-                                else self._interactive_approval("cron")
+                                else self._interactive_approval(
+                                    "cron", run_session_key=agent_session_key
+                                )
                             ),
                             on_tool_gate=_gate.note,
                             on_complete=_seq_note_complete,
@@ -5842,7 +5853,9 @@ class GatewayOrchestrator:
                     ),
                     hooks=self.ctx_builder.hooks,
                     on_tool_approval=(
-                        None if job.approval_mode == "auto" else self._interactive_approval("cron")
+                        None
+                        if job.approval_mode == "auto"
+                        else self._interactive_approval("cron", run_session_key=session_key)
                     ),
                     on_tool_gate=_gate.note,
                     on_complete=_note_complete,
@@ -11276,6 +11289,9 @@ class GatewayOrchestrator:
             self.dashboard_state.slack_client = self.slack
         if self.dashboard_state:
             self.dashboard_state.no_crons = self._no_crons  # dashboard mode
+            # A channel setup card reconnects its channel through the same path a
+            # config reload takes (``dashboard/setup_channel.py``).
+            self.dashboard_state.restart_channel = self.restart_channel
 
     async def _init_api_server(self) -> None:
         """Start a minimal API-only HTTP server for MCP tool transport."""

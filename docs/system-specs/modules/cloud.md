@@ -625,7 +625,14 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   unavailable rather than walk the whole tree. `git archive` packages the
   *committed* tree, so when the tracked working tree is **dirty** (uncommitted
   edits) `build_source_tarball` switches to the `git ls-files` working-tree path
-  — otherwise `cloud launch` would silently ship stale last-commit code. The fallback also adds each entry
+  — otherwise `cloud launch` would silently ship stale last-commit code. A dirty
+  tree that ALSO has new, never-added files under the build's source dirs
+  (`src/`, `website/src/`, `website/public/`, `website/electron/`, listed with
+  `git ls-files --others --exclude-standard`) is refused before anything is
+  created (`_refuse_half_a_working_tree`), naming the files and the fix
+  (`git add`): shipping the edited files without the new ones they import builds
+  nothing, and the instance failed its install only after a quarter of an hour.
+  The fallback also adds each entry
   **non-recursively** and skips gitlink directories: `git ls-files` lists a
   submodule as a single directory entry, and a recursive `tar.add` on it would
   package the submodule's untracked/gitignored files — so we never let tar walk

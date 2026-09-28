@@ -22,6 +22,7 @@ import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, s
 import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, useAppStore, store } from '../store'
 import { useConnected } from '../hooks/useConnected'
+import { useOptionalTheme } from '../hooks/useTheme'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
@@ -288,6 +289,7 @@ import FollowUpCard from '../components/FollowUpCard'
 import FolderSuggestionCard from './chat/FolderSuggestionCard'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import PendingQuestionCard from '../components/PendingQuestionCard'
+import PendingSetupCards from '../components/setup/PendingSetupCards'
 import SessionPulseSurveyCard from '../components/SessionPulseSurveyCard'
 import type { FollowupItem } from '../store/chatSlice'
 
@@ -2312,6 +2314,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // New content while following is handled inside the virtualizer (RO re-pin
   // for in-place growth + append layout-effect pin for new items), so ChatPage
   // does not run its own message-length scroll effect.
+  // Optional: embedded hosts and tests mount this page without the provider.
+  const themeCtx = useOptionalTheme()
   const session = useChatPageSessionController({
     activeSlot,
     activeSlotRef,
@@ -2342,6 +2346,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     searchParams,
     slots,
     tokenConsumingRef,
+    mainSlot: themeCtx?.mainSlot ?? null,
+    firstRunSlot: themeCtx?.firstRunSlot ?? null,
+    themeBootReady: themeCtx ? themeCtx.themeBootReady : true,
   })
   const {
     appSlotLaunch,
@@ -6023,6 +6030,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // three rows from the registry exactly as every pane does (P5-c).
     const shared = createTranscriptRenderers({
       slot: activeSlot || undefined,
+      // PendingSetupCards is mounted above this page's composer.
+      setupCardTray: true,
       // An unparseable file row has always fallen through to the bubble on
       // this page (a pane draws nothing for it); P5-b changes no row's output.
       renderUnparsedFile: (m, ctx) => bubble.render(m, ctx),
@@ -6050,6 +6059,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       onOpenSignIn: embedded || popout ? undefined : openKiroSignIn,
       onOpenCapabilities: embedded || popout ? undefined : openMemberCapabilities,
       onSessionOpen: selectSessionTab,
+      // "Ask for the result" on the main chat's finished-hand-off note: an
+      // ordinary send from this composer, into the chat on screen.
+      onSendAsUser: text => { void send(text) },
       sessions: connected ? sessionTitles : undefined,
       activeSession: activeSlot || undefined,
     })
@@ -6086,7 +6098,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, send])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
@@ -7009,6 +7021,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           // the chip — see canStageSessionRef for why this is a named predicate.
           chatDropTarget={canStageSessionRef ? chatPaneEl : null}
           onDropSessionRef={stageSessionRef}
+          mainSlot={themeCtx?.mainSlot ?? null}
         />
       </OverlayDrawer>
       )}
@@ -7784,6 +7797,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   onSkip={() => knowledgeFetch.clearResults()}
                 />
               ) : null}
+              {/* Live setup cards (one-chat first run): pinned above the
+                  composer because the agent keeps writing after proposing one,
+                  so its transcript row scrolls away and stick-to-bottom fights
+                  the reach for it. The row folds to a pointer (`setupCardTray`). */}
+              <PendingSetupCards
+                slotKey={activeSlot}
+                className="px-4 pb-2 mx-auto w-full"
+                style={{ maxWidth: 'var(--mc-content-width, 900px)' }}
+              />
               {pendingQuestion && (
                 <div className="px-4 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
                   <PendingQuestionCard

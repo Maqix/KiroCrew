@@ -1,0 +1,708 @@
+"""The dashboard half of setup cards: propose, decide, and the first-run session.
+
+Pins the invariants the RFC names:
+
+* SC1 — nothing commits without an owner decision carrying the shown hash.
+* SC2 — a credential typed into a card never appears in the card, the store,
+  the transcript or a log record.
+* SC3 — no committer writes a governance keystone file.
+* SC6 — the first-run state file admits nothing.
+* SC8 — a turn no person started cannot put a card in front of the user.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import logging
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from kiro_crew import first_run
+from kiro_crew import setup_cards as sc
+from kiro_crew.config.paths import data_home
+from kiro_crew.dashboard import setup_flow
+
+SENTINEL_SECRET = "sk-sentinel-5f1c9e2b7a4d4c1e9b3a"
+
+
+class FakeSlot:
+    def __init__(self, key: str = "chat-1-1") -> None:
+        self.key = key
+        self.messages: list[tuple[str, str, dict | None]] = []
+        self.running = False
+        self._in_stage_execution = False
+        self.task = None
+        self.pinned = False
+        self.title = key
+        self.queued: list[tuple[str, str, bool]] = []
+
+    def append(self, role, content, cls="", ts="", *, broadcast=True, meta=None):
+        self.messages.append((role, content, meta))
+
+    def queue_append(self, content, kind="", meta=None, *, directive_user_origin=False, **_):
+        self.queued.append((content, kind, directive_user_origin))
+        return "q1"
+
+
+class FakeState:
+    def __init__(self) -> None:
+        self.slots: dict[str, FakeSlot] = {}
+        self.events: list[tuple[str, Any]] = []
+        self.crons = None
+        self.conversation_log = SimpleNamespace(list_sessions=lambda: [])
+
+    def get_slot(self, key):
+        return self.slots.get(key)
+
+    def broadcast_ws_owners(self, msg_type, data):
+        self.events.append((msg_type, data))
+
+    def push_slots_update(self, **_):
+        pass
+
+    def live_slot_count(self):
+        return len(self.slots)
+
+    @contextlib.contextmanager
+    def suspend_slots_push(self):
+        yield lambda *_: None
+
+    def get_or_create_slot(self, name=None, agent="", **_):
+        slot = FakeSlot(f"chat-{len(self.slots) + 1}-1")
+        slot.agent = agent
+        self.slots[slot.key] = slot
+        return slot
+
+
+@pytest.fixture
+def state():
+    st = FakeState()
+    st.slots["chat-1-1"] = FakeSlot("chat-1-1")
+    return st
+
+
+@pytest.fixture
+def dispatched(monkeypatch):
+    """Record envelope turns instead of starting real model turns."""
+    calls: list[tuple[str, str, str]] = []
+
+    async def _fake(state, slot, text, inject_kind):
+        calls.append((slot.key, inject_kind, text))
+
+    monkeypatch.setattr(setup_flow, "_dispatch_envelope_turn", _fake)
+    return calls
+
+
+@pytest.fixture(autouse=True)
+def _permit_governance(monkeypatch):
+    monkeypatch.setattr(setup_flow, "_governance_denial", lambda kind, sk: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_aws_sign_in(monkeypatch):
+    """No test here reaches the host's AWS CLI or kiro-cli; one that needs a sign-in sets it."""
+    from kiro_crew.cloud import local_signin
+
+    monkeypatch.setattr(local_signin, "detect", lambda profile="", **kw: None)
+    monkeypatch.setattr(local_signin, "configured_region", lambda profile="": "")
+    monkeypatch.setattr(local_signin, "kiro_signs_in_with_builder_id", lambda: False)
+
+
+async def _propose(state, args, *, user_facing=True, slot="chat-1-1"):
+    return await setup_flow.propose(
+        state,
+        state.slots[slot],
+        f"dashboard:{slot}",
+        args,
+        producer_is_user_facing=user_facing,
+    )
+
+
+def _only_card(slot="chat-1-1") -> sc.SetupCard:
+    cards = sc.list_cards(slot)
+    assert len(cards) == 1, cards
+    return cards[0]
+
+
+class TestPropose:
+    @pytest.mark.asyncio
+    async def test_a_profile_proposal_becomes_a_card_row_and_event(self, state):
+        out = await _propose(state, {"kind": "profile", "fields": {"bot_name": "Nova"}})
+        assert out.startswith("Setup card shown")
+        card = _only_card()
+        role, _content, meta = state.slots["chat-1-1"].messages[-1]
+        assert role == "inject"
+        assert meta == {"setupCard": {"id": card.id, "kind": "profile"}}
+        assert state.events[-1][0] == setup_flow.SETUP_CARD_EVENT
+        assert state.events[-1][1]["card"]["hash"] == card.payload_hash
+
+    @pytest.mark.asyncio
+    async def test_s8_a_turn_no_person_started_shows_nothing(self, state):
+        out = await _propose(
+            state, {"kind": "profile", "fields": {"bot_name": "Nova"}}, user_facing=False
+        )
+        assert out.startswith("Error:")
+        assert sc.list_cards("chat-1-1") == []
+        assert state.slots["chat-1-1"].messages == []
+
+    @pytest.mark.asyncio
+    async def test_s6_the_first_run_state_file_admits_nothing(self, state):
+        first_run.record_slot("chat-1-1")
+        out = await _propose(
+            state, {"kind": "profile", "fields": {"bot_name": "Nova"}}, user_facing=False
+        )
+        assert out.startswith("Error:")
+        assert sc.list_cards("chat-1-1") == []
+
+    @pytest.mark.asyncio
+    async def test_governance_denial_shows_nothing(self, state, monkeypatch):
+        monkeypatch.setattr(setup_flow, "_governance_denial", lambda kind, sk: "not here")
+        out = await _propose(state, {"kind": "profile", "fields": {"bot_name": "Nova"}})
+        assert "blocked by policy" in out
+        assert sc.list_cards("chat-1-1") == []
+
+    @pytest.mark.asyncio
+    async def test_the_model_cannot_propose_the_privacy_disclosure(self, state):
+        out = await _propose(state, {"kind": "privacy"})
+        assert out.startswith("Error:")
+
+    @pytest.mark.asyncio
+    async def test_an_identical_pending_card_is_not_shown_twice(self, state):
+        args = {"kind": "profile", "fields": {"bot_name": "Nova"}}
+        await _propose(state, args)
+        out = await _propose(state, args)
+        assert "already showing" in out
+        assert len(sc.list_cards("chat-1-1")) == 1
+
+    @pytest.mark.asyncio
+    async def test_card_budget_before_the_first_kept_job(self, state, dispatched):
+        for i in range(sc.CARD_BUDGET_BEFORE_FIRST_JOB):
+            out = await _propose(state, {"kind": "profile", "fields": {"bot_name": f"N{i}"}})
+            assert out.startswith("Setup card shown"), out
+            card = [c for c in sc.list_cards("chat-1-1") if c.status == sc.STATUS_PENDING][0]
+            await setup_flow.decide(state, card.id, "decline", card.payload_hash, {})
+        out = await _propose(state, {"kind": "profile", "fields": {"bot_name": "Over"}})
+        assert out.startswith("Error:") and "setup cards" in out
+
+    @pytest.mark.asyncio
+    async def test_one_card_waits_at_a_time_except_the_home(self, state, monkeypatch):
+        from kiro_crew.cloud import simulated_engine
+
+        monkeypatch.setenv(simulated_engine.SIMULATE_ENV, "1")
+        await _propose(state, {"kind": "profile", "fields": {"bot_name": "Nova"}})
+        out = await _propose(state, {"kind": "service"})
+        assert out.startswith("Error:") and "One card at a time" in out
+        out = await _propose(state, {"kind": "home"})
+        assert out.startswith("Setup card shown")
+
+    @pytest.mark.asyncio
+    async def test_invalid_arguments_show_nothing(self, state):
+        out = await _propose(state, {"kind": "cron", "name": "x", "prompt": "y", "every_secs": 5})
+        assert out.startswith("Error:")
+        assert sc.list_cards("chat-1-1") == []
+
+
+class TestDecide:
+    @pytest.mark.asyncio
+    async def test_s1_a_wrong_hash_commits_nothing(self, state, dispatched):
+        await _propose(state, {"kind": "profile", "fields": {"bot_name": "Nova"}})
+        card = _only_card()
+        with pytest.raises(sc.CardRejected) as exc:
+            await setup_flow.decide(state, card.id, "commit", "f" * 64, {})
+        assert exc.value.code == "card_hash_mismatch"
+        assert _only_card().status == sc.STATUS_PENDING
+        assert (
+            not (data_home() / "config.json").exists()
+            or "Nova" not in (data_home() / "config.json").read_text()
+        )
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_profile_commit_writes_config_and_reports(self, state, dispatched):
+        await _propose(
+            state,
+            {"kind": "profile", "fields": {"bot_name": "Nova", "technical_level": "codes"}},
+        )
+        card = _only_card()
+        decided = await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
+        assert decided.status == sc.STATUS_COMMITTED
+        cfg = json.loads((data_home() / "config.json").read_text())
+        assert cfg["agent"]["bot_name"] == "Nova"
+        assert cfg["dashboard"]["user_technical_level"] == "codes"
+        assert dispatched and dispatched[-1][1] == "setup_result"
+        assert "committed" in dispatched[-1][2]
+
+    @pytest.mark.asyncio
+    async def test_a_decided_card_cannot_be_decided_again(self, state, dispatched):
+        await _propose(state, {"kind": "profile", "fields": {"bot_name": "Nova"}})
+        card = _only_card()
+        await setup_flow.decide(state, card.id, "decline", card.payload_hash, {})
+        with pytest.raises(sc.CardRejected) as exc:
+            await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
+        assert exc.value.code == "card_not_pending"
+        assert "declined" in dispatched[-1][2]
+
+    @pytest.mark.asyncio
+    async def test_soul_commit_writes_the_persona_file(self, state, dispatched):
+        await _propose(
+            state, {"kind": "soul", "file": "SOUL", "content": "You are Nova. Be brief."}
+        )
+        card = _only_card()
+        await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
+        assert sc.read_persona("SOUL") == "You are Nova. Be brief.\n"
+
+    @pytest.mark.asyncio
+    async def test_s2_a_credential_reaches_the_vault_and_nowhere_else(
+        self, state, dispatched, caplog
+    ):
+        caplog.set_level(logging.DEBUG)
+        await _propose(state, {"kind": "credential", "name": "OPENAI_KEY", "purpose": "tests"})
+        card = _only_card()
+        decided = await setup_flow.decide(
+            state, card.id, "commit", card.payload_hash, {"value": SENTINEL_SECRET}
+        )
+        assert decided.outcome == {"ref": "secret://OPENAI_KEY"}
+        from kiro_crew.config.paths import config_dir
+        from kiro_crew.secrets.vault import SecretVault
+
+        assert SecretVault(config_dir()).get("OPENAI_KEY").reveal() == SENTINEL_SECRET
+        assert SENTINEL_SECRET not in json.dumps(decided.public())
+        assert SENTINEL_SECRET not in (data_home() / "setup" / sc.CARDS_FILE).read_text()
+        assert SENTINEL_SECRET not in json.dumps(state.events)
+        assert all(SENTINEL_SECRET not in text for _, _, text in dispatched)
+        assert all(SENTINEL_SECRET not in str(m) for m in state.slots["chat-1-1"].messages)
+        assert SENTINEL_SECRET not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_an_empty_credential_leaves_the_card_waiting(self, state, dispatched):
+        await _propose(state, {"kind": "credential", "name": "OPENAI_KEY", "purpose": "tests"})
+        card = _only_card()
+        decided = await setup_flow.decide(
+            state, card.id, "commit", card.payload_hash, {"value": " "}
+        )
+        assert decided.status == sc.STATUS_PENDING
+        assert decided.error["code"] == "credential_empty"
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_service_on_linux_waits_until_the_unit_exists(
+        self, state, dispatched, monkeypatch
+    ):
+        from kiro_crew.service import controller
+        from kiro_crew.service.common import Platform
+
+        monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
+        monkeypatch.setattr(controller, "installed_unit_path", lambda: None)
+        await _propose(state, {"kind": "service"})
+        card = _only_card()
+        assert card.payload["needs_terminal"] is True
+        assert "kirocrew service install" in card.payload["command"]
+        decided = await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
+        assert decided.status == sc.STATUS_PENDING
+        assert decided.error["code"] == "service_not_installed"
+        monkeypatch.setattr(controller, "installed_unit_path", lambda: Path("/etc/systemd/x"))
+        # The machine's unit runs the default data home, not this relocated one.
+        assert setup_flow._service_payload()["installed"] is False
+        monkeypatch.setattr(setup_flow, "_service_serves_this_home", lambda: True)
+        decided = await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
+        assert decided.status == sc.STATUS_COMMITTED
+
+    @pytest.mark.asyncio
+    async def test_s3_no_committer_writes_a_keystone_file(self, state, dispatched, monkeypatch):
+        from kiro_crew.config.paths import config_dir
+
+        keystones = [
+            "security_policy.json",
+            "admission_policy.json",
+            "computer_use.json",
+            "profiles",
+        ]
+        for args, input_ in (
+            ({"kind": "profile", "fields": {"bot_name": "Nova", "timezone": "UTC"}}, {}),
+            ({"kind": "soul", "file": "USER", "content": "Works on backend."}, {}),
+            ({"kind": "credential", "name": "SOME_TOKEN", "purpose": "x"}, {"value": "v"}),
+        ):
+            await _propose(state, args)
+            card = [c for c in sc.list_cards("chat-1-1") if c.status == sc.STATUS_PENDING][0]
+            await setup_flow.decide(state, card.id, "commit", card.payload_hash, input_)
+        for name in keystones:
+            assert not (config_dir() / name).exists(), name
+
+
+class TestCronPreviewThenKeep:
+    class FakeCrons:
+        def __init__(self) -> None:
+            self.jobs: dict[str, SimpleNamespace] = {}
+            self.enabled: dict[str, bool] = {}
+
+        async def add_job_async(self, name, message, **kw):
+            job = SimpleNamespace(id="job123", name=name, message=message, kw=kw)
+            self.jobs[job.id] = job
+            self.enabled[job.id] = kw["enabled"]
+            return job
+
+        def discard_finished_run(self, jid):
+            return True
+
+        def is_running(self, jid):
+            return False
+
+        async def _run(self, jid):
+            job = self.jobs[jid]
+            job.last_result = "3 reviews waiting; CI green"
+            job.last_status = "ok"
+            return True
+
+        def run_job(self, jid):
+            return self._run(jid)
+
+        def attach_run_task(self, jid, task):
+            pass
+
+        async def get_job_async(self, jid):
+            return self.jobs[jid]
+
+        async def update_job_async(self, jid, **kw):
+            self.jobs[jid].kw.update(kw)
+            return self.jobs[jid]
+
+        async def enable_job_async(self, jid, enabled=True, **_):
+            self.enabled[jid] = enabled
+            return True
+
+        async def remove_job_async(self, jid, **_):
+            self.jobs.pop(jid, None)
+            return True
+
+    @pytest.mark.asyncio
+    async def test_preview_runs_a_disabled_job_and_keep_enables_it(self, state, dispatched):
+        crons = self.FakeCrons()
+        state.crons = crons
+        await _propose(
+            state,
+            {
+                "kind": "cron",
+                "name": "Dev brief",
+                "prompt": "Summarize my PRs",
+                "cron_expr": "0 8 * * 1-5",
+            },
+        )
+        card = _only_card()
+        previewed = await setup_flow.decide(state, card.id, "preview", card.payload_hash, {})
+        assert previewed.status == sc.STATUS_PENDING
+        assert previewed.outcome["preview"] == {
+            "status": "success",
+            "text": "3 reviews waiting; CI green",
+        }
+        assert crons.enabled["job123"] is False
+        assert crons.jobs["job123"].kw["silent"] is True
+        assert crons.jobs["job123"].kw["hide_in_chat"] is True
+        assert dispatched == []
+        kept = await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
+        assert kept.status == sc.STATUS_COMMITTED
+        assert kept.outcome["job_id"] == "job123"
+        assert crons.enabled["job123"] is True
+        assert crons.jobs["job123"].kw["silent"] is False
+        assert crons.jobs["job123"].kw["hide_in_chat"] is False
+        assert "kept" in dispatched[-1][2]
+
+    @pytest.mark.asyncio
+    async def test_declining_after_a_preview_removes_the_job(self, state, dispatched):
+        crons = self.FakeCrons()
+        state.crons = crons
+        await _propose(
+            state, {"kind": "cron", "name": "Brief", "prompt": "Summarize", "every_secs": 86400}
+        )
+        card = _only_card()
+        await setup_flow.decide(state, card.id, "preview", card.payload_hash, {})
+        await setup_flow.decide(state, card.id, "decline", card.payload_hash, {})
+        assert "job123" not in crons.jobs
+
+
+class TestFirstRun:
+    @pytest.mark.asyncio
+    async def test_a_fresh_install_gets_a_pinned_chat_with_the_privacy_card(self):
+        st = FakeState()
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        assert slot_key and st.slots[slot_key].pinned
+        assert first_run.read_first_run_slot() == slot_key
+        card = _only_card(slot_key)
+        assert card.kind == sc.KIND_PRIVACY
+        # The chat that becomes the main chat carries the session tools from the start.
+        assert st.slots[slot_key].agent == "kirocrew-main"
+        assert st.slots[slot_key].messages[0][2] == {
+            "setupCard": {"id": card.id, "kind": "privacy"}
+        }
+
+    @pytest.mark.asyncio
+    async def test_it_is_idempotent_across_restarts(self):
+        st = FakeState()
+        first = await setup_flow.ensure_first_run_session(st)
+        again = await setup_flow.ensure_first_run_session(st)
+        assert first == again
+        assert len(sc.list_cards(first)) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_install_with_sessions_gets_none(self):
+        st = FakeState()
+        st.conversation_log = SimpleNamespace(list_sessions=lambda: [{"key": "old"}])
+        assert await setup_flow.ensure_first_run_session(st) is None
+        assert first_run.read_first_run_slot() is None
+
+    @pytest.mark.asyncio
+    async def test_an_onboarded_install_gets_none(self):
+        (data_home() / "config.json").write_text(json.dumps({"dashboard": {"onboarded": True}}))
+        st = FakeState()
+        assert await setup_flow.ensure_first_run_session(st) is None
+
+    @pytest.mark.asyncio
+    async def test_acknowledging_privacy_sets_the_flag_and_starts_the_first_turn(self, dispatched):
+        st = FakeState()
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        card = _only_card(slot_key)
+        decided = await setup_flow.decide(
+            st, card.id, "commit", card.payload_hash, {"telemetry": False}
+        )
+        assert decided.status == sc.STATUS_COMMITTED
+        cfg = json.loads((data_home() / "config.json").read_text())
+        assert cfg["dashboard"]["privacy_acked"] is True
+        assert cfg["telemetry"]["beacon_enabled"] is False
+        assert [(k, kind) for k, kind, _ in dispatched] == [(slot_key, "first_run")]
+        assert "$crew-setup" in dispatched[0][2]
+        assert "privacy" in first_run.done_stages()
+
+
+class TestHomeInTheBackground:
+    @pytest.mark.asyncio
+    async def test_build_then_move_in_on_the_simulated_engine(self, state, dispatched, monkeypatch):
+        from kiro_crew.cloud import simulated_engine
+
+        monkeypatch.setenv(simulated_engine.SIMULATE_ENV, "1")
+        monkeypatch.setattr(setup_flow, "_CONNECT_POLL_SECS", 0.01)
+        monkeypatch.setattr(setup_flow.asyncio, "sleep", _fast_sleep)
+        state.cloud_launch_engine = simulated_engine.SimulatedLaunchEngine(step_secs=0)
+        state.cloud_launch_sync = True
+        out = await _propose(state, {"kind": "home", "region": "us-west-2"})
+        assert out.startswith("Setup card shown"), out
+        card = _only_card()
+        assert card.stakes == "high"
+        assert card.payload["simulated"] is True
+        assert card.payload["monthly_usd"] == sc.monthly_estimate_usd("light")
+        building = await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
+        assert building.status == sc.STATUS_WAITING
+        for _ in range(200):
+            current = sc.get_card(card.id)
+            if current.status == sc.STATUS_PENDING:
+                break
+            await _real_sleep(0.01)
+        ready = sc.get_card(card.id)
+        assert ready.status == sc.STATUS_PENDING and ready.outcome["ready"] is True
+        moved = await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
+        assert moved.status == sc.STATUS_COMMITTED
+        assert moved.outcome["moved"] is True and moved.outcome["simulated"] is True
+        assert [s["state"] for s in moved.outcome["move_steps"]] == ["done"] * 4
+        assert "moved into its home" in dispatched[-1][2]
+
+    @pytest.mark.asyncio
+    async def test_a_real_home_waits_for_aws_sign_in(self, state, dispatched, monkeypatch):
+        from kiro_crew.cloud import iam
+
+        monkeypatch.setattr(iam, "reachability_check", lambda profile, region: {"reachable": False})
+        await _propose(state, {"kind": "home"})
+        card = _only_card()
+        assert card.payload["aws_signed_in"] is False
+        decided = await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
+        assert decided.status == sc.STATUS_PENDING
+        assert decided.error["code"] == "aws_not_signed_in"
+
+    @pytest.mark.asyncio
+    async def test_a_real_home_signs_in_the_way_this_machine_does(
+        self, state, dispatched, monkeypatch
+    ):
+        from kiro_crew.cloud import iam
+        from kiro_crew.cloud.login_target import ACCOUNT_TYPE_IDENTITY_CENTER
+        from kiro_crew.dashboard import handlers_cloud
+        from kiro_crew.dashboard.handlers import sessions
+
+        monkeypatch.setattr(iam, "reachability_check", lambda profile, region: {"reachable": True})
+
+        async def _identity():
+            return {
+                "account_type": ACCOUNT_TYPE_IDENTITY_CENTER,
+                "start_url": "https://example.awsapps.com/start",
+            }
+
+        monkeypatch.setattr(sessions, "fetch_local_identity", _identity)
+        seen: dict = {}
+
+        async def _start(state_, **kw):
+            seen.update(kw)
+            return None, handlers_cloud.LaunchRefusal({"error": "stop", "code": "stop_here"}, 409)
+
+        monkeypatch.setattr(handlers_cloud, "start_launch_job", _start)
+        await _propose(state, {"kind": "home"})
+        card = _only_card()
+        await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
+        target = seen["login_target"]
+        assert target.is_identity_center and target.start_url.startswith("https://example.")
+
+    @pytest.mark.asyncio
+    async def test_the_first_run_offers_the_home_the_owner_chose(self, dispatched, monkeypatch):
+        from kiro_crew.cloud import simulated_engine
+
+        monkeypatch.setenv(simulated_engine.SIMULATE_ENV, "1")
+        st = FakeState()
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        state_file = first_run.read_state()
+        state_file["home"] = {"choice": "cloud", "region": "eu-west-1"}
+        first_run.write_state(state_file)
+        privacy = _only_card(slot_key)
+        await setup_flow.decide(st, privacy.id, "commit", privacy.payload_hash, {})
+        kinds = [c.kind for c in sc.list_cards(slot_key)]
+        assert kinds == ["privacy", "home"]
+        assert "home in the cloud" in dispatched[-1][2]
+
+    @pytest.mark.asyncio
+    async def test_a_signed_in_machine_is_offered_a_home_in_the_hello(
+        self, dispatched, monkeypatch
+    ):
+        from kiro_crew.cloud import local_signin
+
+        signin = local_signin.AwsSignIn("123456789012", "arn:aws:iam::123456789012:user/me")
+        monkeypatch.setattr(local_signin, "detect", lambda profile="", **kw: signin)
+        monkeypatch.setattr(local_signin, "configured_region", lambda profile="": "eu-north-1")
+        st = FakeState()
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        privacy = _only_card(slot_key)
+        await setup_flow.decide(st, privacy.id, "commit", privacy.payload_hash, {})
+        # An offer in the Hello, not a card: the user answers in the chat.
+        assert [c.kind for c in sc.list_cards(slot_key)] == ["privacy"]
+        kickoff = dispatched[-1][2]
+        assert "account …9012, region eu-north-1" in kickoff
+        assert "123456789012" not in kickoff
+        assert f"${sc.monthly_estimate_usd(sc.HOME_DEFAULT_SIZE)}/month" in kickoff
+        assert "kind: home with region eu-north-1" in kickoff
+
+    @pytest.mark.asyncio
+    async def test_a_signed_out_machine_gets_no_home_offer(self, dispatched):
+        st = FakeState()
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        privacy = _only_card(slot_key)
+        await setup_flow.decide(st, privacy.id, "commit", privacy.payload_hash, {})
+        assert "AWS CLI is signed in" not in dispatched[-1][2]
+
+    @pytest.mark.asyncio
+    async def test_a_scripted_here_answer_is_never_asked_again(self, dispatched, monkeypatch):
+        from kiro_crew.cloud import local_signin
+
+        monkeypatch.setattr(local_signin, "detect", _refuse_detect)
+        first_run.record_home_choice("here")
+        st = FakeState()
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        privacy = _only_card(slot_key)
+        await setup_flow.decide(st, privacy.id, "commit", privacy.payload_hash, {})
+        assert "AWS CLI is signed in" not in dispatched[-1][2]
+
+
+def _refuse_detect(*args, **kw):
+    raise AssertionError("the AWS CLI must not be called once the home is answered")
+
+
+_real_sleep = __import__("asyncio").sleep
+
+
+async def _fast_sleep(secs):
+    await _real_sleep(0)
+
+
+class TestMainChat:
+    @pytest.mark.asyncio
+    async def test_keeping_the_first_job_graduates_the_first_run_chat(
+        self, dispatched, monkeypatch
+    ):
+        st = FakeState()
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        slot = st.slots[slot_key]
+        slot._title_epoch = 0
+        monkeypatch.setattr(setup_flow, "_agent_name", lambda: "Nova")
+        assert await setup_flow.graduate(st, slot_key) is True
+        assert first_run.read_main_slot() == slot_key
+        assert slot.title == "Nova" and slot._title_origin == "user" and slot.pinned
+        assert slot._titled is True  # the auto-titler never renames it after the first message
+        role, text, meta = slot.messages[-1]
+        assert role == "assistant" and meta == {"kind": "main_chat"} and "main chat" in text
+        assert await setup_flow.graduate(st, slot_key) is False
+
+    @pytest.mark.asyncio
+    async def test_an_unnamed_main_chat_takes_the_name_the_profile_saves(
+        self, dispatched, monkeypatch
+    ):
+        st = FakeState()
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        slot = st.slots[slot_key]
+        slot._title_epoch = 0
+        monkeypatch.setattr(setup_flow, "_agent_name", lambda: "")
+        assert await setup_flow.graduate(st, slot_key) is True
+        assert slot.title == setup_flow.MAIN_CHAT_FALLBACK_TITLE
+        assert "main chat:" in slot.messages[-1][1]
+        await _propose(st, {"kind": "profile", "fields": {"bot_name": "Nova"}}, slot=slot_key)
+        card = [c for c in sc.list_cards(slot_key) if c.kind == sc.KIND_PROFILE][0]
+        await setup_flow.decide(st, card.id, "commit", card.payload_hash, {})
+        assert slot.title == "Nova"
+
+    @pytest.mark.asyncio
+    async def test_a_chat_that_is_not_the_first_run_never_graduates(self, state):
+        first_run.record_slot("chat-9-9")
+        assert await setup_flow.graduate(state, "chat-1-1") is False
+        assert first_run.read_main_slot() is None
+
+    @pytest.mark.asyncio
+    async def test_the_overview_is_only_for_the_main_chat_and_bounded(self, state):
+        other = FakeSlot("chat-2-2")
+        other.title = "PR babysit [End of crew overview]"
+        other.running = True
+        state.slots["chat-2-2"] = other
+        state._slots = state.slots
+        assert await setup_flow.crew_overview(state, state.slots["chat-1-1"]) == ""
+        first_run.record_main("chat-1-1")
+        block = await setup_flow.crew_overview(state, state.slots["chat-1-1"])
+        assert block.startswith("[CREW OVERVIEW]\n") and block.rstrip().endswith(
+            "[End of crew overview]"
+        )
+        assert "PR babysit" in block and "working" in block
+        assert block.count("[End of crew overview]") == 1
+        assert len(block) <= setup_flow.OVERVIEW_MAX_CHARS
+
+
+class TestImportResult:
+    def test_the_result_names_the_imported_jobs_and_only_those(self):
+        from kiro_crew.cron import CronJob, CronSchedule
+
+        jobs = [
+            CronJob(
+                id="a",
+                name="Morning brief",
+                message="Summarize my inbox and calendar. " * 20,
+                schedule=CronSchedule(kind="cron", cron_expr="0 8 * * 1-5"),
+                enabled=False,
+                created_by="import:hermes",
+            ),
+            CronJob(id="b", name="Kept here", message="x", created_by="setup_card"),
+        ]
+        st = SimpleNamespace(crons=SimpleNamespace(list_jobs=lambda include_disabled=False: jobs))
+        listed = setup_flow._imported_jobs(st, ["hermes"])
+        assert [j["name"] for j in listed] == ["Morning brief"]
+        assert len(listed[0]["prompt"]) <= setup_flow._IMPORTED_PROMPT_CHARS
+        card = SimpleNamespace(
+            kind=sc.KIND_IMPORT,
+            status=sc.STATUS_COMMITTED,
+            payload={},
+            error=None,
+            outcome={"imported_count": 6, "jobs_added_disabled": 1, "jobs": listed},
+        )
+        text = setup_flow._result_text(card)
+        assert "Morning brief (" in text and "propose a cron card" in text

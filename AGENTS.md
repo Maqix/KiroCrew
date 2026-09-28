@@ -57,6 +57,7 @@ in the **same commit** when you change what it documents.
 | `stt/`, `transcribe.py`, `voice_reply.py`, the mic, dictation, TTS | [stt-streaming](docs/system-specs/modules/stt-streaming.md) + [voice-streaming](docs/system-specs/modules/voice-streaming.md) |
 | cron, learn, dashboard handlers | [learn-cron-dashboard](docs/system-specs/modules/learn-cron-dashboard.md) |
 | Slack, Discord, any channel, messaging, approvals | [messaging](docs/system-specs/modules/messaging.md) + [slack-gateway](docs/system-specs/modules/slack-gateway.md) |
+| the one-chat first run, setup cards, `setup_card`, `start.sh`, pasted-secret capture | [first-run](docs/system-specs/modules/first-run.md) + [rfc-one-chat-first-run](docs/request-for-change/rfc-one-chat-first-run.md) |
 | subagents, spawn, orphan recovery | [subagent](docs/system-specs/modules/subagent.md) |
 | crews, `select_crew`, crew bindings, Crew Mode slots | [crew-mode](docs/system-specs/modules/crew-mode.md) |
 | the pipeline conductor agent or its skill | [pipeline-conductor](docs/system-specs/modules/pipeline-conductor.md) |

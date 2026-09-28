@@ -19,8 +19,38 @@ from kiro_crew.constants import (
 from kiro_crew.preview_text import drop_format_chars
 
 SESSION_RELOAD_KIND = "session_reload"
+#: The notice that reports pasted credentials moved out of a message (see
+#: ``dashboard/secret_capture.py``). Kept as a literal to keep this module a leaf.
+SECRET_CAPTURED_KIND = "secret_captured"
+#: The notice that says the first run finished and this chat is now the main chat.
+MAIN_CHAT_KIND = "main_chat"
+#: The first-run notices of ``dashboard/setup_guardrails.py``: a turn that went
+#: silent or a kickoff that got no reply (``meta.reason`` says which), and a spent
+#: model allowance.
+SETUP_STALLED_KIND = "setup_stalled"
+SETUP_QUOTA_KIND = "setup_quota"
+#: The main chat's daily tip in the week after the first run (``dashboard/first_week.py``).
+FIRST_WEEK_TIP_KIND = "first_week_tip"
+#: The main chat's note that a chat it handed work to has finished
+#: (``dashboard/handoff_notice.py``).
+HANDOFF_DONE_KIND = "handoff_done"
+#: The note that a home in the cloud waits for one click to sign in to Kiro
+#: (``dashboard/home_signin.py``).
+HOME_SIGNIN_KIND = "home_signin"
 
-SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset({"compaction", SESSION_RELOAD_KIND})
+SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
+    {
+        "compaction",
+        SESSION_RELOAD_KIND,
+        SECRET_CAPTURED_KIND,
+        MAIN_CHAT_KIND,
+        SETUP_STALLED_KIND,
+        SETUP_QUOTA_KIND,
+        FIRST_WEEK_TIP_KIND,
+        HANDOFF_DONE_KIND,
+        HOME_SIGNIN_KIND,
+    }
+)
 
 
 def is_system_notice(role: object, meta: object) -> bool:

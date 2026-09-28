@@ -1240,6 +1240,19 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli_doctor.py::_linger_enabled",
         "cli_server.py::_logs_cmd",
         "cli_server.py::_spawn_detached_gateway",
+        # `kirocrew start --foreground`: the same `kirocrew gateway` argv the
+        # detached spawn above runs (cli_server._gateway_argv, plus the literal
+        # --no-open/--port), kept as a child in its own process group so the
+        # command can forward Ctrl-C to it and reap it. Operator-invoked, cwd is
+        # $HOME, nothing agent-influenced; unsandboxed for the same reason as the
+        # detached spawn -- it IS the gateway.
+        "cli_start.py::spawn_gateway",
+        # `kirocrew start` offering kiro-cli's own sign-in to the operator at the
+        # terminal: the resolved kiro-cli binary plus the literals `login` [and
+        # `--use-device-flow`], run only after the operator answers yes to the
+        # prompt, attached to that terminal. The same resolver `kirocrew doctor`
+        # uses for its `whoami` probe; no agent input reaches the argv.
+        "cli_start.py::_run_kiro_login",
         "cli_server.py::_update",
         # The agent-only config refresh extracted from _update: a fixed argv
         # (`<this interpreter> -m kiro_crew setup --agent-only`) built from
@@ -1309,6 +1322,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "connections/l1_smoke.py::main",
         "cloud/source.py::_git_tracked_files",
         "cloud/source.py::_tracked_tree_is_dirty",
+        "cloud/source.py::_untracked_build_files",
         "cloud/source.py::_use_git_archive",
         # Release-tag probe before a packaged install's cloud launch: `<trusted
         # git> ls-remote --exit-code --tags -- <repo> refs/tags/<ref>`, a fixed
@@ -1340,6 +1354,23 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # parsed, never executed. Same classification as the whoami probes
         # in `cloud/ssm.py` above.
         "cloud/login_target.py::discover_local_identity",
+        # The home card's "Sign in to AWS": the AWS CLI's own browser sign-in,
+        # `<resolved aws> login [--profile <p>] [--region <r>]`, fixed argv, no
+        # shell. The binary comes from `deploy.engine.resolve_aws_bin` (the same
+        # resolver every `aws` spawn uses); the profile and region are the ones
+        # on the card's hash-bound payload, re-validated by
+        # `setup_cards.build_home`'s charset regexes, so no agent text reaches
+        # the argv. Reached only from the owner's click on the owner-only decide
+        # route, from a direct-local request, and gated by
+        # `aws.assert_human_action`. stdin/stdout/stderr are all DEVNULL (Kiro
+        # Crew never sees what the CLI prints or the credentials it caches), the
+        # env is `sandbox.scrub_env`, and the child gets its own session so the
+        # card's timeout and cancel stop it. NOT sandbox-routed for the reason
+        # `cloud/ssm.py::open_port_forward` is not: it is a long-lived child, and
+        # its whole job is to open the owner's real browser, receive the OAuth
+        # redirect on this machine's loopback and write the CLI's own cache and
+        # `~/.aws/config`.
+        "dashboard/setup_aws_signin.py::_spawn_login",
         "dashboard/chat_voice.py::api_voice_voices",
         # Computer-use permission probe: `<our own kirocrew binary> computer
         # doctor --json`, a fixed argv (module constants) with no shell and no

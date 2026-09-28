@@ -191,3 +191,6 @@ src/kiro_crew/apps/builtins/aws_control/crew/runtime/vendor/*.whl
 
 # Cross-process lock for workspace Kiro CLI overlay writers.
 /.kiro/settings/.kirocrew-cli-settings.lock
+
+# kanban-md holds this lock while it writes a board; never commit it.
+docs/kanban/*/.lock

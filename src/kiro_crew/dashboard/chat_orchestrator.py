@@ -14,6 +14,7 @@ from aiohttp import web
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.config.sections import OrchestratorConfig
 from kiro_crew.context_management import MAX_STAGE_ROUNDS, OrchestrationTracker
+from kiro_crew.dashboard import handoff_notice
 from kiro_crew.dashboard.chat_runner import (
     _deliver_cross_surface_reply,
     _deliver_linked_slack_message,
@@ -1895,6 +1896,12 @@ async def _stage_loop(
             # Clean up task so the slot is available for the next "Go" click
             # (paused) or new messages (completed).
             slot.task = None
+            # The plan's end is a cycle end for the main chat's hand-off notices
+            # (MC.9): what this chat is owed, and, unless the plan paused on the
+            # user, whether it finished work the main chat handed it.
+            handoff_notice.note_controller_end(
+                state, slot, asyncio.current_task(), finished=not _paused
+            )
         state.push_slots_update()
 
 

@@ -22,6 +22,7 @@ import PaneDim from './PaneDim'
  *  ChatPane's `leading` prop. */
 export type PaneLeading = { inset?: boolean; control?: React.ReactNode }
 import PendingQuestionCard from './PendingQuestionCard'
+import PendingSetupCards from './setup/PendingSetupCards'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import ChatFooter from '../pages/chat/ChatFooter'
@@ -1412,6 +1413,8 @@ export default function ChatPane({
   const renderers = useMemo(
     () => createTranscriptRenderers({
       slot: slotKey,
+      // PendingSetupCards is mounted above this pane's composer below.
+      setupCardTray: true,
       toolDisclosure,
       onToolDisclosureChange: setToolDisclosureFor,
       // A steer-only surface has no steer/queue concept to explain, so a
@@ -1692,6 +1695,12 @@ export default function ChatPane({
         {queuedMessages.length > 0 && (
           <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} onEdit={onEditQueued} onReorder={onReorderQueued} pendingIds={queuePendingIds} />
         )}
+
+        {/* Live setup cards (one-chat first run) for THIS pane's slot, pinned
+            above the composer for the same reason as the question card below:
+            the agent keeps writing after proposing one, so its transcript row
+            scrolls away. The row itself folds to a pointer (`setupCardTray`). */}
+        <PendingSetupCards slotKey={slotKey} className="pb-2" />
 
         {/* The pending ask_question card renders per pane: in split mode the
             agent that asked may not be the pane the user is looking at, and

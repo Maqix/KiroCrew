@@ -354,17 +354,32 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     _body, provider = parsed
     slug = str(provider["slug"])
 
+    result = await start_provider_mint(provider)
+    if result.get("conflict"):
+        return _conflict(
+            "this provider needs an OAuth app configured under Settings → OAuth Apps",
+            str(result["conflict"]),
+            slug=slug,
+        )
+    return web.json_response({"ok": True, "slug": slug, **result})
+
+
+async def start_provider_mint(provider: Any) -> dict[str, Any]:
+    """Start (or adopt) the approval-URL mint for a curated *provider*.
+
+    Returns ``{"state": "waiting"|"minting", "token": str}``, or
+    ``{"conflict": "client_not_configured"}`` when a pre-registered provider has
+    no usable OAuth client yet. Shared by the Connections page and the
+    first-run connect card, so both start a mint the same way.
+    """
+    slug = str(provider["slug"])
     # A pre-registered provider (registry ``auth.mode``) has nothing to mint
     # against until the operator has entered a usable client: kiro-cli would only
     # come back with the vendor's "unknown client" error, which no user can act on,
     # and the card is already rendering the instruction instead of Connect. Refuse
     # here too so a stale tab or a hand-built request cannot start that process.
     if not await asyncio.to_thread(_oauth_client_configured, provider):
-        return _conflict(
-            "this provider needs an OAuth app configured under Settings → OAuth Apps",
-            "client_not_configured",
-            slug=slug,
-        )
+        return {"conflict": "client_not_configured"}
 
     # Function-local by DESIGN, not for a cycle: this handlers package is imported
     # on the gateway boot path, and the mint engine drags in the ACP client, the
@@ -397,7 +412,7 @@ async def api_connections_mint(request: web.Request) -> web.Response:
         )
         # ``waiting`` rather than ``minting``: the URL exists already. The card polls
         # the mint state either way, and that poll now finds it on the first read.
-        return web.json_response({"ok": True, "slug": slug, "state": "waiting", "token": adopted})
+        return {"state": "waiting", "token": adopted}
 
     # Reserved BEFORE responding: the response names a row this tab polls
     # immediately, so the row has to be visible first. Allocating only a token here
@@ -424,7 +439,7 @@ async def api_connections_mint(request: web.Request) -> web.Response:
         outcome="started",
         resources=f"provider:{slug}",
     )
-    return web.json_response({"ok": True, "slug": slug, "state": "minting", "token": token})
+    return {"state": "minting", "token": token}
 
 
 async def api_connections_mint_state(request: web.Request) -> web.Response:

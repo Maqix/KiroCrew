@@ -262,14 +262,15 @@ def test_skill_injection_table_matches_the_plan_function(doc_text: str) -> None:
     try:
         ctx_mod.agent_skill_globs = lambda _agent, **_kwargs: []
         for is_cc in (False, True):
-            # row 1: kirocrew, unmapped -> the whole catalog, on both backends
-            assert ctx_mod._skills_injection_plan("kirocrew", is_cc=is_cc) == (True, [])
+            # row 1: kirocrew (either primary name), unmapped -> the whole catalog
+            for agent in ("kirocrew", "kirocrew-main"):
+                assert ctx_mod._skills_injection_plan(agent, is_cc=is_cc) == (True, [])
             # row 3: custom, unmapped -> nothing, on either backend
             assert ctx_mod._skills_injection_plan("kirocrew-worker", is_cc=is_cc) == (False, [])
         ctx_mod.agent_skill_globs = lambda _agent, **_kwargs: list(mapping)
         for is_cc in (False, True):
             # rows 2 and 4: the mapped set only, on either backend
-            for agent in ("kirocrew", "kirocrew-worker"):
+            for agent in ("kirocrew", "kirocrew-main", "kirocrew-worker"):
                 assert ctx_mod._skills_injection_plan(agent, is_cc=is_cc) == (True, mapping)
     finally:
         ctx_mod.agent_skill_globs = original

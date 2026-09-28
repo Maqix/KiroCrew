@@ -415,6 +415,39 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "added": added, "enabled": enable})
 
 
+async def ensure_remote_server(name: str, url: str) -> str:
+    """Add an enabled remote MCP entry *name* → *url* unless one already exists.
+
+    Returns ``"added"``, ``"exists"`` (a server of that name is already
+    configured anywhere; left untouched), or ``"invalid"`` / ``"malformed"``
+    when nothing could be written. The first-run connect card uses this for the
+    same entry the Connections page writes before it mints: the mint builds its
+    one-server spec from this entry.
+    """
+    if not _is_valid_mcp_name(name):
+        return "invalid"
+    spec = {"url": url}
+    if _validate_spec(spec):
+        return "invalid"
+    async with _get_mcp_lock():
+        data = _load_kirocrew_config_strict()
+        if data is None:
+            return "malformed"
+        if _find_server_spec_anywhere(name) is not None:
+            return "exists"
+        data.setdefault("mcpServers", {})[name] = _clean_spec(spec)
+        await _mcp._offload_config_write(_mcp._atomic_write, _mcp._kirocrew_mcp_json(), data)
+    await _rebuild_agent_config()
+    sel().log_api_access(
+        caller="dashboard",
+        operation="mcp_custom_add",
+        outcome="ok",
+        source="setup_card",
+        resources=f"custom:{name} enabled=True",
+    )
+    return "added"
+
+
 async def api_mcp_custom_get(request: web.Request) -> web.Response:
     """GET /api/mcp/custom/{name} — the editable spec of one server.
 

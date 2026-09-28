@@ -15,6 +15,10 @@ import pytest
 
 from kiro_crew.execution_context import execution_for_store
 from kiro_crew.subagent import _TURN_LIMIT, SubagentManager
+from kiro_crew.subagent_manager.admission.pump import (
+    SPAWN_APPROVAL_FAILED_ERROR,
+    SPAWN_DECLINED_ERROR,
+)
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -329,7 +333,7 @@ class TestSpawnWithApprovalCallback:
         # Assert
         approval_callback.assert_awaited_once()
         assert info.done is True
-        assert info.error == "spawn rejected"
+        assert info.error == SPAWN_DECLINED_ERROR
         assert info.result == ""
         on_done_callback.assert_awaited_once_with(info)
 
@@ -376,7 +380,7 @@ class TestSpawnWithApprovalCallback:
 
         # Assert
         assert info.done is True
-        assert info.error == "spawn rejected"
+        assert info.error == SPAWN_APPROVAL_FAILED_ERROR
         assert manager._running_count == 0
 
     @pytest.mark.asyncio

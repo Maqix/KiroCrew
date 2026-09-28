@@ -550,6 +550,25 @@ export interface ThemeContextValue {
   /** Has the first-run Meet CrewMates flow been finished or dismissed? Server-backed like the other first-run flags; localStorage is only the render cache. */
   crewmatesOnboarded: boolean
   themeBootReady: boolean
+  /**
+   * The one-chat first-run session's slot key, or null when there is none.
+   *
+   * Read from `GET /api/theme/boot`'s `first_run_slot`. While it is set the
+   * first-run chat owns onboarding, so the four chapters do not open on their
+   * own (App.tsx); `/onboarding` and the classic-setup events still open them.
+   * LATCHED for the page's lifetime once seen: a boot re-read that stops
+   * carrying it (the gateway retiring the slot mid-session) must not flip the
+   * chapters open over the conversation that just replaced them. A reload reads
+   * the server afresh.
+   */
+  firstRunSlot: string | null
+  /**
+   * The main chat's slot key (RFC §6.9), or null before the first run
+   * graduates into it. Read from `/api/theme/boot`'s `main_slot`. Set forward
+   * only: graduation happens mid-session (the gateway re-reads boot on the
+   * `main_chat` notice), and a later read that drops it does not unset it.
+   */
+  mainSlot: string | null
   markOnboarded: () => void
   markImportOnboarded: () => void
   markPrivacyAcked: () => void
@@ -874,6 +893,8 @@ function useThemeState(): ThemeContextValue {
   )
   const legacyMigrationStartedRef = useRef(false)
   const [themeBootReady, setThemeBootReady] = useState(false)
+  const [firstRunSlot, setFirstRunSlot] = useState<string | null>(null)
+  const [mainSlot, setMainSlot] = useState<string | null>(null)
   // The serialized active detail last applied by the branding/overrides effect.
   // Every reload after the first resets this guard at its START (before the
   // early active-detail fetch) because a reinstalled pack can change assets on
@@ -1147,6 +1168,12 @@ function useThemeState(): ThemeContextValue {
         }
       }
     }
+    // Set in the same pass as `themeBootReady`, so the App's chapter effect
+    // never sees boot ready without the first-run slot it must defer to.
+    const bootFirstRunSlot = (bootData as { first_run_slot?: unknown } | undefined)?.first_run_slot
+    if (typeof bootFirstRunSlot === 'string' && bootFirstRunSlot) setFirstRunSlot(bootFirstRunSlot)
+    const bootMainSlot = (bootData as { main_slot?: unknown } | undefined)?.main_slot
+    if (typeof bootMainSlot === 'string' && bootMainSlot) setMainSlot(bootMainSlot)
     setThemeBootReady(true)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootData, themeBootFetched])
@@ -1515,6 +1542,8 @@ function useThemeState(): ThemeContextValue {
     privacyAcked,
     crewmatesOnboarded,
     themeBootReady,
+    firstRunSlot,
+    mainSlot,
     markOnboarded,
     markImportOnboarded,
     markPrivacyAcked,

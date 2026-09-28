@@ -71,3 +71,41 @@ def test_mobile_access_code_fits_the_dialog_at_natural_size() -> None:
     # each module (MOBILE_QR_BOX_SIZE CSS pixels) must stay big enough for a camera.
     assert img.size[0] <= _QR_BOX_WIDTH_PX
     assert MOBILE_QR_BOX_SIZE == 4
+
+
+def test_terminal_drawing_is_the_same_symbol_two_modules_per_cell() -> None:
+    """What ``kirocrew start`` prints on a headless host must scan like the image.
+
+    Two modules per character cell, top over bottom, and INVERTED -- a filled
+    half is a LIGHT module -- so on a light-on-dark terminal the quiet zone is a
+    light frame around dark modules. Rebuilt here from the encoder's own module
+    matrix, so any drift in the drawing shows up as a wrong cell.
+    """
+    import qrcode
+
+    reference = qrcode.QRCode(border=2)
+    reference.add_data(_ACCESS_URL)
+    reference.make(fit=True)
+    matrix = reference.get_matrix()  # True is a dark module; includes the border
+    glyph = {(False, False): "█", (True, False): "▄", (False, True): "▀", (True, True): "\xa0"}
+    expected = []
+    for row in range(0, len(matrix), 2):
+        top = matrix[row]
+        bottom = matrix[row + 1] if row + 1 < len(matrix) else [True] * len(top)
+        expected.append("".join(glyph[(t, b)] for t, b in zip(top, bottom)))
+
+    drawing = qr.render_qr_terminal(_ACCESS_URL)
+
+    assert drawing.endswith("\n")
+    assert drawing.splitlines() == expected
+    # The quiet zone reads as light all the way across.
+    assert set(drawing.splitlines()[0]) == {"█"}
+
+
+def test_terminal_drawing_never_echoes_or_logs_its_payload(caplog) -> None:
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    drawing = qr.render_qr_terminal(_ACCESS_URL)
+    assert _TOKEN not in drawing
+    assert not [r for r in caplog.records if _TOKEN in r.getMessage()]

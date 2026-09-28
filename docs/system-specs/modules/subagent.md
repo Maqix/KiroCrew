@@ -691,6 +691,20 @@ never names a surface it does not know about, and the fast-fail sentence ("no
 surface could show the approval prompt") is only ever emitted once every surface
 above has genuinely declined to carry it.
 
+**A refusal names its gate; a stop is not a refusal.** Every refusal the spawn
+gate writes starts with `spawn rejected` (the prefix `spawn_progress_summary`
+and the workflow memory scenario match) and says which prompt refused, why, and
+what the agent can do, never which setting would lift it: a prompt answered No
+or expired unanswered is `SPAWN_DECLINED_ERROR`, a callback that raised is
+`SPAWN_APPROVAL_FAILED_ERROR` (audited `reason="approval_error"`), both in
+`subagent_manager/admission/pump.py`. The dashboard's approval wait
+(`ApprovalCoordinator.request`) answers a cancellation of the waiting task with
+`False`, so `_spawn_with_approval` checks `asyncio.current_task().cancelling()`
+before reading `False` as a refusal: a Stop, a reap or a shutdown of a spawn
+still parked on its prompt re-raises the cancellation, and the stopper's record
+(a neutral stop, the reap's "awaiting an unanswered spawn approval") is what
+reaches the parent. Pinned by `test_spawn_rejection_names_its_gate.py`.
+
 ### Tool Approval Cascade
 
 When a subagent's tool call triggers `EVENT_PERMISSION_REQUEST`, approval

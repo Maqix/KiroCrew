@@ -195,6 +195,8 @@ boundary:
 | `recovery` | A runner-authored continuation | Its own recovery card, or a generic note if the marker is unrecognised |
 | `cron` | A scheduled job's output — the user's own | Labelled bubble (also carries `cronLabel`) |
 | `user_replay` | The user's original message, replayed because the turn emitted nothing | Ordinary bubble; it is speech |
+| `first_run` | The `[First run]` kickoff, dispatched when the owner acknowledges the privacy card | Collapsed one-line note |
+| `setup_result` | A `[Setup card result]` report of the owner's decision on a setup card | Collapsed one-line note |
 
 `resolveInjectCard` in `website/src/pages/chat/RecoveryCard.tsx` is the single
 decision point, shared by `ChatPage` and the `transcriptRenderers` registry so the
@@ -510,6 +512,18 @@ speech rather than as the user.
 | `[RESOURCES]` | `resource_status.py` advisory builder | Host memory crossed the tight/critical threshold, **or** the agent slice sits within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`; take the lighter path this turn. |
 | `[Relevant skills for this message]` | `skills.py` pointer renderer | Skill candidates named by path instead of by injected body. The body must be read before use unless that skill already appears earlier in the conversation, where native history still carries its instructions. |
 | `[INCOGNITO SESSION]` / `[TEMPORARY SESSION]` | `dashboard/chat_utils.py` ephemeral-session prefixes | An instruction, not a tool-level gate: it forbids memory tools (writes in incognito, reads as well in temporary) and learns nothing from the chat — the transcript itself is kept in History for the user, but no lesson, memory or summary is derived from it. `learn_remove` and the cron tools stay permitted as active user actions, and a cron change persists outside the transcript. |
+
+## Setup-card envelopes
+
+Two envelopes belong to the one-chat first run
+([first-run.md](../modules/first-run.md)). Both are gateway-authored and both
+carry user provenance, because each exists only as the consequence of an
+owner's click:
+
+| Envelope | Prefix constants (`dashboard/state.py`) | Emitted by | What it means to the model |
+|---|---|---|---|
+| `[First run]` … `[End of first run]` | `FIRST_RUN_PREFIX`, `FIRST_RUN_END` | `setup_flow.start_first_run_turn` after the privacy card is committed | This chat is a fresh install's first run; the facts listed were gathered by the gateway, not typed by the user. |
+| `[Setup card result]` … `[End of setup card result]` | `SETUP_RESULT_PREFIX`, `SETUP_RESULT_END` | `setup_flow._report` when a card reaches a terminal status | The owner decided a setup card; the status and outcome are the gateway's record, not the user's words. |
 
 ## Adding a new envelope
 

@@ -1,10 +1,11 @@
-"""QR encoding: turn a short string into a PNG data URI.
+"""QR encoding: turn a short string into a PNG data URI or a terminal drawing.
 
-One owner for QR rendering, so the two surfaces that need it — the WeChat login
-handshake and tailnet mobile access — cannot drift into two subtly different
-encoders. Both want the same thing: a scannable image the dashboard can drop
-straight into an ``<img src>`` without a client-side QR library and without a
-second HTTP round trip for the image bytes.
+One owner for QR rendering, so the surfaces that need it — the WeChat login
+handshake, tailnet mobile access and ``kirocrew start`` on a headless host —
+cannot drift into subtly different encoders. The dashboard wants a scannable
+image it can drop straight into an ``<img src>`` without a client-side QR
+library and without a second HTTP round trip for the image bytes; the terminal
+wants the same symbol drawn in text (:func:`render_qr_terminal`).
 
 ``qrcode[pil]`` is a core dependency (``setup.cfg``), but it is imported **lazily
 inside the call**. It pulls Pillow, which is a heavy import, and a process that
@@ -62,3 +63,28 @@ def render_qr_data_uri(payload: str, *, box_size: int = _QR_BOX_SIZE) -> str:
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def render_qr_terminal(payload: str) -> str:
+    """Draw *payload* as a QR code in Unicode half blocks, for printing to a terminal.
+
+    Each character cell carries two modules stacked vertically, so the symbol
+    keeps a roughly square aspect in a terminal font. The drawing is inverted
+    (a filled block is a LIGHT module) because terminals default to light text
+    on a dark background: the quiet zone then prints as a light frame around
+    dark modules, which is what a phone camera expects.
+
+    Returns the drawing as a string ending in a newline and prints nothing: the
+    caller decides where it goes. Raises whatever the encoder raises, like
+    :func:`render_qr_data_uri`.
+    """
+    # Deferred for the same reason as in render_qr_data_uri: importing qrcode
+    # loads Pillow, and only a headless `kirocrew start` ever draws one.
+    import qrcode  # noqa: PLC0415 - see comment above
+
+    qr = qrcode.QRCode(border=_QR_BORDER)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    buf = io.StringIO()
+    qr.print_ascii(out=buf, invert=True)
+    return buf.getvalue()

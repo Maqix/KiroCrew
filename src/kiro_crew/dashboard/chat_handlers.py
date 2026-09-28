@@ -628,6 +628,26 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     denied = deny_non_owner_remote_operation(request, slot, "chat_send")
     if denied is not None:
         return denied
+    # A pasted credential never reaches the transcript, the queue or the model:
+    # it is swapped for a secret:// reference here, before any branch below
+    # stores or sends the message. Only the owner's paste is kept in the vault.
+    if message:
+        # A distinct local name: this function imports is_owner_dashboard_request
+        # further down, which makes that name local to the whole function.
+        from kiro_crew.dashboard.handlers.source_providers import (
+            is_owner_dashboard_request as _owner_request,
+        )
+        from kiro_crew.dashboard.secret_capture import capture_pasted_secrets
+
+        message = await capture_pasted_secrets(
+            state,
+            slot,
+            message,
+            store=not request_app and _owner_request(request),
+        )
+        from kiro_crew.dashboard.first_week import note_user_message
+
+        await asyncio.to_thread(note_user_message, slot.key, message)
     # The member-pin refusal sits AFTER the app-ownership 404s (a 409 here
     # for an app would be an existence oracle for slots it may not see) and
     # BEFORE the _human_seen attendance mark, so a denied request leaves the

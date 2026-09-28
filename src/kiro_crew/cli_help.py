@@ -33,6 +33,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("gateway", "Start Kiro Crew in this terminal (dashboard + messaging channels)"),
             ("service", "Run the gateway as a background service that starts on boot"),
             ("doctor", "Verify this install and diagnose problems"),
+            ("start", "Check the agent harness, start the gateway and open the chat"),
         ),
     ),
     (

@@ -69,6 +69,8 @@ async def test_theme_boot_returns_defaults() -> None:
         "import_onboarded": False,
         "privacy_acked": False,
         "crewmates_onboarded": False,
+        "first_run_slot": None,
+        "main_slot": None,
     }
 
 
@@ -94,6 +96,8 @@ async def test_theme_boot_returns_configured_values() -> None:
         "import_onboarded": True,
         "privacy_acked": False,
         "crewmates_onboarded": False,
+        "first_run_slot": None,
+        "main_slot": None,
     }
 
 
@@ -120,6 +124,8 @@ async def test_theme_config_get() -> None:
         "import_onboarded": True,
         "privacy_acked": False,
         "crewmates_onboarded": False,
+        "first_run_slot": None,
+        "main_slot": None,
     }
 
 
@@ -150,6 +156,8 @@ async def test_theme_config_put_updates_and_saves() -> None:
         "import_onboarded": True,
         "privacy_acked": False,
         "crewmates_onboarded": False,
+        "first_run_slot": None,
+        "main_slot": None,
     }
     cfg.save.assert_called_once()
 

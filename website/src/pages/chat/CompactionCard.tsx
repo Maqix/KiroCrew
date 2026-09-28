@@ -1,5 +1,5 @@
 import { memo, useId } from 'react'
-import { Archive, ChevronRight } from 'lucide-react'
+import { Archive, ChevronRight, House, KeyRound, Lightbulb } from 'lucide-react'
 
 import ErrorNotice from '../../components/ErrorNotice'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
@@ -7,6 +7,8 @@ import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { isSystemNoticeKind } from '../../lib/systemNotice'
 import CompactionKeepLine from './CompactionKeepLine'
+import HandoffDoneNotice from './HandoffDoneNotice'
+import HomeSigninNotice from './HomeSigninNotice'
 import { decisionStripFieldOf, readCompactionKeepRecord } from './decisionRecord'
 import NoticeCard from './NoticeCard'
 import { useRowDisclosure } from './rowDisclosure'
@@ -252,11 +254,43 @@ export default CompactionCard
 /**
  * Registry entry body for every assistant-role system notice: the compaction
  * kinds fold into CompactionCard, the session-reload confirmation is a plain
- * NoticeCard. One renderer for the whole `SYSTEM_NOTICE_KINDS` set, so adding a
+ * NoticeCard, and the captured-secret note (`secret_captured`: pasted
+ * credentials were moved out of a message into the vault) is a NoticeCard with
+ * a key glyph, the first run's graduation (`main_chat`) is an accented
+ * NoticeCard with a house glyph, and the first week's daily tip
+ * (`first_week_tip`) is a NoticeCard with a lightbulb glyph. The first run's
+ * guardrails (`setup_stalled`, `setup_quota`) are drawn with their actions by
+ * the transcript registry's `setup_guardrail` entry; the plain notice below is
+ * their fallback. The main chat's note that a handed-off chat finished
+ * (`handoff_done`) gets its actions from the registry's `handoff_done` entry;
+ * here it is drawn without them. One renderer for the whole `SYSTEM_NOTICE_KINDS` set, so adding a
  * kind to the scans' skip list and forgetting the transcript cannot leave it
  * painting as a reply.
  */
 export function SystemNoticeRow({ message, disclosureKey }: { message: ChatMessage; disclosureKey?: string }) {
+  // Gateway-authored status text (it names only `secret://NAME` references,
+  // never a value), drawn verbatim: it is not model output and carries no markup.
+  if (noticeKindOf(message) === 'secret_captured') {
+    return <NoticeCard content={message.content} icon={KeyRound} />
+  }
+  // The first run's graduation (RFC §6.9): gateway-authored, verbatim, and the
+  // one notice the user should not scroll past — the chat they are in has just
+  // become their main chat — so it carries the accent edge.
+  if (noticeKindOf(message) === 'main_chat') {
+    return <NoticeCard content={message.content} icon={House} emphasis />
+  }
+  // A first-week tip (dashboard/first_week.py): gateway-authored, verbatim.
+  if (noticeKindOf(message) === 'first_week_tip') {
+    return <NoticeCard content={message.content} icon={Lightbulb} />
+  }
+  if (noticeKindOf(message) === 'handoff_done') {
+    return <HandoffDoneNotice message={message} />
+  }
+  // A home in the cloud waiting for one click to sign in to Kiro
+  // (dashboard/home_signin.py): localized from `meta.opened`, no action.
+  if (noticeKindOf(message) === 'home_signin') {
+    return <HomeSigninNotice message={message} />
+  }
   if (noticeKindOf(message) === 'compaction') {
     return (
       <CompactionCard

@@ -407,7 +407,7 @@ def set_cc_model(name: str, value: str | None) -> None:
 def get_mirrored_from(name: str) -> str | None:
     """Return the fingerprint of the default spec this agent was mirrored from.
 
-    A DERIVED agent (today only ``kirocrew-worker``) is a function of
+    A DERIVED agent (``kirocrew-worker`` and ``kirocrew-main``) is a function of
     ``kirocrew.json``, and this is the only durable record of WHICH generation of
     that file it was derived from. It lives in the sidecar rather than in the spec
     for the reason the whole sidecar exists: kiro-cli validates a spec with

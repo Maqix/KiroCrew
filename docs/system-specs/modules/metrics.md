@@ -1339,7 +1339,7 @@ shape cannot be widened from a call site.
 | `id` | 32-char hex | Random UUID4. Dedup key for `COUNT(DISTINCT)`. |
 | `v` | `0.1.2` | Version adoption. **Release only** — every build stamp is stripped by `release()`. |
 | `py` | `3.12` | **Minor only.** Answers "when can the floor move off 3.10". |
-| `dist` | `dmg` | Which install path users take. Clamped to a fixed set. Baked at build time (see below). |
+| `dist` | `dmg` | Which install path users take. Clamped to a fixed set. Baked at build time (see below), except the one origin value `start`. |
 | `first_seen` | `1`/`0` | One bit → new-install and "launched once, never again" rate. |
 
 #### Four fields were REMOVED — do not re-add them
@@ -1442,6 +1442,43 @@ deleted script still fails on a host without bash.
 gitignore entry, and that the script accepts every `KNOWN_DISTRIBUTIONS` value,
 so adding a channel to the frozenset without teaching the script fails a test
 instead of failing at release time.
+
+#### `start`: the one value that is an origin, not a shape
+
+`start.sh` and `start.ps1` (the one-command installs, `rfc-one-chat-first-run.md`
+§8) do not produce an artifact of their own. `start.sh` runs `cli.sh`, which
+installs the `wheel`, and `start.ps1` runs the signed desktop installer, which
+installs `nsis`. The baked shape is therefore the one the installer they wrapped
+produced, and it stays that way: `update_capability`, `update_layout` and the
+bug-report install option read `beacon.distribution()`, and a start-script
+install updates exactly like the shape it is. So `start` is **not** in
+`KNOWN_DISTRIBUTIONS`, and `stamp-distribution.sh` refuses it.
+
+What records the origin is a data-home marker. After the installer succeeds, each
+start script writes `start` to `<data home>/install-origin` (the symlink-proof
+temp-then-rename write `cli.sh` uses for its own markers). Only the heartbeat reads
+it: `beacon.heartbeat_distribution()` reports `start` when the baked shape is
+`wheel` or `nsis` and the marker's content is exactly `start`, and the shape
+otherwise. `_fields()` sends that value, so the payload and `kirocrew telemetry
+status` agree. The wire field's closed set is `HEARTBEAT_DISTRIBUTIONS`
+(`KNOWN_DISTRIBUTIONS` plus `start`). No field was added. The start-script cohort
+becomes comparable with the `cli.sh` (`wheel`) cohort from data already
+collected.
+
+Three properties are deliberate:
+
+- The marker is read through the same `_read_state` guard as the other beacon
+  files: a regular file only (a symlink, a FIFO or a directory reads as absent),
+  bounded, and compared, never forwarded. Nothing free-form can reach the wire.
+- A marker beside any other shape is stale and ignored. A data home a start script
+  once installed into and a DMG serves now reports `dmg`.
+- The marker is in the agent-writable data home, so unlike the baked shape a
+  running install **can** flip its own value, but only between its shape and
+  `start`. That is the whole relabel surface, and it is why the value is confined
+  to the heartbeat and kept out of every update decision.
+
+`test/test_beacon.py::TestInstallOrigin` pins all three, the closed set, and that
+both start scripts write the marker name and value this module reads.
 
 #### Why `v` is clamped
 

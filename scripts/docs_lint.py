@@ -166,6 +166,10 @@ UNCURATED_PREFIXES: tuple[str, ...] = (
     # add a file the app never loads, so reachability and the index requirement
     # are off here while every link and every cited path is still checked.
     "src/kiro_crew/apps/builtins/",
+    # A kanban board's task cards are kanban-md's own files: the CLI creates,
+    # renames and archives them, and the board (`kanban-md board`) is their
+    # index. `docs/kanban/README.md` lists the boards; the cards stay link-checked.
+    "docs/kanban/",
 )
 
 # Directories that legitimately hold docs without their own index: a vendored

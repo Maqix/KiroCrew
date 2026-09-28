@@ -28,6 +28,7 @@ from kiro_crew.agent_files import (
     GUEST_AGENT_FILENAME,
     LITE_AGENT_FILENAME,
     OWNED_KIRO_AGENT_FILES,
+    is_primary_agent,
 )
 from kiro_crew.agent_spec_format import (
     is_agent_spec_name,
@@ -1365,7 +1366,7 @@ def agent_skill_globs(
         rows = list_agents(agents_dir=agents_dir, project_dir=str(project_dir))
         winner = next((row for row in rows if row.name == agent), None)
         if winner is None or not winner.filename:
-            if strict and agent != "kirocrew":
+            if strict and not is_primary_agent(agent):
                 raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
             return []
         if winner.scope == SCOPE_PROJECT:
@@ -1390,7 +1391,7 @@ def agent_skill_globs(
         if data.get("name") != agent and f.stem != agent:
             continue
         return [g for uri in skill_resource_uris(data) if (g := expand_skill_uri(uri, f))]
-    if strict and agent != "kirocrew":
+    if strict and not is_primary_agent(agent):
         raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
     return []
 
@@ -1405,7 +1406,7 @@ def session_skill_globs(
     execution = read_session_execution(session_key) if session_key else None
     template = execution.template_id if execution and execution.template_id else fallback_agent
     mapped = agent_skill_globs(template, project_dir=project_dir, strict=True)
-    return None if template == "kirocrew" and not mapped else mapped
+    return None if is_primary_agent(template) and not mapped else mapped
 
 
 #: Ceiling on a ``welcomeMessage`` rendered into a chat transcript. The field is

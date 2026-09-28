@@ -2262,7 +2262,7 @@ def test_the_gate_has_no_early_return_at_all(tmp_path):
     import inspect
     import textwrap
 
-    body = textwrap.dedent(inspect.getsource(agent._require_fresh_worker_spec))
+    body = textwrap.dedent(inspect.getsource(agent._require_fresh_mirror))
     returns = [n for n in ast.walk(ast.parse(body)) if isinstance(n, ast.Return)]
     assert not returns, f"the freshness body has {len(returns)} return(s); it must have none"
 

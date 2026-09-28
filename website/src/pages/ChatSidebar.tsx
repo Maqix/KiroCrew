@@ -1770,6 +1770,8 @@ interface SessionRowProps {
   connected: boolean
   isOut: boolean
   isPinned: boolean
+  /** This row is the main chat (RFC §6.9): it carries the "Main" chip. */
+  isMain: boolean
   isUnread: boolean
   /** Widened running signal (runningSet): own turn OR live workflow OR loop. */
   isRunning: boolean
@@ -1970,7 +1972,7 @@ function compareLocalPinnedThenSort(
  *  is subscribed to HERE, slot-scoped, so a background event re-renders only
  *  the row it belongs to. */
 const SessionRow = memo(function SessionRow({
-  slot: s, showDivider, scope, navScope, holdContainer, conductor, isActive, connected, isOut, isPinned, isUnread, isRunning,
+  slot: s, showDivider, scope, navScope, holdContainer, conductor, isActive, connected, isOut, isPinned, isMain, isUnread, isRunning,
   recent, recentTintCount, subagentCount, subagentApprovalCount, digitBadge,
   isRenaming, renamingHere, renameValue, revealFlash, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, pinnedOrderIndex, pinnedReorderEnabled, onPinnedKeyboardReorder, rowAnimEnabled,
   defaultAgent, mode, isMobile, colorMode, installedAgents, tagById, paletteColors, boost, boostFor,
@@ -3129,6 +3131,17 @@ const SessionRow = memo(function SessionRow({
               {s.memory_mode === 'incognito' && <span className="text-muted" title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
               {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
               {s.mode === 'orchestrator' && <span className="px-1 py-0 rounded bg-accent/15 text-accent font-medium" title={i18nT('pages.chatSidebar.autopilot_mode')}>{i18nT('pages.chatSidebar.autopilot')}</span>}
+              {/* The main chat's chip, on the meta line like the autopilot one
+               *  (session-row-fixed-height: an inline chip, never a new line). */}
+              {isMain && (
+                <span
+                  className="px-1 py-0 rounded bg-accent/15 text-accent font-medium shrink-0"
+                  title={i18nT('pages.chatSidebar.main_chat_title')}
+                  data-testid="session-main-badge"
+                >
+                  {i18nT('pages.chatSidebar.main_chat_badge')}
+                </span>
+              )}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto
                *  margins would split the free space and strand the timestamp
                *  mid-row.
@@ -3275,6 +3288,9 @@ const SessionRow = memo(function SessionRow({
 interface ChatSidebarProps {
   slots: Slot[]
   activeSlot: string | null
+  /** The main chat (RFC §6.9): listed first among the pinned sessions and
+   *  marked "Main". Null when there is none yet. */
+  mainSlot?: string | null
   unreadSlots: string[]
   history: HistoryItem[]
   historyHasMore: boolean
@@ -3581,7 +3597,7 @@ function ChatSidebar({
   // to say which collection it means.
   slots: localSlots, activeSlot, unreadSlots, history, historyHasMore,
   defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSlotInNewTab, onOpenSource, collapsible,
-  chatDropTarget, onDropSessionRef, staticRows,
+  chatDropTarget, onDropSessionRef, staticRows, mainSlot = null,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
@@ -4591,10 +4607,12 @@ function ChatSidebar({
     () => localSlots.filter(s => s.pinned).sort((a, b) => compareBySort(a, b, sortKey)).map(s => s.key),
     [localSlots, sortKey],
   )
-  const pinnedOrder = useMemo(
-    () => reconcilePinnedSessionOrder(storedPinnedOrder, naturalPinnedOrder),
-    [storedPinnedOrder, naturalPinnedOrder],
-  )
+  const pinnedOrder = useMemo(() => {
+    const order = reconcilePinnedSessionOrder(storedPinnedOrder, naturalPinnedOrder)
+    // The main chat leads the pinned band whatever order the browser stored:
+    // it is where the product opens, so it is the one row never to hunt for.
+    return mainSlot && order.includes(mainSlot) ? [mainSlot, ...order.filter(k => k !== mainSlot)] : order
+  }, [storedPinnedOrder, naturalPinnedOrder, mainSlot])
   const pinnedRank = useMemo(() => new Map(pinnedOrder.map((key, index) => [key, index])), [pinnedOrder])
   useEffect(() => {
     const refresh = (fromStorage: boolean) => {
@@ -7974,7 +7992,7 @@ function ChatSidebar({
         adoptError={isPeer ? (adoptErrors[rowIdentity] || '') : ''}
         showDivider={showDivider} scope={scope} navScope={navScope} holdContainer={holdContainer} conductor={conductor}
         isActive={isActiveRow(s)} connected={connected} isOut={!isPeer && poppedOut.has(s.key)}
-        isPinned={!isPeer && pinned.has(s.key)} isUnread={!isPeer && unreadSet.has(s.key)}
+        isPinned={!isPeer && pinned.has(s.key)} isMain={!isPeer && !!mainSlot && s.key === mainSlot} isUnread={!isPeer && unreadSet.has(s.key)}
         isRunning={isPeer ? s.running === true : runningSet.has(s.key)}
         recent={isPeer ? undefined : recentRank.get(s.key)} recentTintCount={recentTintCount}
         subagentCount={isPeer ? 0 : (subagentCounts[s.key] || 0)} subagentApprovalCount={isPeer ? 0 : (subagentApprovalCounts[s.key] || 0)}

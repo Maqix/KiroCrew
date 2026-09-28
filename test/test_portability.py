@@ -2416,3 +2416,69 @@ class TestTheCronSanitizerDecodesAsUtf8:
         assert dropped == [portability._UNREADABLE_STORE]
         assert paused == []
         assert json.loads(store.read_text(encoding="utf-8")) == {"jobs": []}
+
+
+# ── Persona files ──
+
+
+class TestPersona:
+    """``persona/SOUL.md`` and ``USER.md`` ride the export and never replace a local one."""
+
+    @staticmethod
+    def _export_with_persona(mc: Path) -> Path:
+        persona = mc / "persona"
+        persona.mkdir()
+        (persona / "SOUL.md").write_text("Be brief.", encoding="utf-8")
+        (persona / "USER.md").write_text("Prefers mornings.", encoding="utf-8")
+        (persona / "notes.txt").write_text("not a persona file", encoding="utf-8")
+        zip_bytes, manifest = create_export_zip()
+        assert manifest["contents"]["persona_files"] == 2
+        path = mc.parent / "persona-export.zip"
+        path.write_bytes(zip_bytes)
+        return path
+
+    @staticmethod
+    def _import_into(target: Path, zip_path: Path, mode: str = "merge") -> dict:
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                return apply_import_zip(zip_path, mode=mode)
+
+    def test_the_export_carries_the_two_persona_files_only(self, patched_config_dir):
+        zip_path = self._export_with_persona(patched_config_dir)
+        names = zipfile.ZipFile(zip_path).namelist()
+        persona = sorted(PurePosixPath(n).name for n in names if "/persona/" in n)
+        assert persona == ["SOUL.md", "USER.md"]
+
+    @pytest.mark.parametrize("mode", ["merge", "replace"])
+    def test_an_import_installs_a_persona_file_the_install_lacks(
+        self, patched_config_dir, tmp_path, mode
+    ):
+        zip_path = self._export_with_persona(patched_config_dir)
+        target = tmp_path / "target_mc"
+        target.mkdir()
+        summary = self._import_into(target, zip_path, mode)
+        assert (target / "persona" / "SOUL.md").read_text(encoding="utf-8") == "Be brief."
+        assert (target / "persona" / "USER.md").read_text(encoding="utf-8") == "Prefers mornings."
+        assert not (target / "persona" / "notes.txt").exists()
+        assert "persona/SOUL.md (copied)" in summary["items"]
+
+    def test_an_import_never_replaces_the_owners_own_persona(self, patched_config_dir, tmp_path):
+        zip_path = self._export_with_persona(patched_config_dir)
+        target = tmp_path / "target_mc"
+        (target / "persona").mkdir(parents=True)
+        (target / "persona" / "SOUL.md").write_text("Mine.", encoding="utf-8")
+        summary = self._import_into(target, zip_path, "replace")
+        assert (target / "persona" / "SOUL.md").read_text(encoding="utf-8") == "Mine."
+        assert "persona/SOUL.md (skipped, already exists)" in summary["items"]
+        assert (target / "persona" / "USER.md").is_file()
+
+    def test_a_linked_persona_directory_takes_nothing(self, patched_config_dir, tmp_path):
+        zip_path = self._export_with_persona(patched_config_dir)
+        target = tmp_path / "target_mc"
+        target.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        make_dir_link(target / "persona", elsewhere)
+        summary = self._import_into(target, zip_path)
+        assert list(elsewhere.iterdir()) == []
+        assert any(i.startswith("persona (skipped") for i in summary["items"])

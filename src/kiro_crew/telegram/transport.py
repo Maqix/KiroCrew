@@ -10,7 +10,9 @@ Dependency direction is ``telegram -> messaging`` (allowed); the neutral
 
 Security: :meth:`authorize` is **deny-by-default** and owner-only. A Telegram
 bot is globally reachable by @username, so an empty ``allowed_user_ids`` MUST
-authorize nobody (fail closed), never everybody.
+authorize nobody (fail closed), never everybody. The one message read before
+authorization is a private ``/pair <code>`` while a setup card's one-time code
+is live (:meth:`TelegramTransport._answer_pair`); it never reaches the agent.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from kiro_crew.telegram.client import (
     TelegramClient,
     TelegramInbound,
 )
+from kiro_crew.telegram.commands import parse_pair_command
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +88,10 @@ class TelegramInboundMessage(InboundMessage):
 # A dispatch callback consumes a normalized, already-authorized message and
 # drives a turn. The gateway supplies the real implementation.
 DispatchFn = Callable[[InboundMessage], Awaitable[None]]
+# A pair handler answers a ``/pair <code>`` DM: ``(user_id, handle, code)`` to
+# the reply to send, or ``None`` when no pairing is live and the message takes
+# the ordinary path. The gateway supplies the dashboard's setup-card pairing.
+PairHandler = Callable[[str, str, str], Awaitable[str | None]]
 
 # Telegram's capabilities: edit-based streaming, a 4096-char cap (we chunk at
 # 4000 for headroom), inline buttons, emoji reactions (setMessageReaction, used
@@ -254,6 +261,8 @@ class TelegramTransport(MessagingTransport):
             int(c) for c in allowed_forum_chat_ids
         )
         self._dispatch = dispatch
+        #: Set by the gateway when a dashboard is present; see :meth:`_answer_pair`.
+        self.pair_handler: PairHandler | None = None
         self.capabilities = TELEGRAM_CAPABILITIES
 
     @property
@@ -454,6 +463,39 @@ class TelegramTransport(MessagingTransport):
             )
         return allowed
 
+    async def _answer_pair(self, inbound: TelegramInbound) -> bool:
+        """Answer a ``/pair <code>`` DM; return whether the message was consumed.
+
+        The one message read before :meth:`authorize`, because pairing is how a
+        sender who is NOT on the allow-list yet gets onto it: the owner types the
+        code a dashboard setup card shows, and the handler adds that sender's id.
+        What keeps this from being an open door is the handler's, not the
+        transport's: a live code exists only after the owner committed the card,
+        it is one-time, expires, and a few wrong guesses close it. Private chats
+        only, so a code typed into a group is never read. With no pairing live
+        the handler returns ``None`` and the message takes the ordinary,
+        deny-by-default path. A consumed message never reaches the agent.
+        """
+        if self.pair_handler is None or inbound.chat_type != "private":
+            return False
+        code = parse_pair_command(inbound.text)
+        if code is None:
+            return False
+        try:
+            reply = await self.pair_handler(
+                str(inbound.user_id), prompt_safe_handle(inbound.username), code
+            )
+        except Exception:
+            logger.exception("telegram: the /pair handler failed")
+            return True
+        if reply is None:
+            return False
+        try:
+            await self._client.send_message(inbound.chat_id, reply)
+        except Exception:
+            logger.warning("telegram: the /pair reply could not be sent", exc_info=True)
+        return True
+
     async def receive(self, raw_envelope: Any) -> None:
         """Normalize -> authorize -> dispatch.
 
@@ -493,6 +535,8 @@ class TelegramTransport(MessagingTransport):
                 outcome=outcome,
                 source="telegram",
             )
+            return
+        if await self._answer_pair(inbound):
             return
         msg = TelegramInboundMessage(
             channel_type="telegram",

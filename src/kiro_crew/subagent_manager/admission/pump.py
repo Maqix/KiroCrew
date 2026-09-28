@@ -10,6 +10,23 @@ from .types import ClaimPoint
 
 _glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
 
+#: Agent-facing refusal for a spawn whose approval prompt was answered No or
+#: expired unanswered. It reaches the calling agent as a completion event, so it
+#: says which gate refused and what to do next, and names no setting that would
+#: lift the gate (the same two-audience rule as the no-surface refusal).
+SPAWN_DECLINED_ERROR = (
+    "spawn rejected: the spawn approval prompt was declined, or expired with no "
+    "answer, so nothing ran. Do not spawn it again unasked: do the work in this "
+    "conversation, or ask the user whether to delegate it first."
+)
+#: Agent-facing refusal for a spawn whose approval prompt could not be raised
+#: because the approval callback failed; the gateway log carries the traceback.
+SPAWN_APPROVAL_FAILED_ERROR = (
+    "spawn rejected: the spawn approval prompt could not be raised (an internal "
+    "error, recorded in the gateway log), so nothing ran. Do the work in this "
+    "conversation, or tell the user that delegation failed."
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
@@ -673,6 +690,9 @@ class _PumpMixin(ManagerComponent):
         # Also the flag that picks the audit reason below, so the two cannot
         # drift apart.
         no_surface_error: str = ""
+        # Set when the approval callback itself raised, so the refusal names an
+        # internal failure rather than a decision nobody made.
+        approval_failed = False
         try:
             from kiro_crew.security import (
                 redact_credentials,
@@ -709,6 +729,16 @@ class _PumpMixin(ManagerComponent):
                 approved: bool = await self._manager._on_spawn_approval(
                     request_id, f"spawn_run({task_preview})", info.parent_session_key
                 )
+                current = asyncio.current_task()
+                if not approved and current is not None and current.cancelling():
+                    # The dashboard's approval wait (``ApprovalCoordinator.request``)
+                    # answers a cancellation of this task with False. That cancel is
+                    # a Stop, a reap or the shutdown, and its caller owns this run's
+                    # record and report: recording a refusal here would put "spawn
+                    # rejected" over a neutral stop or the reap's own cause. Raised
+                    # again so the task ends as it does under a callback that lets
+                    # the cancellation through.
+                    raise asyncio.CancelledError
             finally:
                 info._awaiting_approval = False
         except SpawnApprovalUnreachable as unreachable:
@@ -759,6 +789,7 @@ class _PumpMixin(ManagerComponent):
                 "Spawn approval failed for %s", info.id, exc_info=info.memory_mode == "persistent"
             )
             approved = False
+            approval_failed = True
 
         if not approved:
             info.done = True
@@ -769,7 +800,20 @@ class _PumpMixin(ManagerComponent):
             # note in ``subagent.py``). The audit ``reason`` below is what
             # separates this from a decline for a machine; the prose is what
             # separates it for the agent that receives the completion event.
-            info.error = no_surface_error or "spawn rejected"
+            # Each refusal keeps the ``spawn rejected`` prefix readers match on
+            # and names the gate, why it refused, and what the agent can do.
+            # Imported here: this method runs on ``subagent``'s globals.
+            from kiro_crew.subagent_manager.admission.pump import (
+                SPAWN_APPROVAL_FAILED_ERROR,
+                SPAWN_DECLINED_ERROR,
+            )
+
+            if no_surface_error:
+                info.error = no_surface_error
+            elif approval_failed:
+                info.error = SPAWN_APPROVAL_FAILED_ERROR
+            else:
+                info.error = SPAWN_DECLINED_ERROR
             # Slot accounting through the one-shot token, NOT a bare decrement.
             # A user Stop funnels into `_force_reap` and can land while this
             # approval is still pending (a human prompt has no deadline), and
@@ -787,6 +831,8 @@ class _PumpMixin(ManagerComponent):
             _reject_meta: dict[str, str] = {"subagent_id": info.id}
             if no_surface_error:
                 _reject_meta["reason"] = "no_approval_surface"
+            elif approval_failed:
+                _reject_meta["reason"] = "approval_error"
             sel().log_tool_invocation(
                 session_key=info.parent_session_key,
                 source="subagent",

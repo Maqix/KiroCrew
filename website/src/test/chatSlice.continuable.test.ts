@@ -370,7 +370,7 @@ describe('selectTurnInterrupted', () => {
   })
 
   it('does not let an older Stop mask a newer interrupted inject turn', () => {
-    for (const injectKind of ['cron', 'recovery', 'user_replay', 'synthesis']) {
+    for (const injectKind of ['cron', 'recovery', 'user_replay', 'synthesis', 'first_run', 'setup_result']) {
       expect(selectTurnInterrupted(state({
         messages: [
           msg('user', 'first'),

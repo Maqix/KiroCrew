@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { ChevronRight, Info, Layers, RotateCcw, TriangleAlert } from 'lucide-react'
+import { ChevronRight, ClipboardCheck, Info, Layers, RotateCcw, Sparkles, TriangleAlert } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 import { DENY_REASON_MARKER } from '../../utils/denyReason'
@@ -37,6 +37,18 @@ export type RecoveryKind =
   | 'hook'
   | 'hook_halted'
   | 'synthesis'
+  /**
+   * The gateway's first-run kickoff prompt (`injectKind: 'first_run'`), sent
+   * after the privacy card to open the one-chat setup conversation. Structural
+   * only: it has no content prefix, so {@link parseRecoveryMessage} never
+   * returns it; {@link resolveInjectCard} builds it from the stamp.
+   */
+  | 'first_run'
+  /**
+   * The envelope that tells the agent a setup card was decided
+   * (`injectKind: 'setup_result'`). Structural only, like `first_run`.
+   */
+  | 'setup_result'
   /**
    * Catch-all for an `inject` row this build has no dedicated prefix for — a
    * gateway newer than the frontend, or a shape nobody has written copy for yet.
@@ -379,7 +391,7 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
  * emit time — vanishes after a flush + rehydrate. Anything keyed on its absence
  * therefore mis-renders every restored row.
  */
-export type InjectKind = 'cron' | 'mcp_app' | 'recovery' | 'synthesis' | 'user_replay'
+export type InjectKind = 'cron' | 'mcp_app' | 'recovery' | 'synthesis' | 'user_replay' | 'first_run' | 'setup_result'
 
 /**
  * Whether each gateway-stamped inject kind OPENS a turn of its own, or
@@ -410,6 +422,12 @@ export const INJECT_KIND_OPENS_TURN: Readonly<Record<InjectKind, boolean>> = {
   // this, isFeatureRequestRefusal walks past it to an earlier user row and
   // mis-attributes an app turn's error to that older message.
   mcp_app: true,
+  // One-chat first run. The kickoff prompt is the FIRST turn of the first-run
+  // session, and a setup result is dispatched after the owner clicked a card --
+  // the turn that proposed the card had already ended ("awaiting user"), so the
+  // result opens a new one rather than continuing it.
+  first_run: true,
+  setup_result: true,
 }
 
 /**
@@ -460,6 +478,28 @@ export function resolveInjectCard(m: { content: string; meta?: Record<string, un
   // early returns for those three were measured to be unreachable (the allowlist
   // already rejects them), so they are omitted rather than kept as dead code.
   // The behavioural contract for each is pinned in RecoveryCard.test.tsx.
+  // One-chat first run: machine-facing prompts the gateway wrote for the agent.
+  // Each gets its own copy so the note says what happened (setup began, a card's
+  // result was handed over) instead of the generic "system notice"; the prompt
+  // itself stays one click away in the expandable body.
+  if (kind === 'first_run') {
+    return {
+      kind: 'first_run',
+      title: i18nT('components.setupCard.note_first_run_title'),
+      detail: i18nT('components.setupCard.note_first_run_detail'),
+      chip: '',
+      body: m.content ?? '',
+    }
+  }
+  if (kind === 'setup_result') {
+    return {
+      kind: 'setup_result',
+      title: i18nT('components.setupCard.note_setup_result_title'),
+      detail: i18nT('components.setupCard.note_setup_result_detail'),
+      chip: '',
+      body: m.content ?? '',
+    }
+  }
   if (kind !== 'recovery' && kind !== 'synthesis') return null
 
   return {
@@ -504,13 +544,21 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
     kind === 'refusal_fallback' ||
     kind === 'hook' ||
     kind === 'synthesis' ||
+    kind === 'first_run' ||
+    kind === 'setup_result' ||
     kind === 'generic'
   // Synthesis is routine, but the retry glyph would misdescribe it — nothing is
   // being retried, several results are being folded into one. Layers says that.
   // A generic notice makes no claim at all about what happened, so it gets the
   // neutral info glyph rather than borrowing another kind's meaning.
+  // The two first-run notes name their own events: setup beginning, and a
+  // decided card being handed back to the agent. Neither is a retry.
   const Icon =
-    kind === 'synthesis' ? Layers : kind === 'generic' ? Info : routine ? RotateCcw : TriangleAlert
+    kind === 'synthesis' ? Layers
+      : kind === 'first_run' ? Sparkles
+        : kind === 'setup_result' ? ClipboardCheck
+          : kind === 'generic' ? Info
+            : routine ? RotateCcw : TriangleAlert
 
   return (
     <div

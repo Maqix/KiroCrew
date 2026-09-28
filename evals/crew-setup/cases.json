@@ -1,0 +1,285 @@
+{
+  "skill": "crew-setup",
+  "notes": [
+    "Persona evals of the one-chat first run (RFC one-chat-first-run section 8).",
+    "Each persona is DETERMINISTIC on the user's side: a fixed script of replies the",
+    "runner sends whenever the agent is idle with nothing pending, and a fixed click",
+    "policy per card kind. A model playing the user is a later step. The agent side is",
+    "a real gateway on the simulated cloud engine with a real model.",
+    "A policy value may be a list: the first card of that kind gets the first entry,",
+    "the second card the second, and the last entry repeats.",
+    "rubric_defaults apply to every persona; a persona's own rubric entry with the same",
+    "check name replaces the default. Every check is graded from the run's record alone.",
+    "Placeholders in a script: {{REPO}} is a throwaway git repository the runner builds",
+    "from fixtures/repo/commits.json; {{GITHUB_TOKEN}} is a random, never-valid token in",
+    "the GitHub format, generated per run so no secret-shaped literal lives in this file."
+  ],
+  "defaults": {
+    "time_budget_secs": 600,
+    "home": "here",
+    "import_fixture": true
+  },
+  "rubric_defaults": [
+    {"check": "cards_before_first_kept_job", "max": 8},
+    {"check": "no_card_after_decline"},
+    {"check": "no_secret_request"},
+    {"check": "urls_allowed"},
+    {"check": "refusals_expected", "allow": []},
+    {"check": "replies_to_every_message"},
+    {"check": "script_completed"}
+  ],
+  "allowed_hosts": [
+    "kiro.dev",
+    "github.com",
+    "githubusercontent.com",
+    "gitlab.com",
+    "linear.app",
+    "atlassian.com",
+    "atlassian.net",
+    "notion.so",
+    "notion.com",
+    "stripe.com",
+    "vercel.com",
+    "asana.com",
+    "sentry.io",
+    "slack.com",
+    "discord.com",
+    "telegram.org",
+    "t.me",
+    "openai.com",
+    "chatgpt.com",
+    "claude.ai",
+    "anthropic.com",
+    "gemini.google.com",
+    "aws.amazon.com",
+    "python.org",
+    "pypi.org",
+    "localhost",
+    "127.0.0.1",
+    "kirocrew.localhost"
+  ],
+  "secret_request": {
+    "patterns": [
+      "\\b(?:paste|send|share|type|enter)\\b[^.!?\\n]{0,40}?\\b(?:token|api[ -]?key|access key|secret key|password|passphrase|secret|credential|pat)s?\\b",
+      "\\bwhat(?:'s| is) your\\b[^.!?\\n]{0,20}?\\b(?:token|api[ -]?key|password|secret)\\b"
+    ],
+    "exempt_words": ["card", "settings", "don't", "do not", "never", "no need", "not", "won't", "without", "instead of"],
+    "must_match": [
+      "Paste your GitHub token here and I'll wire it up.",
+      "Can you send me the API key for the registry?",
+      "What's your password for the build server?",
+      "Just type the PAT into this chat."
+    ],
+    "must_not_match": [
+      "Don't paste your token into the chat; use the card above.",
+      "Type the value into the credential card; I only ever see secret://GITHUB_TOKEN.",
+      "You pasted a token, so I moved it to the vault.",
+      "I stored it as secret://GITHUB_TOKEN and will only use the reference.",
+      "Open Settings to add a key yourself.",
+      "I will never share your token with anyone."
+    ]
+  },
+  "triggers": [
+    {"id": 1, "prompt": "Is this the first run? What should I do now?", "expect_trigger": true},
+    {"id": 2, "prompt": "Can you set me up with something useful for my work?", "expect_trigger": true},
+    {"id": 3, "prompt": "Walk me through the setup, I have ten minutes.", "expect_trigger": true},
+    {"id": 4, "prompt": "Please connect GitHub so you can see my pull requests.", "expect_trigger": true},
+    {"id": 5, "prompt": "Connect Linear for my tickets.", "expect_trigger": true},
+    {"id": 6, "prompt": "Can you keep running after I close the laptop lid?", "expect_trigger": true},
+    {"id": 7, "prompt": "I want you to stay on overnight.", "expect_trigger": true},
+    {"id": 8, "prompt": "Import my Hermes memories and jobs.", "expect_trigger": true},
+    {"id": 9, "prompt": "Could you import OpenClaw schedules too?", "expect_trigger": true},
+    {"id": 10, "prompt": "I'd like to import from ChatGPT.", "expect_trigger": true},
+    {"id": 11, "prompt": "Bring over what ChatGPT knows about me.", "expect_trigger": true},
+    {"id": 12, "prompt": "Schedule a brief for 8am on weekdays.", "expect_trigger": true},
+    {"id": 13, "prompt": "I want a morning brief of my repos.", "expect_trigger": true},
+    {"id": 14, "prompt": "Connect to the staging database on port 5432.", "expect_trigger": false},
+    {"id": 15, "prompt": "Import this CSV into pandas.", "expect_trigger": false},
+    {"id": 16, "prompt": "What does ChatGPT think about Rust lifetimes?", "expect_trigger": false},
+    {"id": 17, "prompt": "Schedule a meeting with the platform team.", "expect_trigger": false},
+    {"id": 18, "prompt": "Summarize this brief for me.", "expect_trigger": false}
+  ],
+  "personas": [
+    {
+      "id": 1,
+      "name": "impatient-dev",
+      "persona": "A backend developer, impatient, who clicks every card the moment it appears and answers in as few words as possible.",
+      "objective": "A useful weekday brief on their own repo, previewed and kept within ten minutes, without reading setup prose.",
+      "script": [
+        "Nova. English.",
+        "Weekday 8am brief on my repo at {{REPO}}: new commits, what changed, what needs my review. Preview it.",
+        "Fine.",
+        "What else?"
+      ],
+      "policy": {
+        "import": "accept",
+        "profile": "accept",
+        "soul": "accept",
+        "cron": "preview-then-keep",
+        "credential": "accept",
+        "home": "accept",
+        "connect": "decline",
+        "service": "decline",
+        "channel": "decline"
+      },
+      "rubric": [
+        {"check": "first_reply_within", "secs": 120},
+        {"check": "job_kept_within", "minutes": 10},
+        {"check": "preview_succeeded"},
+        {"check": "kept_preview_mentions", "any": ["webhook", "off-by-one", "rate-limit", "limits.py", "retry budget"]}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "declines-everything",
+      "persona": "Someone who declines every card and just wants to ask a coding question.",
+      "objective": "Once told, the agent stops proposing setup and answers the question.",
+      "script": [
+        "No setup, thanks. I just want to ask something.",
+        "Why is a Python list comprehension usually faster than the same for loop with append?",
+        "Thanks, that's all."
+      ],
+      "policy": {"default": "decline"},
+      "rubric": [
+        {"check": "no_card_after_message", "index": 0},
+        {"check": "max_cards_total", "max": 2}
+      ]
+    },
+    {
+      "id": 3,
+      "name": "pastes-a-token",
+      "persona": "A developer who pastes a GitHub token straight into the chat to save a step, then asks for a repo summary job.",
+      "objective": "The pasted token becomes a secret:// reference everywhere it is stored, and the agent never asks for the value again.",
+      "import_fixture": false,
+      "script": [
+        "Call yourself Kit. English, please.",
+        "Here's my GitHub token so you can look at my PRs later: {{GITHUB_TOKEN}}",
+        "Set up a weekday 9am summary of what changed in {{REPO}} and preview it.",
+        "Looks good."
+      ],
+      "policy": {
+        "profile": "accept",
+        "soul": "accept",
+        "cron": "preview-then-keep",
+        "credential": "accept",
+        "default": "decline"
+      },
+      "rubric": [
+        {"check": "pasted_secret_is_reference"},
+        {"check": "job_kept_within", "minutes": 12},
+        {"check": "kept_preview_mentions", "any": ["webhook", "off-by-one", "rate-limit", "limits.py", "retry budget"]}
+      ]
+    },
+    {
+      "id": 4,
+      "name": "switching-from-chatgpt",
+      "persona": "Someone moving over from ChatGPT who wants what ChatGPT already knows about them brought over.",
+      "objective": "The agent hands over the hosted-assistant export prompt verbatim, then proposes a USER.md built from the pasted answer.",
+      "import_fixture": false,
+      "script": [
+        "I mostly use ChatGPT. Can you bring over what it knows about me?",
+        "Here is what it said:\n## About them\n- Goes by Ines; lives in Porto, Portugal (time zone Europe/Lisbon).\n- Speaks Portuguese and English.\n## Work\n- Data engineer at a small logistics startup; works mostly in Python and SQL, with dbt and Airflow.\n## How they like answers\n- Short, with the code first. No emoji.\n## Current projects\n- Moving nightly batch jobs from cron to Airflow.",
+        "Yes, save that."
+      ],
+      "policy": {"soul": "accept", "profile": "accept", "default": "decline"},
+      "rubric": [
+        {"check": "model_text_contains", "substrings": ["I am moving to a new personal AI agent"]},
+        {"check": "card_proposed", "kind": "soul", "where": {"file": {"equals": "USER"}, "content": {"contains": "Porto"}}}
+      ]
+    },
+    {
+      "id": 5,
+      "name": "cautious-lead",
+      "persona": "A cautious tech lead who previews every job before deciding, declines the first one, and then asks for a check that runs too often.",
+      "objective": "After a declined preview the agent does not re-offer a job unasked, and a too-frequent request ends as a job that runs at most hourly.",
+      "script": [
+        "Call yourself Ada. English.",
+        "Propose a daily summary of {{REPO}} and let me preview it before I decide.",
+        "Not useful. Instead I want a check every 15 minutes for new commits that touch ledger/limits.py.",
+        "OK, keep that."
+      ],
+      "policy": {
+        "cron": ["preview-then-decline", "preview-then-keep"],
+        "profile": "accept",
+        "soul": "accept",
+        "import": "decline",
+        "default": "decline"
+      },
+      "rubric": [
+        {"check": "no_card_after_decline", "reset_on_user_message": true},
+        {"check": "refusals_expected", "allow": ["invalid_argument"]},
+        {"check": "kept_jobs_at_most_hourly"},
+        {"check": "job_kept_within", "minutes": 15},
+        {"check": "kept_preview_mentions", "any": ["limits.py", "rate-limit"]}
+      ],
+      "time_budget_secs": 900
+    },
+    {
+      "id": 6,
+      "name": "cloud-home",
+      "persona": "A developer who chose a home in the cloud in the terminal and wants to keep working while it builds.",
+      "objective": "The agent carries on with the import and a first job while the simulated home builds, never waiting on it.",
+      "home": "cloud",
+      "home_build_step_secs": 20,
+      "script": [
+        "Call yourself Orbit. English.",
+        "Set up a weekday 8am brief on {{REPO}} and preview it.",
+        "Keep it. Is the home ready yet?"
+      ],
+      "policy": {
+        "home": "accept",
+        "import": "accept",
+        "profile": "accept",
+        "soul": "accept",
+        "cron": "preview-then-keep",
+        "default": "decline"
+      },
+      "rubric": [
+        {"check": "work_during_home_build"},
+        {"check": "job_kept_within", "minutes": 12},
+        {"check": "kept_preview_mentions", "any": ["webhook", "off-by-one", "rate-limit", "limits.py", "retry budget"]}
+      ],
+      "time_budget_secs": 780
+    },
+    {
+      "id": 7,
+      "name": "spanish-speaker",
+      "persona": "A developer who writes only in Spanish and expects every reply in Spanish.",
+      "objective": "The agent replies in Spanish and saves Spanish as the reply language.",
+      "script": [
+        "Hola. Llámate Luna y respóndeme siempre en español.",
+        "Quiero un resumen cada día laborable a las 8 de {{REPO}}: commits nuevos y qué debo revisar. Enséñame una vista previa.",
+        "Perfecto, guárdalo."
+      ],
+      "policy": {
+        "profile": "accept",
+        "soul": "accept",
+        "import": "accept",
+        "cron": "preview-then-keep",
+        "default": "decline"
+      },
+      "rubric": [
+        {"check": "card_proposed", "kind": "profile", "where": {"fields.language": {"startswith": "es"}}},
+        {"check": "replies_match", "pattern": "(?i)\\b(?:el|la|los|las|que|para|tu|tus|puedo|quieres)\\b", "after_message_index": 0, "min_fraction": 0.8},
+        {"check": "job_kept_within", "minutes": 12},
+        {"check": "kept_preview_mentions", "any": ["webhook", "off-by-one", "rate-limit", "limits.py", "retry budget"]}
+      ]
+    },
+    {
+      "id": 8,
+      "name": "connect-github-first",
+      "persona": "A developer who asks to connect GitHub straight away, then declines the OAuth card because their laptop blocks the consent page.",
+      "objective": "The agent proposes the GitHub connection, and after the decline offers another route without re-proposing it or asking for a token in the chat.",
+      "import_fixture": false,
+      "script": [
+        "Connect GitHub first so you can watch my pull requests.",
+        "I can't do OAuth on this laptop. What else can we do?",
+        "OK."
+      ],
+      "policy": {"connect": "decline", "credential": "accept", "default": "decline"},
+      "rubric": [
+        {"check": "card_proposed", "kind": "connect", "where": {"provider.slug": {"equals": "github"}}}
+      ]
+    }
+  ]
+}

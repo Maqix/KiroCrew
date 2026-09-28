@@ -27,6 +27,7 @@ import logging
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Mapping, Optional
 
 from aiohttp import web
@@ -633,6 +634,105 @@ async def api_cloud_launch_task(request: web.Request) -> web.Response:
 # ── write endpoints ──────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class LaunchRefusal:
+    """Why a launch job was not started: the JSON body and HTTP status to answer."""
+
+    body: dict
+    status: int
+
+
+async def start_launch_job(
+    state: "DashboardState",
+    *,
+    provisioner_id: str,
+    confirm_recipient: str,
+    profile: str,
+    region: str,
+    size_key: str,
+    step_labels: dict,
+    login_target: Optional[KiroLoginTarget],
+    subnet_id: str,
+) -> "tuple[Optional[lj.LaunchJob], Optional[LaunchRefusal]]":
+    """Create a launch job and start its worker; the one path every launch takes.
+
+    Called by ``POST /api/cloud/launch`` after it validated the request, and by
+    the first-run home card after the owner clicked "Build my home" -- both are
+    an owner's explicit action, which is what a launch spends money on.
+    """
+    provider_id = provisioner_id
+    # One launch at a time. Without this a double-click or a retried request
+    # creates two jobs with two tags and two CloudFormation stacks — two billed
+    # instances, and the client cannot undo that after the fact. The check, the
+    # create and the worker start are held under one lock because the check
+    # itself awaits: two POSTs arriving together would otherwise both pass it.
+    async with _launch_lock(state):
+        store = await _astore(state)
+        existing = await _in_executor(store.list)
+        active = next((j for j in existing if not j.terminal), None)
+        if active is not None:
+            _audit("launch_create", "denied", request_id=active.id, error="already running")
+            return None, LaunchRefusal(
+                {
+                    "error": "a crew setup is already running; cancel it before starting another",
+                    "code": "launch_already_running",
+                    "job": active.to_dict(),
+                },
+                409,
+            )
+        # Resolve the engine BEFORE the job exists: an id the provider lists but
+        # cannot back must not leave a PENDING job file that a restart then reaps
+        # as "interrupted" for a launch that never started.
+        try:
+            # Off the loop like every other disk-touching call in this handler. The
+            # built-in id resolves without reading anything, but the Fargate id reads
+            # cloud.json through the seam, and a slow disk on that read would stall
+            # the gateway's other requests and its heartbeat behind it -- the reason
+            # the store calls above are wrapped.
+            engine = await _in_executor(
+                functools.partial(_engine, state, provider_id, confirm_recipient)
+            )
+        except KeyError:
+            _audit("launch_create", "denied", error=f"no engine for {provider_id!r}")
+            return None, LaunchRefusal(
+                {
+                    "error": f"provisioner {provider_id!r} has no launch engine",
+                    "code": "unknown_provisioner",
+                },
+                400,
+            )
+        except LaunchUnavailable as exc:
+            # 400, not 500: the id exists and the request is well formed, but the deployment or
+            # the host stops this launch and the message says what to change. A 500 would tell
+            # the operator to file a bug over a symlink they created on purpose.
+            _audit("launch_create", "denied", error=f"{exc.code}: {exc}")
+            return None, LaunchRefusal({"error": str(exc), "code": exc.code}, 400)
+        try:
+            # create() does mkdir + a temp-write + os.replace; keep it off the event
+            # loop like every other store call here (see _astore), so a slow disk
+            # can't stall the gateway's other requests and its heartbeat behind it.
+            job = await _in_executor(
+                functools.partial(
+                    store.create,
+                    profile=profile,
+                    region=region,
+                    size_key=size_key,
+                    provider_id=provider_id,
+                    step_labels=step_labels,
+                    login_target=login_target,
+                    subnet_id=subnet_id,
+                )
+            )
+        except KeyError as e:  # unknown size
+            _audit("launch_create", "denied", error=str(e))
+            return None, LaunchRefusal(
+                {"error": str(e).strip("'\""), "code": "invalid_launch_request"}, 400
+            )
+        _start_worker(state, job, engine)
+    _audit("launch_create", "success", request_id=job.id)
+    return job, None
+
+
 async def api_cloud_launch_create(request: web.Request) -> web.Response:
     """POST /api/cloud/launch — start a launch job.
 
@@ -740,75 +840,27 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    # One launch at a time. Without this a double-click or a retried request
-    # creates two jobs with two tags and two CloudFormation stacks — two billed
-    # instances, and the client cannot undo that after the fact. The check, the
-    # create and the worker start are held under one lock because the check
-    # itself awaits: two POSTs arriving together would otherwise both pass it.
-    async with _launch_lock(state):
-        store = await _astore(state)
-        existing = await _in_executor(store.list)
-        active = next((j for j in existing if not j.terminal), None)
-        if active is not None:
-            _audit("launch_create", "denied", request_id=active.id, error="already running")
-            return web.json_response(
-                {
-                    "error": "a crew setup is already running; cancel it before starting another",
-                    "code": "launch_already_running",
-                    "job": active.to_dict(),
-                },
-                status=409,
-            )
-        # Resolve the engine BEFORE the job exists: an id the provider lists but
-        # cannot back must not leave a PENDING job file that a restart then reaps
-        # as "interrupted" for a launch that never started.
-        try:
-            # Off the loop like every other disk-touching call in this handler. The
-            # built-in id resolves without reading anything, but the Fargate id reads
-            # cloud.json through the seam, and a slow disk on that read would stall
-            # the gateway's other requests and its heartbeat behind it -- the reason
-            # the store calls above are wrapped.
-            engine = await _in_executor(
-                functools.partial(_engine, state, provider_id, confirm_recipient)
-            )
-        except KeyError:
-            _audit("launch_create", "denied", error=f"no engine for {provider_id!r}")
-            return web.json_response(
-                {
-                    "error": f"provisioner {provider_id!r} has no launch engine",
-                    "code": "unknown_provisioner",
-                },
-                status=400,
-            )
-        except LaunchUnavailable as exc:
-            # 400, not 500: the id exists and the request is well formed, but the deployment or
-            # the host stops this launch and the message says what to change. A 500 would tell
-            # the operator to file a bug over a symlink they created on purpose.
-            _audit("launch_create", "denied", error=f"{exc.code}: {exc}")
-            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
-        try:
-            # create() does mkdir + a temp-write + os.replace; keep it off the event
-            # loop like every other store call here (see _astore), so a slow disk
-            # can't stall the gateway's other requests and its heartbeat behind it.
-            job = await _in_executor(
-                functools.partial(
-                    store.create,
-                    profile=str(body.get("profile", "")),
-                    region=str(body.get("region", "")),
-                    size_key=size_key,
-                    provider_id=provider_id,
-                    step_labels=dict(provisioner.step_labels or ()),
-                    login_target=login_target,
-                    subnet_id=subnet_id,
-                )
-            )
-        except KeyError as e:  # unknown size
-            _audit("launch_create", "denied", error=str(e))
-            return web.json_response(
-                {"error": str(e).strip("'\""), "code": "invalid_launch_request"}, status=400
-            )
-        _start_worker(state, job, engine)
-    _audit("launch_create", "success", request_id=job.id)
+    job, refusal = await start_launch_job(
+        state,
+        provisioner_id=provider_id,
+        confirm_recipient=confirm_recipient,
+        profile=str(body.get("profile", "")),
+        region=str(body.get("region", "")),
+        size_key=size_key,
+        step_labels=dict(provisioner.step_labels or ()),
+        login_target=login_target,
+        subnet_id=subnet_id,
+    )
+    if refusal is not None:
+        return web.json_response(
+            {
+                "error": refusal.body.get("error", ""),
+                "code": refusal.body["code"],
+                "job": refusal.body.get("job"),
+            },
+            status=refusal.status,
+        )
+    assert job is not None
     return web.json_response(job.to_dict(), status=202)
 
 

@@ -39,6 +39,7 @@ def _run_cron_runs(
     job: CronJob | None = None,
     deliver_raises: bool = False,
     dashboard: MagicMock | None = None,
+    approval_factory: MagicMock | None = None,
 ) -> CronJob:
     """Drive the real ``_cron_callback`` *runs* times, replaying *gate* each turn.
 
@@ -52,6 +53,9 @@ def _run_cron_runs(
     *dashboard* stands in for ``dashboard_state`` so a test can read what the
     bell was told; ``_slotless_dashboard`` builds the shape the delivery path
     expects.
+
+    *approval_factory* stands in for ``_interactive_approval`` so a test can read
+    how the run asked for its approval callback.
     """
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
@@ -75,7 +79,7 @@ def _run_cron_runs(
     gw.sessions.cancel_current = AsyncMock()
     gw.ctx_builder.build_message = MagicMock(return_value=("msg", None))
     gw.ctx_builder.hooks = MagicMock()
-    gw._interactive_approval = MagicMock(return_value="interactive_cb")
+    gw._interactive_approval = approval_factory or MagicMock(return_value="interactive_cb")
     if deliver_raises:
         # Fails the dashboard history read that runs AFTER the gate verdict and
         # is NOT wrapped in a local handler (the Slack post below it is), so the

@@ -43,6 +43,7 @@ from kiro_crew import (
     platform_compat,
     windows_acl,
 )
+from kiro_crew.agent_files import is_primary_agent
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     resolve_cc_permission_mode,
@@ -5457,7 +5458,7 @@ class KiroCrewConfig:
         candidates: list[tuple[str, str]] = []
         if model_override:
             candidates.append((model_override, "model_override"))
-        if agent and agent != "kirocrew":
+        if agent and not is_primary_agent(agent):
             candidates.append((self._resolve_named_agent_model(agent), f"agent spec {agent}"))
         candidates.append((global_model, "agent.model"))
         # A pin says WHAT was picked, never for WHICH harness, so a backend switch
@@ -6809,7 +6810,7 @@ def resolve_effective_model(
     )
     if _in_scope(model_pin):
         return model_pin
-    if kiro_agent and kiro_agent != "kirocrew":
+    if kiro_agent and not is_primary_agent(kiro_agent):
         pinned = normalize_agent_model(config._resolve_named_agent_model(kiro_agent))
         if _in_scope(pinned):
             return pinned

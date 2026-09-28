@@ -1,0 +1,31 @@
+{
+ "notes": [
+  "A small fictional service the runner turns into a throwaway git repository for",
+  "each persona, so a repo brief has real commits to read and never points at a",
+  "real checkout. hours_ago is relative to the run, so 'yesterday' always has work."
+ ],
+ "commits": [
+  {
+   "hours_ago": 50,
+   "message": "Add the ledger client with a fixed retry budget",
+   "files": {
+    "README.md": "# ledger\n\nA toy ledger service used by the crew-setup persona evals.\n",
+    "ledger/client.py": "RETRIES = 3\n\n\ndef post_entry(entry):\n    for attempt in range(RETRIES):\n        if send(entry):\n            return True\n    return False\n\n\ndef send(entry):\n    return bool(entry)\n"
+   }
+  },
+  {
+   "hours_ago": 20,
+   "message": "Fix an off-by-one in the webhook retry loop",
+   "files": {
+    "ledger/webhooks.py": "MAX_ATTEMPTS = 5\n\n\ndef deliver(hook, payload):\n    for attempt in range(1, MAX_ATTEMPTS + 1):\n        if hook(payload):\n            return attempt\n    return 0\n"
+   }
+  },
+  {
+   "hours_ago": 6,
+   "message": "Rate-limit ledger writes per account (needs review)",
+   "files": {
+    "ledger/limits.py": "PER_ACCOUNT_PER_MINUTE = 60\n\n\ndef allowed(count):\n    return count < PER_ACCOUNT_PER_MINUTE\n"
+   }
+  }
+ ]
+}

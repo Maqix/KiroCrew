@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { MoreHorizontal, Check, Clock, Pause, Play, MessageSquare, Folder, FolderPlus } from 'lucide-react'
+import { MoreHorizontal, Check, Clock, Pause, Play, MessageSquare, MessageSquareShare, Folder, FolderPlus } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
@@ -25,7 +25,7 @@ import { i18nT } from '../i18n/t'
  */
 export default function CronRowActions({
   job, folders, running, cancelling, onRun, onCancelRun, onOpenInChat, onToggleEnabled,
-  onToggleStrict, onMove, onNewFolder,
+  onToggleStrict, onMove, onNewFolder, onAskInMainChat,
 }: {
   job: CronJob
   folders: CronFolder[]
@@ -38,6 +38,9 @@ export default function CronRowActions({
   onToggleStrict: () => void
   onMove: (folderId: string) => void
   onNewFolder: (moveTo?: boolean) => Promise<string | undefined> | void
+  /** Draft a change to this job in the main chat (RFC §6.9) — pre-filled, not
+   *  sent. Omitted (no main chat yet) hides the entry. */
+  onAskInMainChat?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const sortedFolders = [...folders].sort((a, b) => a.order - b.order)
@@ -92,6 +95,12 @@ export default function CronRowActions({
           <MessageSquare size={13} className="shrink-0 text-muted" />
           <span>{job.has_slot ? i18nT('pages.schedulePage.go_to_chat') : i18nT('pages.schedulePage.view_last_result')}</span>
         </DropdownMenuItem>
+        {onAskInMainChat && (
+          <DropdownMenuItem onSelect={onAskInMainChat} data-testid="cron-ask-in-main-chat">
+            <MessageSquareShare size={13} className="shrink-0 text-muted" />
+            <span>{i18nT('components.mainChatMenu.ask_in_main_chat')}</span>
+          </DropdownMenuItem>
+        )}
 
         <DropdownMenuSeparator />
 

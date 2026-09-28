@@ -183,6 +183,31 @@ class TestHoldsNothing:
         assert validation._holds_nothing(value) is False
 
 
+class TestIsItsDefault:
+    """A deprecated key holding its own default was written by a save, not the operator."""
+
+    @pytest.mark.parametrize(
+        ("value", "default"), [(1.0, 1.0), (1, 1.0), (False, False), ("x", "x")]
+    )
+    def test_the_default_is_nothing_to_migrate(self, value: object, default: object) -> None:
+        assert validation._is_its_default(value, default) is True
+
+    @pytest.mark.parametrize(("value", "default"), [(2.0, 1.0), (True, 1), (0, False), (1.0, None)])
+    def test_a_changed_value_is_announced(self, value: object, default: object) -> None:
+        assert validation._is_its_default(value, default) is False
+
+    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
+    def test_a_saved_default_is_not_announced_but_a_change_is(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            validation.validate_config_data({"agent": {"subagent_cpu_cost_cores": 1.0}})
+        assert not [r for r in caplog.records if "deprecated field" in r.message]
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            validation.validate_config_data({"agent": {"subagent_cpu_cost_cores": 4.0}})
+        assert [r for r in caplog.records if "subagent_cpu_cost_cores" in r.message]
+
+
 class TestValidateConfigData:
     """``validate_config_data`` strips invalid values and warns on the loader logger."""
 

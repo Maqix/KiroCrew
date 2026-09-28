@@ -74,6 +74,7 @@ agent loads only the one it needs.
 | [memory-skills-hooks.md](memory-skills-hooks.md) | The memory layers, embeddings, lessons, skills, and hooks. |
 | [knowledge.md](knowledge.md) | The knowledge graph and local knowledge search. |
 | [onboarding-import.md](onboarding-import.md) | Importing existing content at onboarding, and its embedding cost. |
+| [first-run.md](first-run.md) | The one-chat first run: setup cards the owner commits by clicking, the first-run session, the setup tools, and pasted-secret capture. |
 | [learn-cron-dashboard.md](learn-cron-dashboard.md) | Lessons, cron scheduling, and the dashboard handlers that expose them. |
 
 ## Channels and messaging

@@ -236,12 +236,14 @@ def _safe_fire(coro: Awaitable[None]) -> None:
 _MAX_CONCURRENT = 3
 
 #: Agent names a roster never suggests: the host default and the conductors are
-#: reached by OMITTING ``agent``, not by naming one. Every roster inherits this
-#: as :func:`visible_agent_names`' default ``exclude``, so no other module names
-#: the set and it cannot drift when a reserved name appears.
+#: reached by OMITTING ``agent``, not by naming one, and ``kirocrew-main`` is the
+#: main chat's own agent, which a child it hands work to must not be steered onto.
+#: Every roster inherits this as :func:`visible_agent_names`' default ``exclude``,
+#: so no other module names the set and it cannot drift when a reserved name appears.
 UNADVERTISED_AGENTS = frozenset(
     {
         "kirocrew",
+        "kirocrew-main",
         "kirocrew-conductor",
         "kirocrew-pipeline-conductor",
         "kirocrew-security-conductor",

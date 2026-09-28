@@ -405,6 +405,112 @@ class TestDesktopStampPerOS:
         assert self._os_stamps().get("windows") == "nsis"
 
 
+class TestInstallOrigin:
+    """``start`` is a heartbeat value read from the marker the start scripts write.
+
+    The install SHAPE (``distribution()``) must not change: update routing, the
+    bug-report form and the stamping script all read it, and a start-script
+    install is still the wheel or desktop install it wrapped. Only the
+    heartbeat's ``dist`` reports the origin.
+    """
+
+    _REPO = Path(__file__).resolve().parents[1]
+
+    def _mark(self, home: Path, text: str = "start\n") -> Path:
+        marker = home / beacon.INSTALL_ORIGIN_FILE
+        marker.write_text(text, encoding="utf-8")
+        return marker
+
+    @pytest.mark.parametrize("shape", ["wheel", "nsis"])
+    def test_a_start_install_reports_start_and_keeps_its_shape(
+        self, _isolated_home, monkeypatch, shape
+    ):
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", shape)
+        self._mark(_isolated_home)
+        assert beacon.payload("1.2.3")["dist"] == "start"
+        assert beacon.distribution() == shape, "update routing must still see the shape"
+
+    def test_status_previews_the_value_payload_sends(self, _isolated_home, monkeypatch):
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", "wheel")
+        self._mark(_isolated_home)
+        preview = beacon.status(
+            "https://example.invalid", enabled=True, app_version="1.2.3", acked=True
+        )["payload_preview"]
+        assert preview["dist"] == "start"
+
+    def test_no_marker_reports_the_shape(self, _isolated_home, monkeypatch):
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", "wheel")
+        assert beacon.payload("1.2.3")["dist"] == "wheel"
+
+    @pytest.mark.parametrize("shape", sorted(beacon.KNOWN_DISTRIBUTIONS - {"wheel", "nsis"}))
+    def test_a_marker_beside_another_shape_is_stale(self, _isolated_home, monkeypatch, shape):
+        """A data home a start script once used, now served by a DMG, say."""
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", shape)
+        self._mark(_isolated_home)
+        assert beacon.payload("1.2.3")["dist"] == shape
+
+    @pytest.mark.parametrize(
+        "text", ["", "cli\n", "START\n", "start-sh\n", "\ufeffstart\n", "start\n" + "x" * 5000]
+    )
+    def test_only_the_exact_value_counts(self, _isolated_home, monkeypatch, text):
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", "wheel")
+        self._mark(_isolated_home, text)
+        assert beacon.payload("1.2.3")["dist"] == "wheel"
+
+    def test_surrounding_whitespace_is_tolerated(self, _isolated_home, monkeypatch):
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", "nsis")
+        self._mark(_isolated_home, "  start\r\n")
+        assert beacon.heartbeat_distribution() == "start"
+
+    @requires_symlinks
+    def test_a_symlinked_marker_is_not_followed(self, _isolated_home, monkeypatch):
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", "wheel")
+        target = _isolated_home / "planted-origin"
+        target.write_text("start\n", encoding="utf-8")
+        (_isolated_home / beacon.INSTALL_ORIGIN_FILE).symlink_to(target)
+        assert beacon.heartbeat_distribution() == "wheel"
+
+    def test_a_directory_at_the_marker_is_ignored(self, _isolated_home, monkeypatch):
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", "wheel")
+        (_isolated_home / beacon.INSTALL_ORIGIN_FILE).mkdir()
+        assert beacon.heartbeat_distribution() == "wheel"
+
+    def test_an_unreadable_data_home_reports_the_shape(self, _isolated_home, monkeypatch):
+        def denied():
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", "wheel")
+        monkeypatch.setattr(beacon, "config_dir", denied)
+        assert beacon.heartbeat_distribution() == "wheel"
+
+    def test_start_is_a_heartbeat_value_and_never_a_shape(self):
+        """Adding ``start`` to the shapes would let update routing see it."""
+        assert beacon.START_ORIGIN not in beacon.KNOWN_DISTRIBUTIONS
+        assert beacon.HEARTBEAT_DISTRIBUTIONS == beacon.KNOWN_DISTRIBUTIONS | {"start"}
+
+    @pytest.mark.skipif(not _HAVE_BASH, reason=_NO_BASH_REASON)
+    def test_the_stamp_script_refuses_start(self, tmp_path):
+        proc = _run_stamp(beacon.START_ORIGIN, tmp_path)
+        assert proc.returncode != 0
+        assert not (tmp_path / "_build_info.py").exists()
+
+    @pytest.mark.parametrize(
+        "script, write",
+        [
+            pytest.param("start.sh", "_ks_write_marker {name} {value}", id="start.sh"),
+            pytest.param(
+                "start.ps1",
+                "Write-KsMarker -DataHome $dataHome -Name '{name}' -Value '{value}'",
+                id="start.ps1",
+            ),
+        ],
+    )
+    def test_the_start_scripts_write_the_marker_this_module_reads(self, script, write):
+        text = (self._REPO / script).read_text(encoding="utf-8")
+        expected = write.format(name=beacon.INSTALL_ORIGIN_FILE, value=beacon.START_ORIGIN)
+        assert expected in text, f"{script} no longer writes {expected!r}"
+
+
 class TestVersionClamp:
     """`v` must stay low-cardinality however the build stamped __version__.
 

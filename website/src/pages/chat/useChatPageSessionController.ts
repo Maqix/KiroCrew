@@ -54,6 +54,14 @@ interface UseChatPageSessionControllerArgs {
   searchParams: URLSearchParams
   slots: ChatSlot[]
   tokenConsumingRef: MutableRefObject<boolean>
+  /** The main chat (RFC §6.9) — where the dashboard lands when no session is
+   *  named and none is remembered. Null before the first run graduates. */
+  mainSlot?: string | null
+  /** The one-chat first-run session — the landing target of a fresh install
+   *  until it graduates into the main chat. */
+  firstRunSlot?: string | null
+  /** Whether the boot flags that carry `mainSlot` have been read yet. */
+  themeBootReady?: boolean
 }
 
 /**
@@ -94,6 +102,9 @@ export function useChatPageSessionController({
   searchParams,
   slots,
   tokenConsumingRef,
+  mainSlot = null,
+  firstRunSlot = null,
+  themeBootReady = true,
 }: UseChatPageSessionControllerArgs) {
   // Older-sessions history is fetched lazily, not on mount: the
   // sidebar's "Older sessions" section self-fetches when expanded (see
@@ -777,14 +788,27 @@ export function useChatPageSessionController({
     if (searchParams.get('slot') || searchParams.get('sid') || initialSidRef.current) return
     if (filteredSlots.length > 0) {
       const saved = localStorage.getItem(slotStorageKey)
-      const target = saved && filteredSlots.find(s => s.key === saved) ? saved : filteredSlots[0].key
+      const remembered = saved && filteredSlots.some(s => s.key === saved) ? saved : null
+      // Nothing named and nothing remembered: land on the main chat (RFC §6.9)
+      // when there is one on this surface. The routed dashboard only — an
+      // embedded host (popout, companion panel) keeps choosing as before. With
+      // no remembered slot, wait for the boot flags that carry `mainSlot`, so a
+      // fresh browser does not land on the first row a moment before the main
+      // chat is known.
+      const mainHere = !embedded && mainSlot && filteredSlots.some(s => s.key === mainSlot) ? mainSlot : null
+      // Before graduation, a fresh install (the web dashboard and the desktop
+      // app alike — Electron loads the dashboard root, which lands here) opens
+      // on its first-run chat.
+      const firstRunHere = !embedded && firstRunSlot && filteredSlots.some(s => s.key === firstRunSlot) ? firstRunSlot : null
+      if (!remembered && !embedded && !themeBootReady) return
+      const target = remembered ?? mainHere ?? firstRunHere ?? filteredSlots[0].key
       dispatch(switchSlot(target))
     } else if (connected && slotsLoaded && !autoCreatedRef.current) {
       // Connected, slots fetched, and truly empty — auto-create one
       autoCreatedRef.current = true
       dispatch(createSlot({ agent: defaultAgent || undefined, mode }))
     }
-  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, defaultAgent, mode, newSlotFailed, newSessionRef, tokenConsumingRef])
+  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, defaultAgent, mode, newSlotFailed, newSessionRef, tokenConsumingRef, embedded, mainSlot, firstRunSlot, themeBootReady])
 
   // Slot switch: the virtualizer (keyed on sessionId = activeSlot) owns entry
   // placement — it force-pins to the bottom (arming follow) or restores a

@@ -1,5 +1,5 @@
-import { memo } from 'react'
-import { Ban, Info, TriangleAlert } from 'lucide-react'
+import { memo, type ReactNode } from 'react'
+import { Ban, Info, TriangleAlert, type LucideIcon } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -56,7 +56,19 @@ function srSeverity(tone: NoticeTone): string {
  * while the glyph is 1em of the fixed 13px type, so a px constant would drift
  * under a non-16px root font-size.
  */
-export default memo(function NoticeCard({ content, tone: toneOverride }: { content: string; tone?: NoticeTone }) {
+export default memo(function NoticeCard({ content, tone: toneOverride, icon: iconOverride, emphasis = false, actions }: {
+  content: string
+  tone?: NoticeTone
+  /** A glyph that names the notice's subject (a vault key for a captured
+   *  secret) in place of the tone's generic one. The tone still colours it. */
+  icon?: LucideIcon
+  /** A milestone the user should not scroll past (the main-chat graduation):
+   *  accent edge and ink instead of the muted routine look. */
+  emphasis?: boolean
+  /** Buttons under the text, for a notice the user can act on (the first
+   *  run's guardrails: Try again, Use classic setup). */
+  actions?: ReactNode
+}) {
   // Language-generation subscription: this memo() boundary renders i18nT()
   // strings, so a language switch must invalidate it.
   useLanguageGeneration()
@@ -65,19 +77,22 @@ export default memo(function NoticeCard({ content, tone: toneOverride }: { conte
   // to parse a tone from, so it names the severity directly.
   const tone = toneOverride ?? parsed.tone
   const text = parsed.text
-  const Icon = tone === 'blocked' ? Ban : tone === 'warn' ? TriangleAlert : Info
+  const Icon = iconOverride ?? (tone === 'blocked' ? Ban : tone === 'warn' ? TriangleAlert : Info)
   const severity = srSeverity(tone)
   return (
     <div
-      className="self-center w-full max-w-full min-w-0 rounded-md ring-1 ring-inset forced-colors:border ring-border bg-card text-muted animate-scale-in"
+      className={`self-center w-full max-w-full min-w-0 rounded-md ring-1 ring-inset forced-colors:border bg-card animate-scale-in ${
+        emphasis ? 'ring-accent text-text' : 'ring-border text-muted'
+      }`}
       data-testid="notice-card"
       data-tone={tone}
+      data-emphasis={emphasis || undefined}
     >
       <div className="flex items-start gap-2 px-3 py-2 min-w-0 text-[13px] leading-5">
         <Icon
           size={13}
           className={`lucide-inline shrink-0 mt-[calc((1.25rem-1em)/2)] ${
-            tone === 'blocked' ? 'text-danger' : tone === 'warn' ? 'text-warn' : ''
+            tone === 'blocked' ? 'text-danger' : tone === 'warn' ? 'text-warn' : emphasis ? 'text-accent' : ''
           }`}
           aria-hidden="true"
         />
@@ -86,6 +101,11 @@ export default memo(function NoticeCard({ content, tone: toneOverride }: { conte
           {text}
         </span>
       </div>
+      {actions && (
+        <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-3 pb-2 min-w-0" data-testid="notice-card-actions">
+          {actions}
+        </div>
+      )}
     </div>
   )
 })

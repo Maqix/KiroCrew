@@ -216,12 +216,31 @@ def _token(args: argparse.Namespace) -> None:
     _emit_session_urls(port, token)
 
 
-def _emit_session_urls(port: int, token: str) -> None:
+def _session_url(origin: str, token: str, path: str = "") -> str:
+    """*origin* plus the landing *path*, carrying *token* as the ``token`` query value.
+
+    An empty *path* is the dashboard root, ``<origin>/?token=``. A *path* that
+    already carries a query (``/chat?sid=...``) gets the token appended to it,
+    the way the desktop shell sets ``token`` on its landing URL.
+    """
+    if not path:
+        return f"{origin}/?token={token}"
+    separator = "&" if "?" in path else "?"
+    return f"{origin}{path}{separator}token={token}"
+
+
+def _emit_session_urls(port: int, token: str, path: str = "") -> list[str]:
     """Print every origin the operator can open this session on.
 
     Extracted from ``_token`` so the URL set is testable without standing up a
     gateway and minting a real session: the interesting behaviour is which origins
     get a line, and that is pure given the config and the Tailscale lookup.
+
+    *path* is the landing path every printed URL opens (``kirocrew start`` passes
+    the first-run chat); empty means the dashboard root. Returns the URLs printed
+    for origins OTHER than the loopback line, in print order, so a caller can show
+    one of them as a QR code without re-deciding which origins are safe to hand a
+    session to.
     """
     # Print the SAME canonical loopback host the gateway uses for its auto-open
     # and !dashboard links. resolve_dashboard_host() returns "localhost" for the
@@ -231,12 +250,17 @@ def _emit_session_urls(port: int, token: str) -> None:
     # origin, splitting the SPA's per-origin localStorage so all dashboard
     # settings appear reset. Keeping the host consistent avoids that.
     host = resolve_dashboard_host(local_only=True)
-    print(f"http://{host}:{port}?token={token}")
+    if path:
+        print(_session_url(f"http://{host}:{port}", token, path))
+    else:
+        print(f"http://{host}:{port}?token={token}")
+    others: list[str] = []
     cfg = KiroCrewConfig.load()
     origin = dashboard_origin(cfg.dashboard.url)
     if origin and "localhost" not in origin:
         print()
-        print(f"{origin}/?token={token}")
+        others.append(_session_url(origin, token, path))
+        print(others[-1])
 
     # The tailnet origin, when one is trusted. Without this the flow dead-ends: the
     # gateway derives `https://<MagicDNS name>` itself precisely so the operator does
@@ -270,7 +294,7 @@ def _emit_session_urls(port: int, token: str) -> None:
                 "printed.",
                 file=sys.stderr,
             )
-            return
+            return others
         tailnet_url = tailnet_origin()
         if tailnet_url and tailnet_url != origin:
             # Ownership of the 443/ mount, not just "a tailnet name exists". The URL
@@ -289,7 +313,8 @@ def _emit_session_urls(port: int, token: str) -> None:
             state = tailnet_serve.serve_state(port)
             if state.published is True:
                 print()
-                print(f"{tailnet_url}/?token={token}")
+                others.append(_session_url(tailnet_url, token, path))
+                print(others[-1])
             else:
                 print()
                 print(
@@ -312,6 +337,7 @@ def _emit_session_urls(port: int, token: str) -> None:
                 "will not trust one either). Check `tailscale status`.",
                 file=sys.stderr,
             )
+    return others
 
 
 def _logout(port: int) -> None:
@@ -961,11 +987,47 @@ def _own_console_script() -> str | None:
     return str(path)
 
 
-def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
+def _gateway_argv(port: int | None = None, *, no_open: bool = False) -> list[str]:
+    """The argv that starts ``kirocrew gateway`` from this CLI.
+
+    Resolves the console script this CLI was invoked as
+    (:func:`_own_console_script`) first, then ``shutil.which("kirocrew")``, and
+    falls back to ``python -P -m kiro_crew`` so an editable or source-tree
+    install works without a ``kirocrew`` on ``PATH``. One builder for every
+    spawn of a gateway from the CLI (the detached restart and ``kirocrew start``,
+    detached or in the foreground), so they cannot resolve different entry
+    points.
+
+    ``no_open`` passes ``--no-open``: a caller that opens the browser itself
+    (``kirocrew start``) must not get a second tab from the gateway's own
+    startup auto-open.
+    """
+    bin_path = _own_console_script() or shutil.which("kirocrew")
+    if bin_path:
+        argv: list[str] = [bin_path, "gateway"]
+    else:
+        # Source-tree/editable-install fallback: run the module directly.
+        # This also covers the case where the wrapper script is not on PATH
+        # (e.g. running from an unactivated checkout). ``-P`` because the
+        # gateway is spawned with ``cwd=Path.home()`` and ``-m`` would put
+        # that directory first on sys.path, ahead of the standard library --
+        # the launch shape under which a stray ``~/concurrent/`` replaced the
+        # stdlib package in the field.
+        argv = platform_compat.isolated_python_argv("-P", "-m", "kiro_crew", "gateway")
+    if no_open:
+        argv.append("--no-open")
+    if port is not None:
+        argv += ["--port", str(int(port))]
+    return argv
+
+
+def _spawn_detached_gateway(
+    port: int | None = None, *, no_open: bool = False
+) -> subprocess.Popen[bytes]:
     """Spawn a detached ``kirocrew gateway`` so the calling shell returns.
 
-    Used by :func:`_restart` when no platform service is active. The
-    new process:
+    Used by :func:`_restart` when no platform service is active, and by
+    ``kirocrew start`` (with ``no_open``). The new process:
 
     - Detaches via ``start_new_session=True`` (own session + process
       group), so closing the calling terminal does not SIGHUP it.
@@ -973,15 +1035,13 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
       ``~/.kiro/crew/gateway.log`` (same file the existing ``logs``
       command tails for foreground gateways), so the user has one
       place to look regardless of how the gateway was started.
-    - Resolves the console script this CLI was invoked as
-      (:func:`_own_console_script`) first, so a restart respawns the
-      *same* ``kirocrew`` rather than whichever one happens to sit
-      earliest on ``PATH``; then ``shutil.which("kirocrew")``, falling
-      back to ``sys.executable -m kiro_crew`` so editable/source-tree
-      dev installs also work without a global ``kirocrew`` symlink.
+    - Runs the argv :func:`_gateway_argv` builds, so a restart respawns
+      the *same* ``kirocrew`` this CLI was invoked as rather than
+      whichever one happens to sit earliest on ``PATH``.
     - Closes all inherited file descriptors so it does not pin sockets
       or pipes from the parent CLI process.
-    - Binds *port* when given (``--port N``).
+    - Binds *port* when given (``--port N``), and passes ``--no-open``
+      when *no_open* is set.
 
     Passing *port* is what keeps a restart coherent. The caller has already
     resolved a port, stopped the gateway on it, and will poll *that* port for
@@ -1004,20 +1064,7 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
     # one log file. The fd is owned by the child after Popen returns.
     log_fh = open(log_path, "a", encoding="utf-8")  # noqa: SIM115
 
-    bin_path = _own_console_script() or shutil.which("kirocrew")
-    if bin_path:
-        argv: list[str] = [bin_path, "gateway"]
-    else:
-        # Source-tree/editable-install fallback: run the module directly.
-        # This also covers the case where the wrapper script is not on PATH
-        # (e.g. running from an unactivated checkout). ``-P`` because this
-        # child is spawned with ``cwd=Path.home()`` below and ``-m`` would put
-        # that directory first on sys.path, ahead of the standard library --
-        # the launch shape under which a stray ``~/concurrent/`` replaced the
-        # stdlib package in the field.
-        argv = platform_compat.isolated_python_argv("-P", "-m", "kiro_crew", "gateway")
-    if port is not None:
-        argv += ["--port", str(int(port))]
+    argv = _gateway_argv(port, no_open=no_open)
 
     # Detach so closing the calling terminal doesn't take the gateway with it.
     # Pass both flags explicitly (NOT **dict unpack — that breaks mypy's Popen

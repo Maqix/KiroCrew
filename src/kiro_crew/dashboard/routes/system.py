@@ -19,6 +19,7 @@ from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import handlers
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
+from kiro_crew.dashboard.handlers import setup_cards as setup_card_handlers
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 
 
@@ -32,6 +33,9 @@ def register(app: web.Application) -> None:
     app.router.add_delete(
         "/api/redaction/allowed-hosts", redaction_handlers.api_redaction_revoke_host
     )
+    # Setup cards and the first-run session (owner-only; the decide route is
+    # the single commit path for a card).
+    setup_card_handlers.register_routes(app)
     # Misc (notifications GET/clear and send-message via _register_mcp_routes)
     app.router.add_get("/api/notifications", handlers.api_notifications)
     app.router.add_delete("/api/notifications", handlers.api_notification_delete)

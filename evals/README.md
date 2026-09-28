@@ -26,6 +26,7 @@ its `description`, which the generic bundled-skill frontmatter test already pins
 ```
 evals/<skill>/cases.json      prompts, expected audience/behaviour, assertions
 evals/<skill>/run_evals.py    --check (deterministic) and --run (A/B)
+evals/<skill>/fixtures/       inputs a --run needs, when it needs any (crew-setup)
 evals/<skill>/iteration-N/    A/B outputs and grading, auto-incremented, gitignored
 ```
 
@@ -83,6 +84,60 @@ cannot silently converge as either one is edited.
 
 Four assertions per case works well. Write them as things a grader can point at
 in the text, not as tastes.
+
+## crew-setup: persona evals of the first run
+
+`evals/crew-setup/` measures a whole conversation instead of one answer: the
+one-chat first run, from the privacy card to a kept job, as RFC
+[one-chat first run](../docs/request-for-change/rfc-one-chat-first-run.md) §8
+asks. Its `cases.json` holds trigger cases (checked like explain-for's, with the
+same scoring code) and 6–8 personas. Each persona has a `persona` and an
+`objective` in prose, a `script` of user replies, a click `policy` per card kind
+(`accept`, `decline`, `ignore`, `preview-then-keep`, `preview-then-decline`; a
+list applies per occurrence), and `rubric` lines graded from the run's record
+alone: cards before the first kept job, minutes to a kept job, no card of a kind
+after the user declined it, no request to paste a secret, no link the agent
+invented, no unexpected `setup_card` refusal, a pasted token stored only as a
+`secret://` reference. `rubric_defaults` apply to every persona.
+
+The user side is **scripted, not simulated**: the same replies and clicks on
+every run, so two iterations differ only by the agent. A model playing the user
+from the persona text is a later step.
+
+```bash
+# Deterministic: schema, policies, rubric arguments, trigger cases, and the
+# secret-request patterns against their own examples. What CI runs.
+python3 evals/crew-setup/run_evals.py --check -v
+
+# Real first runs with a real model (about ten minutes each). Needs the repo's
+# .venv (the runner starts .venv/bin/kirocrew) and a signed-in kiro-cli.
+python3 evals/crew-setup/run_evals.py --run            # every persona
+python3 evals/crew-setup/run_evals.py --run --case 3   # one persona
+```
+
+`--run` gives every persona its own gateway: a fresh temp `KIROCREW_HOME` and
+`KIRO_HOME`, a free port (never 5476), `KIROCREW_CLOUD_SIMULATE=1`, telemetry
+off, AWS credential lookup pointed at empty files, a fixture Hermes home
+(`fixtures/hermes/`, fictional) for the import and empty homes for every other
+agent, and a throwaway git repository built from `fixtures/repo/commits.json`
+for `{{REPO}}`. Before the gateway starts, every MCP server named in
+`~/.kiro/settings/mcp.json` is declared disabled in the eval's data home,
+because Kiro Crew merges those servers (mail, chat, documents) into every crew
+home; after it starts, the run is refused if any crew agent spec still has an
+enabled server Kiro Crew does not own. The names are read at run time and never
+written to a record. `connect`, `service` and `channel` cards can only be
+declined or ignored, since committing them would leave the sandbox (an OAuth
+page, a system service, a real bot API). A held tool call, in the chat or from a
+job's preview run, is allowed once only when it is read-only git, or a file read
+confined to the throwaway repository or the eval crew's own skills (a skill's
+references); everything else is rejected. The gateway
+is always stopped at the end.
+
+Each persona writes `iteration-N/<id>-<name>/record.json` (cards, transcript,
+sends, approvals, timings, refusals, the secret scan) and `grading.json` (one
+verdict per rubric line, with the evidence), and the run prints a table. A
+failing line is a finding about the agent or the gateway, not a reason to relax
+the rubric.
 
 ## A longer trigger is LOOSER, not tighter
 

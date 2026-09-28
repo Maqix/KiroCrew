@@ -166,16 +166,17 @@ This allows `kirocrew` to find project-level agent config and skills from any di
 
 `kirocrew --help` (and a bare `kirocrew`, which prints the banner first) does NOT
 use argparse's own subcommand block. With ~40 commands that block is one flat
-list in registration order, so the three commands a new install needs — `gateway`,
-`service`, `doctor` — land in the middle of it, and the `{chat,doctor,gateway,…}`
-choice blob makes the usage line unreadable.
+list in registration order, so the commands a new install needs — `gateway`,
+`service`, `doctor`, `start` — land in the middle of it, and the
+`{chat,doctor,gateway,…}` choice blob makes the usage line unreadable.
 
 `cli_help.py` owns the taxonomy instead:
 
 - `COMMAND_GROUPS` is an ordered list of sections, each an ordered list of
   `(command, one-line summary)`. It is the single source of truth for what the
   top-level help lists and in what order; `Start here` is first and holds exactly
-  `gateway`, `service`, `doctor`.
+  `gateway`, `service`, `doctor`, `start`, in that order (the first three lead
+  the invalid-choice message too).
 - Its notes answer the two questions the flat list never did: how `gateway`
   (foreground, dies with the terminal) differs from `service install` (systemd
   unit / launchd agent, detached, restarts on crash, starts at boot, only one at
@@ -210,6 +211,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D) |
 | `kirocrew chat --model X` | Override model for this session |
 | `kirocrew gateway` | Start the Kiro Crew server (dashboard + messaging channels) |
+| `kirocrew start [--port N] [--no-browser] [--foreground] [--no-input] [--skip-harness-check] [--home here\|cloud\|later]` | Check the agent harness, reuse or start a gateway (detached, or in this terminal with `--foreground`), and open the first-run chat in the browser — see [Start Command](#start-command). |
 | `kirocrew gateway --slack-only` | Start without dashboard or SSH tunnel instructions |
 | `kirocrew gateway --no-crons` | Start without cron scheduler (use when another instance handles crons) |
 | `kirocrew gateway --no-tunnel` | Never publish a tunnel: refuses to start or provision one for the life of the process, whatever `tunnel.enabled` says. SCOPED TO TUNNELS — it does not change where the dashboard binds, so a config that widens `dashboard.url` off loopback still does, with token auth as the control there; do not read `publish_disabled()` as "no published surface of any kind". Reach the instance on the loopback port it binds (`ssh -L` from another host). A Dev Fleet pod boots with this whenever its own checkout declares the flag — the pod's argv is built by the control plane but executed by the target worktree's gateway, so `pod.runtime.target_supports_flag` probes that checkout first and DROPS the flag when it is absent (passing it would make argparse exit 2, which the unit's `Restart=on-failure`/`RestartSec=5` turns into a 5s restart loop). Such a checkout keeps the tunnel behaviour it had before this flag existed and is not given the guarantee — see `security.md` for why no config-side substitute is applied. |
@@ -1391,6 +1393,142 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
      follow logs via `kirocrew logs -f`.
 3. SEL audit event logged with `via=service` or `via=fork pid=<n>` so
    the audit trail distinguishes the two paths.
+
+## Start Command
+
+`kirocrew start` (`cli_start.py`) is the one command between an installed CLI and
+an open chat — the installer half of the one-chat first run
+([rfc-one-chat-first-run](../../request-for-change/rfc-one-chat-first-run.md)
+§5.1). `start.sh` at the repo root execs it after installing; a user who already
+has the CLI runs it directly. It asks nothing: where the crew lives and every
+other choice are asked in the first-run chat. `--home here|cloud|later` lets a
+script answer ahead of time on a fresh install (`first_run.record_home_choice`;
+`cloud` puts the home card on screen, with `--aws-region`, or the profile's own
+region, and `--aws-profile`); no AWS call is made here. It takes four steps, in
+order:
+
+1. **Port.** `resolve_client_port(--port)`, the same resolution `token` and
+   `stop` use.
+2. **Harness.** The configured `agent.acp_backend`, identified positively
+   (`== ACP_BACKEND_KIRO`):
+   - kiro-cli: `kiro_cli.resolve_kiro_cli()`. Missing prints
+     `kiro_prerequisite.OFFICIAL_INSTALL_DOCS_URL` and both sign-in commands, plus
+     `kirocrew config set agent.acp_backend <id>` for every other selectable
+     harness `backend_install.probe_backends()` finds installed, and exits **3**.
+     Kiro Crew never downloads kiro-cli itself (RFC Q2). Installed but signed out
+     (`cli_doctor._kiro_cli_signed_in() is False`): on a TTY and without
+     `--no-input` it runs kiro-cli's own sign-in at once, with no yes/no (the
+     chat cannot start without it), attached to the terminal — `login`, or
+     `login --use-device-flow`
+     when no browser can open here (SSH, no display). Never `--license pro`,
+     which would force organization SSO; that command is printed instead, beside
+     the personal one (`login_commands_for`). Otherwise it prints both and
+     continues: the dashboard's prerequisite gate covers sign-in too. An
+     unknowable sign-in (`None`) is reported and not asked about.
+   - any other harness: `backend_install.probe_backend(id)`. `MISSING` names the
+     components and the harness's `install_command` (or kiro-cli's install link
+     for KAS, which rides kiro-cli) and exits **3**; otherwise its declared
+     `sign_in_remedy` is printed, unprobed.
+   - `--skip-harness-check` skips the step entirely — no `whoami` spawn, no
+     prompt.
+3. **Gateway.**
+   - `_probe_gateway_ready(port) == 200` → reused. `503` (booting or shutting
+     down) is waited on; any other non-zero status is something else on the port
+     and exits **1**.
+   - an installed service (`controller.installed_unit_path()`) is never competed
+     with, because a gateway spawned beside it would hold the data-home lock the
+     service's own start then fails on. Running → waited on until ready. Stopped
+     → on launchd, `service.macos.restart()` (`launchctl kickstart -k`, no sudo;
+     `controller.restart_service()` only acts on a RUNNING agent) and then
+     waited on; on systemd, `restart_command_hint()` is printed and the command
+     exits **1**.
+   - otherwise, after refusing a live `gateway.lock` holder (a gateway of this
+     data home on another port — named, never signalled), a gateway is spawned
+     with `--no-open`, so the only tab is the one this command opens: detached
+     through `_spawn_detached_gateway(port, no_open=True)` by default, or with
+     `--foreground` as a child in its OWN process group. Both are polled through
+     `_wait_gateway_ready` (60 s — a first start also creates the data home). The
+     argv comes from `cli_server._gateway_argv`, the one builder every CLI
+     gateway spawn shares. The foreground child gets SIGINT/SIGTERM/SIGHUP
+     forwarded exactly once (sharing the terminal's process group would deliver
+     Ctrl-C twice, and a gateway reads a second SIGINT as "exit now"), and is
+     reaped on every exit path: SIGTERM, `TOTAL_SHUTDOWN_BUDGET_SECS`, then
+     SIGKILL to its group. The handlers are restored only after the reap, so a
+     second Ctrl-C during the grace is forwarded rather than raised.
+4. **Landing URL and browser.** The session is minted the way `kirocrew token`
+   mints it (`run_preflight_checks`, the per-port local secret, `GET
+   /api/token/local` on `127.0.0.1` with `X-Local-Secret`, TTL `20h`). The path
+   is `/chat?sid=<slot>` when `first_run.read_first_run_slot()` names a slot —
+   polled for up to 10 s while the install can still get one (neither
+   `dashboard.onboarded` nor `privacy_acked`), read once otherwise — and `/`
+   when it does not. The state file is agent-writable, so a slot key outside
+   `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}` is ignored and the key is URL-encoded
+   either way. The token goes on as the `token` query value
+   (`cli_server._session_url`), as the desktop shell's `dashboardEntryUrl` sets
+   it. Unless `--no-browser`, the URL is opened through
+   `cloud.login._open_browser` (which honours `KIROCREW_NO_BROWSER` and refuses
+   on a display-less Linux); success prints the URL WITHOUT the token.
+   Otherwise `_emit_session_urls(port, token, path)` prints every origin
+   `kirocrew token` would, with the same tailnet ownership and governance
+   checks, and returns the non-loopback ones: the first a phone could reach
+   (not `localhost`, `*.localhost` or a loopback address) is drawn as a terminal
+   QR code (`qr.render_qr_terminal`); with none, an SSH session or a host that
+   cannot open a browser gets `ssh -N -L <port>:127.0.0.1:<port> <host>`
+   instead of a QR code that leads nowhere. A refused mint still prints the
+   plain dashboard URL and names `kirocrew token`.
+
+The token is printed and handed to the browser, which is the command's purpose,
+and is never passed to a logger (the QR failure path logs only the exception
+type). A short summary follows: where the gateway runs, how to stop it
+(`kirocrew stop`, or Ctrl-C in the foreground), `kirocrew service install` when
+no service is installed, and `kirocrew token` for a fresh link.
+
+Exit codes: **0** serving and the URL delivered (in the foreground: the
+gateway's own exit status, 128 + N for death by signal N); **1** no gateway
+could be started or reached; **3** the configured harness is not installed;
+**130** interrupted.
+
+`start` is not in `cli._LONG_LIVED_COMMANDS`: even with `--foreground` it runs no
+event loop, and its gateway child sets up its own queued logging as `gateway`.
+It IS in `port_resolution._KIROCREW_SERVER_SUBCOMMANDS`: it never binds the port
+itself, but a foreground `start` forwards SIGTERM to its gateway child, so a
+`kirocrew stop` that reaches it can only stop the gateway it launched.
+
+`start.sh` is POSIX `sh`, its whole body in a `main()` called on the last line
+(a truncated `curl | sh` download runs nothing). It downloads
+`${KIROCREW_CDN_BASE:-https://download.crew.kiro.dev}/cli.sh` (`--cdn`
+overrides it, as in `cli.sh`) over `--proto '=https' --tlsv1.2` to a `mktemp`
+file, runs it with cli.sh's flags only — `--channel`, `--version`, `--cdn` (each
+also as `--flag=value`), `--managed-python`, `--system-python`, since `cli.sh`
+exits 2 on anything else — and removes the file. It keeps no trust root of its
+own: `cli.sh` verifies the signed manifest exactly as a plain install does. It
+then records `start` in `<data home>/install-origin` with `cli.sh`'s
+symlink-proof temp-and-rename marker write, resolves `kirocrew` (`PATH`, then
+`~/.local/bin`, then pipx's bin dir) and `exec`s `kirocrew start` with its own
+`--no-browser` / `--foreground`, stdin from `/dev/tty` when one can be opened
+(under `curl | sh` stdin is the pipe). `--skip-install` skips the download when a
+`kirocrew` already resolves, and then writes no marker. A failed `cli.sh` exits
+with its status and starts nothing. Pinned by `test/test_start_sh.py`; the
+command itself by `test/test_cli_start.py`.
+
+`start.ps1` is the Windows counterpart. Windows has no `cli.sh` (`install.ps1` is
+the clone-mode client setup), so it installs the one Windows artifact the CDN
+publishes, the signed desktop installer `KiroCrew-Setup.exe`, and runs it only
+when `Get-AuthenticodeSignature` is `Valid` and the signer is the publisher the
+desktop updater pins — the same check the updater applies to every update, not
+a second key. It installs silently for the current user, records `start` in the
+same install-origin marker, and runs the bundled `kirocrew start` with
+`-NoBrowser` / `-Foreground`; `-SkipInstall` uses a `kirocrew` already on `PATH`.
+When the CLI it runs is a desktop install's own bundled one, it also hands that
+install's bundled kiro-cli to `kirocrew start` the way the app's launcher hands
+it to the gateway (`website/electron/gateway-env.js`): `KIROCREW_BUNDLED_KIRO_DIR`
+(`<resources>\backend-dist\kiro-cli`, derived from the CLI's own path, never
+searched for) plus `KIRO_NO_AUTO_UPDATE=1`, and only when that `kiro-cli.exe`
+answers `--version` within ten seconds. Both are set for the child and put back
+after, since under `irm | iex` the process is the user's own session; an
+operator's `KIROCREW_KIRO_BIN` still ranks first (RFC Q14). The probe runs through
+`System.Diagnostics.Process`, so `Start-Process` stays the one call that runs
+the one downloaded, signature-checked file. Pinned by `test/test_start_ps1.py`.
 
 ## Service Management
 

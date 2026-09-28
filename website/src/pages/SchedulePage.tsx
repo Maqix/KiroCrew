@@ -21,6 +21,7 @@ import { useAgents } from '../hooks/useAgents'
 import { useCronActions } from '../hooks/useCronActions'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useAppSelector, useAppDispatch } from '../store'
+import { useDraftInMainChat, useMainChatSlot } from '../hooks/useMainChat'
 import { triggerRefresh } from '../store/dashboardSlice'
 import { SaveCreateLabel, scheduleLabel, scheduleMinutes } from '../utils/cronUtils'
 import { useSortableTable } from '../hooks/useSortableTable'
@@ -217,6 +218,10 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
 export default function SchedulePage() {
   const [jobs, setJobs] = useState<CronJob[]>([])
   const dispatch = useAppDispatch()
+  // Changes to a job can be asked for in the main chat (RFC §6.9): the entry
+  // pre-fills its composer and the agent proposes the change as a card.
+  const mainChatSlot = useMainChatSlot()
+  const draftInMainChat = useDraftInMainChat()
   const { agents, error: rosterError, reload: reloadRoster, reloading: rosterReloading } = useAgents(0)
   // A recovered roster must not be recovered for this form alone. `useAgents`
   // holds PER-INSTANCE state, and the app shell keeps its own copy (App.tsx
@@ -996,6 +1001,11 @@ export default function SchedulePage() {
                       onToggleStrict={async () => { try { await api.updateCron(j.id, { strict_schedule: !j.strict_schedule }); load() } catch (e: unknown) { setActionError({ id: j.id, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.failed') }) } }}
                       onMove={fid => handleMoveJob(j.id, fid)}
                       onNewFolder={handleNewFolder}
+                      onAskInMainChat={mainChatSlot
+                        // `{{request}}` is where the user's own words go: empty
+                        // here, so the composer holds the lead-in only.
+                        ? () => draftInMainChat(mainChatSlot, i18nT('components.mainChatMenu.ask_about_job_draft', { name: j.name || j.id, request: '' }))
+                        : undefined}
                     />
                   </div>
                   {/* askAgent on: row actions (pause, strict, move, run, delete)

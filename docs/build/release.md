@@ -258,7 +258,7 @@ concurrency group, and their version derivation.
 | `publish-linux.yml` | reusable publish | One Linux artifact to `desktop/<channel>/<version>/`, its channel file under `<feed prefix>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER (ARCH, FORMAT) PAIR — `arch: x64\|arm64` × `format: appimage\|deb\|rpm`, six callers — each with its own keys and feed, so no two ever share one. |
 | `sign-and-notarize.yml` | reusable publish | Three chained jobs (`sign`, `notarize`, `publish`) covering the whole macOS trust chain and the mac feed write. |
 | `publish-docker.yml` | reusable publish | Multi-arch (`linux/amd64,linux/arm64`) image built from the same wheel, pushed to `ghcr.io/<owner>/kirocrew`. |
-| `publish-installer.yml` | independent publish | Publishes `cli.sh` to the distribution bucket root. Triggered by a push to `main` touching `cli.sh` (path-filtered), plus manual dispatch. **Not** part of a channel release. |
+| `publish-installer.yml` | independent publish | Publishes `cli.sh`, then `start.sh`, then `start.ps1`, to the distribution bucket root. Triggered by a push to `main` touching any of the three (path-filtered), plus manual dispatch. **Not** part of a channel release. |
 
 Release-adjacent, deliberately outside the release path:
 
@@ -317,7 +317,9 @@ feed/<channel>/{deb,rpm}/latest-linux-arm64.yml              pointer, max-age=30
 feed/<channel>/latest.yml                                    pointer, max-age=300 (Windows)
 feed/<channel>/latest-cli.json                               pointer, no-cache
 feed/<channel>/simple/ + feed/<channel>/simple/kirocrew/     pointer, no-cache
-cli.sh                                                       pointer, no-cache (only root object)
+cli.sh                                                       pointer, no-cache (root object)
+start.sh                                                     pointer, no-cache (root object; runs the live cli.sh)
+start.ps1                                                    pointer, no-cache (root object; runs the signed KiroCrew-Setup.exe)
 ```
 
 Every public URL is exactly one of two classes, and the class decides the cache
@@ -742,7 +744,13 @@ that still pins `CLI_MANIFEST_KEY_ID="UNCONFIGURED"` or whose pinned id does not
 match its embedded key, and refuses unless **every live channel feed** verifies
 against that pinned key using the same `cli-manifest.py verify` checks the
 installer runs. A channel serving no feed at all is skipped with a warning,
-since publishing is not a regression for it.
+since publishing is not a regression for it. The same run publishes `start.sh`
+last, after `cli.sh` is verified live: it embeds no key of its own (it runs the
+live `cli.sh` unchanged), so these gates are the ones that guard it too.
+`start.ps1` goes after it. It never runs `cli.sh`: it runs the Authenticode-signed
+`desktop/<channel>/.../KiroCrew-Setup.exe` that `publish-windows.yml` ships, and
+only when the signer is the publisher that lane verifies, so it adds no trust
+root for these gates to check.
 
 ### Breaking releases: the forced-update floor
 
@@ -1096,6 +1104,12 @@ is the check that matters: "uploaded" is not "live and correct".
 - `cli.sh`: sha256 of the CDN-served script must equal the published bytes, with
   retries for edge revalidation, and the header must be `no-cache`. The script is
   also `sh -n` parsed and must reject an unknown channel before reaching the CDN.
+- `start.sh`: the same sha256 and `no-cache` read-back, published only after
+  `cli.sh` verified live (it downloads and runs whatever `cli.sh` the CDN serves,
+  so it must never go live ahead of it). Before any upload it is `sh -n` parsed,
+  its `--help` must succeed and it must refuse an unknown argument.
+- `start.ps1`: the same read-back, last. Before any upload the runner's `pwsh`
+  parses it, its `-Help` must succeed and it must refuse an unknown parameter.
 - Docker: a version tag that already exists must carry provenance attested by
   this repository's `publish-docker` workflow, verified with
   `--signer-workflow`, before the run treats it as a valid prior publish.

@@ -506,6 +506,29 @@ describe('resolveInjectCard – which inject rows become notes', () => {
     expect(resolveInjectCard(row('ordinary injection', {}))).toBeNull()
   })
 
+  it('folds the first-run kickoff prompt and a setup result into their own notes', () => {
+    // One-chat first run: both are machine-facing prompts the gateway wrote for
+    // the agent. Each is a compact note naming its event, never a raw bubble,
+    // and the prompt itself stays one click away in the folded body.
+    const kickoff = resolveInjectCard(row('You are running the first-run setup…', { injectKind: 'first_run' }))
+    expect(kickoff?.kind).toBe('first_run')
+    expect(kickoff?.title).toBe('First-run setup started')
+    expect(kickoff?.body).toBe('You are running the first-run setup…')
+    const result = resolveInjectCard(row('[Setup card sc-1 committed] outcome: …', { injectKind: 'setup_result' }))
+    expect(result?.kind).toBe('setup_result')
+    expect(result?.title).toBe('Setup step answered')
+  })
+
+  it('draws the first-run notes as routine, folded cards', async () => {
+    render(<RecoveryCard parsed={resolveInjectCard(row('kickoff prompt text', { injectKind: 'first_run' }))!} />)
+    const card = screen.getByTestId('recovery-card')
+    expect(card).toHaveAttribute('data-kind', 'first_run')
+    expect(card).toHaveAttribute('data-severity', 'routine')
+    expect(screen.queryByTestId('recovery-card-body')).toBeNull()
+    await userEvent.click(screen.getByTestId('recovery-card-toggle'))
+    expect(screen.getByTestId('recovery-card-body').textContent).toContain('kickoff prompt text')
+  })
+
   it('still prefers the content marker, which is durable', () => {
     // Recovery copy is per-kind and no structural tag reproduces it, so a
     // recognised marker wins even when the stamp says something coarser.
@@ -522,7 +545,11 @@ describe('injectOpensTurn – which inject rows begin a turn of their own', () =
 
   it('classifies every stamped kind, and the table is the union', () => {
     // A kind missing here fails to compile, so this pins the VALUES only.
-    expect(INJECT_KIND_OPENS_TURN).toEqual({ cron: true, mcp_app: true, synthesis: true, recovery: false, user_replay: false })
+    expect(INJECT_KIND_OPENS_TURN).toEqual({
+      cron: true, mcp_app: true, synthesis: true, recovery: false, user_replay: false,
+      // One-chat first run: the kickoff prompt and a decided card's result each open a turn.
+      first_run: true, setup_result: true,
+    })
     for (const [kind, opens] of Object.entries(INJECT_KIND_OPENS_TURN)) expect(injectOpensTurn(row({ injectKind: kind })), kind).toBe(opens)
   })
 

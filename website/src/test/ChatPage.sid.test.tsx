@@ -807,6 +807,11 @@ describe('ChatPage ?sid= URL parameter', () => {
       const { store } = renderForPop(navSlots)
 
       await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
+      // Establish history entry A before leaving it (the sibling retrace test
+      // does the same): the landing waits for the boot flags that carry the
+      // main chat, so the URL write for A can trail the activation by a tick,
+      // and a switch inside that tick would leave nothing for Back to return to.
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-1-100'))
       await act(async () => { await store.dispatch(switchSlot('chat-2-200')) })
       await waitFor(() => expect(currentUrl).toContain('sid=chat-2-200'))
 

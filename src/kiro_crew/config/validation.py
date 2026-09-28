@@ -122,6 +122,17 @@ def _holds_nothing(value: object) -> bool:
     return value is None or (isinstance(value, (dict, list, str)) and not value)
 
 
+def _is_its_default(value: object, default: object) -> bool:
+    """True when a stored value is the field's own default, as a save writes it.
+
+    ``bool`` never matches a number (``True == 1`` in Python), so a flag and a
+    count are compared as the settings they are.
+    """
+    if default is None or isinstance(value, bool) != isinstance(default, bool):
+        return False
+    return bool(value == default)
+
+
 def _get_help_text(schema: dict, dot_path: str) -> str:
     """Return the help text for the field at *dot_path*."""
     node = _lookup_schema_node(schema, dot_path)
@@ -450,10 +461,11 @@ def validate_config_data(data: dict) -> dict:
         logger.warning("Config: unrecognized top-level keys: %s", ", ".join(unknown))
 
     # 2. Detect deprecated fields and log warnings. A deprecated key that holds
-    # nothing (an empty map/list/string, or null) carries nothing for the
-    # operator to migrate, so it is not announced: warning on bare presence would
-    # scold an install whose earlier build materialized the key's empty default
-    # into every save, which the operator never wrote and cannot act on.
+    # nothing (an empty map/list/string, or null) or holds exactly its default
+    # carries nothing for the operator to migrate, so it is not announced:
+    # warning on bare presence would scold an install whose own save
+    # materialized the key's default (a fresh install's first start did), which
+    # the operator never wrote and cannot act on.
     for entry in SCHEMA_REGISTRY:
         if not entry.deprecated:
             continue
@@ -467,7 +479,7 @@ def validate_config_data(data: dict) -> dict:
             else:
                 found = False
                 break
-        if found and not _holds_nothing(node):
+        if found and not _holds_nothing(node) and not _is_its_default(node, entry.default_value):
             logger.warning(
                 "Config: deprecated field '%s': %s",
                 entry.path,
@@ -537,8 +549,7 @@ def validate_config_data(data: dict) -> dict:
                 actual = _actual_type_name(value)
                 removed = _apply_field_default(data, dot_path)
                 logger.warning(
-                    "Config: type mismatch at '%s': "
-                    "expected %s, got %s (value: %s); %s",
+                    "Config: type mismatch at '%s': " "expected %s, got %s (value: %s); %s",
                     dot_path,
                     expected,
                     actual,

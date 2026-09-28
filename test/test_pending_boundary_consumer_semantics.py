@@ -244,6 +244,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_rewind.py", "api_chat_slot_rewind"),
                 ("chat_runner.py", "_eager_spawn"),
                 ("chat_runner.py", "_prefetch_ttl"),
+                # A finished hand-off's notice waits while the main chat's turn is
+                # reserved, so it never lands between the rows of a reply.
+                ("handoff_notice.py", "_busy"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),
                 ("handlers/mcp_apps.py", "api_mcp_apps_message"),
                 ("handlers/members.py", "api_member_thread"),
@@ -252,6 +255,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("session_control.py", "create_session"),
                 ("session_control.py", "read_messages"),
                 ("session_control.py", "send_to_target"),
+                # A setup-card envelope queues behind a reserved turn exactly like
+                # api_send_message's cron notification does.
+                ("setup_flow.py", "_dispatch_envelope_turn"),
+                # The first-run kickoff retry refuses while a turn is running,
+                # the same admission question a queued envelope asks.
+                ("setup_guardrails.py", "retry_kickoff"),
                 ("state.py", "_ChatSlot.enqueue_or_run_prompt"),
                 ("ws.py", "_handle_slot_focused"),
             }
@@ -293,5 +302,6 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         ("handlers/messaging.py", "api_send_message"),
         ("handlers/taskrunner.py", "api_taskrunner_to_chat"),
         ("openai_compat.py", "api_completions"),
+        ("setup_flow.py", "_dispatch_envelope_turn"),
         ("state.py", "_ChatSlot.enqueue_or_run_prompt"),
     }

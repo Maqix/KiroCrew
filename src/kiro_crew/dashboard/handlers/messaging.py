@@ -5557,6 +5557,111 @@ async def _validate_telegram_token(token: str) -> str | None:
             return (desc or "rejected")[:60]
 
 
+def clean_telegram_token(raw: str) -> str:
+    """*raw* as pasted into a bot-token field, or ``""`` when it is blank.
+
+    Drops an accidental ``TELEGRAM_BOT_TOKEN=`` prefix (a line copied out of a
+    ``.env``) and raises ``ValueError`` naming the problem when what is left
+    cannot be a @BotFather token. The Settings save and the setup card's channel
+    commit (``dashboard/setup_channel.py``) both read a pasted token through
+    here, so the two accept exactly the same shapes.
+    """
+    from kiro_crew.config.loader import CRED_TELEGRAM_BOT_TOKEN  # noqa: F811
+
+    tok = raw.strip()
+    if tok.startswith(f"{CRED_TELEGRAM_BOT_TOKEN}="):  # accidental env line
+        tok = tok[len(CRED_TELEGRAM_BOT_TOKEN) + 1 :].strip()
+    if tok and any(ch.isspace() for ch in tok):
+        raise ValueError("bot_token must not contain whitespace")
+    if tok and not _TELEGRAM_TOKEN_RE.match(tok):
+        raise ValueError("bot_token must look like <bot_id>:<secret> from @BotFather")
+    return tok
+
+
+async def commit_telegram_writes(
+    path: Path, staged: dict[str, object], env_updates: dict[str, str | None]
+) -> None:
+    """Persist a validated Telegram change: ``config.json`` first, then ``.env``.
+
+    Phase 2 of the Settings save, shared with the setup card's channel commit so
+    a token pasted in either place is stored the same way. The caller holds
+    ``_get_config_lock()`` and has validated everything. Raises
+    ``ConfigReadError`` on a corrupt ``config.json``, before ``.env`` is touched.
+
+    Order matters for crash safety: config.json — which carries the legacy
+    ``bot_token`` fallback removal — is persisted FIRST, so there is no failure
+    window in which .env was already cleared but the legacy fallback survives to
+    silently resurrect the revoked credential on restart. The inverse failure
+    mode (config written, then a crash before the .env update) is benign and
+    visible: the .env token remains exactly as GET reports it, and re-running the
+    save completes the operation.
+    """
+    from kiro_crew.config.loader import CRED_TELEGRAM_BOT_TOKEN  # noqa: F811
+
+    # The purge is decided against the document the write lands on, not the
+    # snapshot: whenever this save updates the credential, a legacy ``bot_token``
+    # a concurrent writer landed after our read is dropped too, so the cleared
+    # ``.env`` slot cannot leave a fallback behind. Absent, the drop is a no-op
+    # and the write is skipped.
+    purge_legacy_token = CRED_TELEGRAM_BOT_TOKEN in env_updates
+    if staged or purge_legacy_token:
+        # Through ``update_config_locked``: it holds the advisory lock on the
+        # sidecar ``<path>.lock`` across the whole read-modify-write, so a writer
+        # in ANOTHER PROCESS cannot land between our read and our write, and the
+        # staged keys (plus the legacy ``bot_token`` purge) are merged into the
+        # file as re-read inside that lock. Off-loop: file IO, and it may wait on
+        # another holder of the lock.
+        await _LockedSectionWrite(
+            path, "telegram", staged, drop_keys=("bot_token",) if purge_legacy_token else ()
+        ).commit()
+    if env_updates:
+        # Off-loop: the .env write is blocking file IO (lock, temp write,
+        # owner-only lockdown, replace) and must not block the event loop.
+        await _write_env_off_loop(env_updates)
+        # Keep the live process environment in sync with the new .env state
+        # (load_credentials() lets os.environ win over .env — see the Slack
+        # save handler for the full rationale).
+        for key, new_val in env_updates.items():
+            if new_val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = new_val
+
+
+async def add_telegram_allowed_user(user_id: int) -> bool:
+    """Add *user_id* to ``telegram.allowed_user_ids``; return whether it was new.
+
+    The write a setup card's ``/pair`` makes (``dashboard/setup_channel.py``), on
+    the same key the Settings save edits. The id is appended to the list as
+    re-read inside the sidecar lock, so an id another writer added meanwhile is
+    kept; a stored value that is not a list raises ``ValueError`` and writes
+    nothing, because rebuilding an allow-list the loader cannot read would be a
+    silent authorization change. Answers after the watcher has applied the
+    write, so the live transport admits the sender before they are told so.
+    """
+    from kiro_crew.config.loader import config_path  # noqa: F811
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
+
+    added = False
+
+    def _append(section: dict) -> None:
+        nonlocal added
+        current = section.get("allowed_user_ids", [])
+        if not isinstance(current, list):
+            raise ValueError("telegram.allowed_user_ids is not a list")
+        if any(str(entry).strip() == str(user_id) for entry in current):
+            return
+        section["allowed_user_ids"] = [*current, int(user_id)]
+        added = True
+
+    async with _get_config_lock():
+        await run_to_completion(
+            _LockedSectionWrite(config_path(), "telegram", {}, finalize=_append).commit()
+        )
+    await _hot_apply_after_write()
+    return added
+
+
 async def api_telegram_config_get(request: web.Request) -> web.Response:
     """GET /api/telegram/config — read Telegram config + masked secret status."""
     from kiro_crew.config.loader import (  # noqa: F811
@@ -5681,14 +5786,11 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     else:
         raw = body.get("bot_token")
         if isinstance(raw, str):
-            tok = raw.strip()
-            if tok.startswith(f"{CRED_TELEGRAM_BOT_TOKEN}="):  # accidental env line
-                tok = tok[len(CRED_TELEGRAM_BOT_TOKEN) + 1 :].strip()
+            try:
+                tok = clean_telegram_token(raw)
+            except ValueError as exc:
+                return _deny(str(exc))
             if tok:
-                if any(ch.isspace() for ch in tok):
-                    return _deny("bot_token must not contain whitespace")
-                if not _TELEGRAM_TOKEN_RE.match(tok):
-                    return _deny("bot_token must look like <bot_id>:<secret> from @BotFather")
                 env_updates[CRED_TELEGRAM_BOT_TOKEN] = tok
 
     # Config → config.json under "telegram" (staged, applied only after Phase 1).
@@ -5846,34 +5948,12 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             if tg_err:
                 return _deny(f"bot_token rejected by Telegram ({tg_err})")
 
-    # ── Phase 2: commit. All validation passed, so writes are safe. Order
-    # matters for crash safety: config.json — which carries the legacy
-    # ``bot_token`` fallback removal — is persisted FIRST, so there is no
-    # failure window in which .env was already cleared but the legacy
-    # fallback survives to silently resurrect the revoked credential on
-    # restart. The inverse failure mode (config written, then a crash before
-    # the .env update) is benign and visible: the .env token remains exactly
-    # as GET reports it, and re-running the save completes the operation. ──
-    # The purge is decided against the document the write lands on, not the
-    # snapshot: whenever this save updates the credential, a legacy ``bot_token``
-    # a concurrent writer landed after our read is dropped too, so the cleared
-    # ``.env`` slot cannot leave a fallback behind. Absent, the drop is a no-op
-    # and the write is skipped.
-    purge_legacy_token = CRED_TELEGRAM_BOT_TOKEN in env_updates
-    if staged or purge_legacy_token:
-        tg_cfg.update(staged)
-        # Through ``update_config_locked``: it holds the advisory lock on the
-        # sidecar ``<path>.lock`` across the whole read-modify-write, so a writer
-        # in ANOTHER PROCESS cannot land between our read and our write, and the
-        # staged keys (plus the legacy ``bot_token`` purge) are merged into the
-        # file as re-read inside that lock. Off-loop: file IO, and it may wait on
-        # another holder of the lock.
-        try:
-            await _LockedSectionWrite(
-                path, "telegram", staged, drop_keys=("bot_token",) if purge_legacy_token else ()
-            ).commit()
-        except ConfigReadError:
-            return _deny("config.json is corrupt", status=500)
+    # ── Phase 2: commit. All validation passed, so writes are safe. ──
+    tg_cfg.update(staged)
+    try:
+        await commit_telegram_writes(path, staged, env_updates)
+    except ConfigReadError:
+        return _deny("config.json is corrupt", status=500)
 
     # Create the configured session folder now, on this user-initiated save,
     # so the reconcile path never has to write the folder store. Best-effort:
@@ -5888,18 +5968,6 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
                 _folder_name,
                 relabel="session_folder" in staged,
             )
-    if env_updates:
-        # Off-loop: the .env write is blocking file IO (lock, temp write,
-        # owner-only lockdown, replace) and must not block the event loop.
-        await _write_env_off_loop(env_updates)
-        # Keep the live process environment in sync with the new .env state
-        # (load_credentials() lets os.environ win over .env — see the Slack
-        # save handler for the full rationale).
-        for key, new_val in env_updates.items():
-            if new_val is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = new_val
 
     _sel().log_api_access(
         caller=caller,

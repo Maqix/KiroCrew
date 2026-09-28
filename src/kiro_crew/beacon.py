@@ -60,9 +60,10 @@ PRIVACY:
     accident and not via a future call site.
   * Every value is a low-cardinality constant or coarse bucket. ``py`` is
     minor-only (``3.12``, never ``3.12.13``), ``v`` is release-only (``0.1.2``,
-    never the ``-nightly.20260731t065756`` build stamp), ``dist`` is one of five
-    values, and ``first_seen`` is a single bit — specifically so the field set
-    cannot become a fingerprint when combined. A per-build timestamp is the
+    never the ``-nightly.20260731t065756`` build stamp), ``dist`` is one value
+    of the closed :data:`HEARTBEAT_DISTRIBUTIONS`, and ``first_seen`` is a
+    single bit — specifically so the field set cannot become a fingerprint when
+    combined. A per-build timestamp is the
     clearest example of why: it is near-unique, so combined with a stable id it
     would pick out individual machines.
   * The server persists NO client IP: the beacon distribution's log delivery
@@ -177,6 +178,26 @@ KNOWN_DISTRIBUTIONS = frozenset(
 )
 DEFAULT_DISTRIBUTION = "source"
 
+# Install ORIGIN, a second axis beside the install SHAPE above: the one-command
+# ``start.sh`` / ``start.ps1`` path records ``start`` in this data-home marker
+# after the installer it wraps succeeds. The shape stays what was installed
+# (``wheel`` through cli.sh, ``nsis`` through the signed desktop installer), and
+# that is all the update engine and the bug-report form read, so ``start`` is
+# deliberately NOT in KNOWN_DISTRIBUTIONS. Only the heartbeat's ``dist`` field
+# reports the origin (:func:`heartbeat_distribution`), which makes the
+# start-script cohort comparable with the cli.sh one without a new field.
+#
+# The marker lives in the agent-writable data home, so unlike the baked shape a
+# running install CAN flip its own value, but only between its shape and
+# ``start``: the value is compared, never sent, so nothing free-form reaches the
+# wire. A marker beside any other shape is ignored as stale (a data home a start
+# script once installed into, now served by a DMG, say).
+INSTALL_ORIGIN_FILE = "install-origin"
+START_ORIGIN = "start"
+_START_SHAPES = frozenset({"wheel", "nsis"})
+# Every value the heartbeat's ``dist`` field can carry.
+HEARTBEAT_DISTRIBUTIONS = KNOWN_DISTRIBUTIONS | {START_ORIGIN}
+
 # Optional dependency: ``_build_info`` exists only in a packaged artifact, so
 # ImportError is the normal case in a checkout, not an error. Resolved once at
 # import and held in a module-level binding, which is also the seam tests patch;
@@ -269,6 +290,23 @@ def distribution() -> str:
         return baked
     raw = (os.environ.get(DIST_ENV, "") or "").strip().lower()
     return raw if raw in KNOWN_DISTRIBUTIONS else DEFAULT_DISTRIBUTION
+
+
+def heartbeat_distribution() -> str:
+    """Return the heartbeat's ``dist`` value: the install shape, or ``start``.
+
+    ``start`` when the shape is one a start script installs and the
+    :data:`INSTALL_ORIGIN_FILE` marker says the install came through one. Every
+    other caller wants the shape and reads :func:`distribution`.
+    """
+    shape = distribution()
+    if shape not in _START_SHAPES:
+        return shape
+    try:
+        origin = _read_state(config_dir() / INSTALL_ORIGIN_FILE)
+    except (OSError, RuntimeError):
+        return shape
+    return START_ORIGIN if origin == START_ORIGIN else shape
 
 
 def release(app_version: str) -> str:
@@ -489,7 +527,7 @@ def _fields(app_version: str) -> dict[str, str]:
     return {
         "v": release(app_version),
         "py": python_minor(),
-        "dist": distribution(),
+        "dist": heartbeat_distribution(),
         "first_seen": "1" if is_first_send() else "0",
     }
 

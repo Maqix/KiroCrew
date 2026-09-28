@@ -265,6 +265,61 @@ def _tracked_tree_is_dirty(root: Path) -> bool:
     return bool(rc.stdout.strip())
 
 
+#: Where a new, never-added file is almost certainly part of the build: code and
+#: assets the frontend and the package build import. Scratch files elsewhere in
+#: a checkout (notes, logs) do not block a launch.
+_BUILD_SOURCE_PREFIXES = ("src/", "website/src/", "website/public/", "website/electron/")
+#: How many of the offending files the refusal names.
+_UNTRACKED_NAMED = 5
+
+
+def _untracked_build_files(root: Path) -> list[str]:
+    """New files under the build's source dirs that git does not track yet.
+
+    ``git ls-files --others --exclude-standard`` honours ``.gitignore``, so
+    ignored files (secrets included) are never listed. Returns ``[]`` when git
+    cannot be queried: the refusal below is a convenience, not a guarantee.
+    """
+    try:
+        rc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+            ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard", "-z"],
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if rc.returncode != 0:
+        return []
+    names = [n for n in rc.stdout.decode("utf-8", "replace").split("\0") if n]
+    return sorted(n for n in names if n.startswith(_BUILD_SOURCE_PREFIXES))
+
+
+def _refuse_half_a_working_tree(root: Path) -> None:
+    """Fail fast when edited tracked files would ship without the new files they use.
+
+    The working-tree tarball ships TRACKED files only, which keeps an untracked
+    secret from ever leaving the machine. A checkout with edited tracked files
+    AND new, never-added source files therefore ships a tree that does not build
+    (an edited page importing a component git has never seen), and the instance
+    fails its install after a quarter of an hour. Say so before anything is
+    created, and name the fix that keeps the guarantee: add the files to git.
+    """
+    untracked = _untracked_build_files(root)
+    if not untracked:
+        return
+    named = ", ".join(untracked[:_UNTRACKED_NAMED])
+    more = len(untracked) - _UNTRACKED_NAMED
+    if more > 0:
+        named += f" and {more} more"
+    raise aws.AWSError(
+        f"{len(untracked)} new source file(s) are not in git yet ({named}). The cloud "
+        "home builds from the files git tracks, so it would ship your edited files "
+        "without them and fail to build. Add them with `git add` (no commit needed) "
+        "or launch from a clean checkout.",
+        action="source:PackageLocalCheckout",
+    )
+
+
 def _tar_fallback(root: Path) -> Path:
     """Build a source tarball from the repo's TRACKED files (fail-closed).
 
@@ -340,6 +395,7 @@ def build_source_tarball(root: Optional[Path] = None) -> Path:
     """
     root = root or repo_root()
     if _tracked_tree_is_dirty(root):
+        _refuse_half_a_working_tree(root)
         logger.info("working tree has uncommitted tracked changes; packaging the working tree")
         return _tar_fallback(root)
     archive = _use_git_archive(root)

@@ -64,6 +64,7 @@ from kiro_crew.agent_files import (
     LEDGER_CONDUCTOR_AGENT_FILENAME as _LEDGER_CONDUCTOR_AGENT_FILENAME,
 )
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
+from kiro_crew.agent_files import MAIN_CHAT_AGENT_FILENAME as _MAIN_CHAT_AGENT_FILENAME
 from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
 )
@@ -78,6 +79,9 @@ from kiro_crew.agent_files import (
     SECURITY_CONDUCTOR_AGENT_FILENAME as _SECURITY_CONDUCTOR_AGENT_FILENAME,
 )
 from kiro_crew.agent_files import WORKER_AGENT_FILENAME as _WORKER_AGENT_FILENAME
+from kiro_crew.agent_files import (
+    is_primary_agent,
+)
 from kiro_crew.agent_spec_format import (
     agent_spec_candidates,
     is_markdown_spec,
@@ -7204,6 +7208,15 @@ def rebuild_agent_config(
     except Exception:
         logger.debug("kirocrew-worker agent install failed", exc_info=True)
 
+    # Install kirocrew-main agent (the default agent plus session control, for the
+    # main chat). EAGER for the worker's reason above: the main chat's slot names it,
+    # and a spec the boot snapshot does not know is one a spawn cannot resolve. After
+    # ``kirocrew.json`` is written, because it mirrors that file.
+    try:
+        _install_main_chat_agent()
+    except Exception:
+        logger.debug("kirocrew-main agent install failed", exc_info=True)
+
     # Bidirectional sync: ensure packages installed for one provider
     # are also available for the other (agents↔plugins, skills).
     sync_aim_packages()
@@ -7715,20 +7728,21 @@ def ensure_agent_materialized(agent: str | None) -> bool:
     dev launch that skips setup leaves it absent — this makes the runtime
     self-sufficient regardless.
 
-    Only the managed default (``AGENT_FILENAME`` → ``kirocrew.json``) is
-    regenerable here, via :func:`rebuild_agent_config`. App/custom agents are
-    owned by their own subsystems, so a missing one is reported (``False``) and
-    left to the caller's graceful set_mode fallback rather than being guessed at.
+    Only the managed default (``AGENT_FILENAME`` → ``kirocrew.json``) and the main
+    chat's spec (``kirocrew-main.json``, which :func:`rebuild_agent_config` writes
+    from it) are regenerable here, via :func:`rebuild_agent_config`. App/custom
+    agents are owned by their own subsystems, so a missing one is reported
+    (``False``) and left to the caller's graceful set_mode fallback rather than
+    being guessed at.
 
-    Returns ``True`` when the managed default file is present (already, or after
+    Returns ``True`` when *agent*'s managed file is present (already, or after
     a regenerate); ``False`` when *agent* is non-managed or regeneration failed.
     Best-effort — never raises, so it can sit on the spawn hot path.
     """
     try:
-        managed = Path(AGENT_FILENAME).stem
-        if not agent or agent != managed:
+        if not agent or not is_primary_agent(agent):
             return False
-        agent_file = kiro_agents_dir_path() / AGENT_FILENAME
+        agent_file = kiro_agents_dir_path() / f"{agent}.json"
         if agent_file.exists():
             return True
         logger.warning(
@@ -8519,7 +8533,7 @@ def _grant_reaches_excluded(entry: str) -> list[str]:
     offers -- the full ``@server/verb`` ref and the bare verb -- and either hit counts.
 
     Written with a single ``return`` at the end and no early exit, on the same discipline
-    :func:`_require_fresh_worker_spec` carries: every earlier version of this
+    :func:`_require_fresh_mirror` carries: every earlier version of this
     subtraction grew a shortcut for a shape it did not want to think about, and each of
     those shortcuts was a grant reaching an excluded verb unexamined. Falling off the end
     is the only exit, so every entry leaves here classified.
@@ -8853,7 +8867,7 @@ def _managed_opt_in_entry(subcommand: str) -> dict[str, Any]:
 
 
 def _filter_auto_approve(refs: tuple[str, ...], *, source: str) -> list[str]:
-    """Filter a conductor's intended grants through the governance ceiling.
+    """Filter an installer's intended grants through the governance ceiling.
 
     ``allowedTools`` is the ONE path that never reaches the PreToolUse gate, so
     every grant is filtered through the ceiling first — the same predicate
@@ -9453,24 +9467,7 @@ def _write_worker_spec(config: dict, path: Path, *, template_grants: list[str]) 
     default_identity_before = default_spec_identity()
     installed_default = _installed_default_spec()
     if installed_default is not None:
-        for key, shape in _WORKER_MIRRORED_SHAPES.items():
-            if key not in installed_default:
-                continue
-            value = installed_default[key]
-            if not isinstance(value, shape) or isinstance(value, bool):
-                # Not mirrored, so the template's own value stands. Reported rather
-                # than passed on: a hand-edited default whose key holds the wrong
-                # type is a spec kiro-cli itself would reject, and silently copying it
-                # would carry it past every ``isinstance`` guard downstream.
-                logger.warning(
-                    "Default agent spec key %r holds %s, not %s; not mirrored onto the "
-                    "worker (the template's value stands)",
-                    key,
-                    type(value).__name__,
-                    getattr(shape, "__name__", shape),
-                )
-                continue
-            config[key] = copy.deepcopy(value)
+        _mirror_installed_default(config, installed_default, onto="worker")
         # Applied to the MIRROR itself, before this installer adds its own server:
         # an ``opt_in`` set is assigned per agent, and mounting one on the default
         # agent is not assigning it to every spec derived from that agent. See
@@ -9591,6 +9588,49 @@ def _write_worker_spec(config: dict, path: Path, *, template_grants: list[str]) 
     # Recorded INSIDE the critical section, against the same default-spec read this
     # derivation used: stamping it after the locks release would record a generation
     # other than the one the spec on disk mirrors.
+    _record_mirrored_generation(config["name"], installed_default, default_identity_before)
+
+
+def _mirror_installed_default(
+    config: dict[str, Any], installed_default: dict[str, Any], *, onto: str
+) -> None:
+    """Copy the :data:`_WORKER_MIRRORED_SHAPES` keys of the on-disk default onto *config*.
+
+    Shared by the two specs that mirror the default agent (``kirocrew-worker`` and
+    ``kirocrew-main``) so the keys they copy and the type each key must have are one
+    rule. The same map is what :func:`_spec_fingerprint` hashes, which is what lets the
+    spawn-path freshness gate prove either mirror current. *onto* names the target in
+    the warning only.
+    """
+    for key, shape in _WORKER_MIRRORED_SHAPES.items():
+        if key not in installed_default:
+            continue
+        value = installed_default[key]
+        if not isinstance(value, shape) or isinstance(value, bool):
+            # Not mirrored, so the template's own value stands. Reported rather
+            # than passed on: a hand-edited default whose key holds the wrong
+            # type is a spec kiro-cli itself would reject, and silently copying it
+            # would carry it past every ``isinstance`` guard downstream.
+            logger.warning(
+                "Default agent spec key %r holds %s, not %s; not mirrored onto the "
+                "%s (the template's value stands)",
+                key,
+                type(value).__name__,
+                getattr(shape, "__name__", shape),
+                onto,
+            )
+            continue
+        config[key] = copy.deepcopy(value)
+
+
+def _record_mirrored_generation(
+    name: str, installed_default: dict[str, Any] | None, identity_before: str | None
+) -> None:
+    """Record which generation of the default spec the mirror *name* was built from.
+
+    Caller holds the derivation's locks and has just written the mirror, so the pair
+    recorded here describes the spec on disk.
+    """
     try:
         # ONE observation, not two. The fingerprint is of the very bytes this derivation
         # mirrored -- going back to the file for it would record a generation the spec on
@@ -9603,19 +9643,154 @@ def _write_worker_spec(config: dict, path: Path, *, template_grants: list[str]) 
         # ``_mcp_lock`` is the default spec's own writer lock, but not every writer of
         # that file takes it, so the coherence check is what makes this pair sound rather
         # than the lock.
-        agent_state.set_mirrored_from(config["name"], _spec_fingerprint(installed_default))
-        coherent = (
-            default_identity_before is not None
-            and default_spec_identity() == default_identity_before
-        )
+        agent_state.set_mirrored_from(name, _spec_fingerprint(installed_default))
+        coherent = identity_before is not None and default_spec_identity() == identity_before
         # CLEARED rather than recorded when the file moved. No identity means no fast
         # path, so the next check compares the truthful fingerprint above against the
         # default as it then stands and re-derives on a mismatch. That direction costs one
-        # re-derive; the other starts a worker on a spec nobody verified. A crash between
+        # re-derive; the other starts a session on a spec nobody verified. A crash between
         # the two writes lands in the same safe place, for the same reason.
-        agent_state.set_mirrored_stat(config["name"], default_identity_before if coherent else None)
+        agent_state.set_mirrored_stat(name, identity_before if coherent else None)
     except Exception:  # noqa: BLE001 — an unwritable sidecar costs a re-derive, not the spec
         logger.warning("Could not record the mirrored-from bookkeeping", exc_info=True)
+
+
+#: The dashboard verbs the MAIN CHAT may call without an approval prompt: the two
+#: halves of handing work to a chat of its own and reading back what it said. Judged
+#: on the invariant ``_CONDUCTOR_DASHBOARD_GRANTS`` states verb by verb -- a granted
+#: verb may CREATE or READ, never MUTATE something that already exists and is not the
+#: agent's own -- and narrower than that tuple, because a verb is granted for a step
+#: and the main chat's only steps are create and read: the folder verbs file a
+#: conductor's fleet, and ``session_create`` takes a ``folder`` of its own.
+#:
+#: ``session_send`` and ``session_stop`` stay MOUNTED and are not granted, so both
+#: reach ``hooks.on_tool_call`` like any ungranted tool. The main chat has no
+#: ownership fence of the kind ``_MEMBER_DASHBOARD_GRANTS`` rests on (``created_by``
+#: bounds a member to the sessions it opened), so an auto-approved send would run
+#: text as a turn in any of the person's own chats, and an auto-approved stop would
+#: discard one's in-flight work. The person is at the keyboard in this chat by
+#: definition, so the prompt costs one click where it matters and nothing on the
+#: create-then-read hand-off.
+_MAIN_CHAT_DASHBOARD_GRANTS: tuple[str, ...] = (
+    "@kirocrew-dashboard/session_create",
+    "@kirocrew-dashboard/session_read_message",
+)
+
+#: Keys of a mirrored ``kirocrew-dashboard`` entry the main chat keeps when it
+#: replaces that entry with its own: the operator's own settings on the server, two
+#: of them restrictions (a mute, switched-off tools). The replacement refreshes the
+#: invocation; it must not lift a restriction the operator chose.
+_MAIN_CHAT_KEPT_DASHBOARD_KEYS: tuple[str, ...] = ("disabled", "disabledTools", "timeout")
+
+
+def _install_main_chat_agent() -> None:
+    """Generate and install the kirocrew-main agent config.
+
+    The main chat's agent, and the one-chat first run's answer to its Q13. The first
+    run graduates into a MAIN CHAT from which the person hands long work to a chat of
+    its own, and the session-control verbs live on ``kirocrew-dashboard``, an ``opt_in``
+    set the default agent never mounts. Mounting it on the default agent would put its
+    schemas into every chat's context and hand every chat the verbs; a spec of its own
+    keeps every other chat exactly as it is.
+
+    ``default + @kirocrew-dashboard + two grants``, and NOTHING subtracted. "The
+    default" is the spec ON DISK, not the template (see :func:`_installed_default_spec`
+    for why that difference is the whole point): the servers a first-run ``connect``
+    card just added, an app's servers and the model pick all live only in
+    ``kirocrew.json``, and a main chat missing them would be missing what the person
+    set up in that same chat. The mirrored keys are the worker's, so the spawn-path
+    freshness gate (:func:`require_fresh_derived_spec`) covers this spec by the same
+    fingerprint: a server revoked on the default cannot stay mounted and auto-approved
+    here. The rest -- prompt stub, hooks, resources -- comes from the template, which is
+    where the default's own values come from.
+
+    Unlike the worker, no ``opt_in`` set the operator mounted on the default is
+    dropped and no cron grant is withheld: this IS the default agent, in the one chat
+    the person runs everything from. Unlike the conductor, nothing is narrowed.
+
+    The dashboard entry is REPLACED by the hand-built one rather than mirrored, so its
+    invocation and ``KIROCREW_HOME`` pin are current and it carries no ``autoApprove``;
+    a restriction the operator put on a mirrored entry survives the replacement
+    (:data:`_MAIN_CHAT_KEPT_DASHBOARD_KEYS`). Any mirrored grant naming the server is
+    dropped and :data:`_MAIN_CHAT_DASHBOARD_GRANTS` added, then the whole list crosses
+    the governance ceiling in one pass, so a ceiling that governs session control
+    leaves both verbs mounted and prompting.
+    """
+    config = build_agent_config()
+    config["name"] = Path(_MAIN_CHAT_AGENT_FILENAME).stem
+    config["description"] = (
+        "The main chat: the default agent, plus session control so it can hand "
+        "long work to a chat of its own and read back what that chat said."
+    )
+
+    agents_dir = kiro_agents_dir_path()
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    path = agents_dir / _MAIN_CHAT_AGENT_FILENAME
+    # The worker's two locks, in the worker's order (see ``_install_worker_agent``):
+    # the file this function WRITES outermost, the default it READS innermost.
+    from kiro_crew.apps.bridges import _mcp_lock  # noqa: PLC0415 - boot path
+
+    with agents_spec_lock(agents_dir), _mcp_lock():
+        _write_main_chat_spec(config, path)
+    logger.info("Installed main chat agent config: %s", path)
+
+
+def _write_main_chat_spec(config: dict, path: Path) -> None:
+    """Mirror the default onto *config*, add session control, write *path*. Caller locks."""
+    default_identity_before = default_spec_identity()
+    installed_default = _installed_default_spec()
+    if installed_default is not None:
+        _mirror_installed_default(config, installed_default, onto="main chat")
+
+    server = "kirocrew-dashboard"
+    tools = [ref for ref in (config.get("tools") or []) if isinstance(ref, str)]
+    if f"@{server}" not in tools:
+        tools.append(f"@{server}")
+    config["tools"] = tools
+
+    mcp = dict(config.get("mcpServers") or {})
+    mirrored = mcp.get(server)
+    entry = _managed_opt_in_entry("mcp-dashboard")
+    if isinstance(mirrored, dict):
+        entry.update({k: mirrored[k] for k in _MAIN_CHAT_KEPT_DASHBOARD_KEYS if k in mirrored})
+    mcp[server] = entry
+    config["mcpServers"] = mcp
+
+    granted = [
+        ref
+        for ref in (config.get("allowedTools") or [])
+        if isinstance(ref, str)
+        and not (
+            (pattern := _canonical_grant_pattern(ref)) is not None
+            and pattern[1:].partition("/")[0] == server
+        )
+    ]
+    granted.extend(ref for ref in _MAIN_CHAT_DASHBOARD_GRANTS if ref not in granted)
+    # ONE ceiling pass over the whole assembled list: the mirror of the default and the
+    # two grants above, so a file that predates a tightened ceiling is re-filtered too.
+    config["allowedTools"] = _filter_auto_approve(tuple(granted), source="_install_main_chat_agent")
+    # The other channel a call can skip the gate through, which the grant filter does
+    # not see: a hand-added ``autoApprove`` on a mirrored entry.
+    config["mcpServers"] = _strip_ungoverned_auto_approve(config["mcpServers"])
+    _write_derived_permissions(config, config["allowedTools"], _MAIN_CHAT_AGENT_FILENAME)
+    _atomic_json_write(path, config)
+    _record_mirrored_generation(config["name"], installed_default, default_identity_before)
+
+
+def rederive_main_chat_agent(reason: str) -> bool:
+    """Re-derive ``kirocrew-main.json`` after the default spec changed out of band.
+
+    The main chat's counterpart of :func:`rederive_worker_agent`, and reached the same
+    way: from the spawn-path freshness gate, which finds the mirror stale. Best-effort
+    and never raises; must not be called while holding ``bridges._mcp_lock``.
+    """
+    try:
+        _install_main_chat_agent()
+    except Exception:  # noqa: BLE001 — a stale mirror must not fail the caller
+        logger.warning("Main chat agent re-derive failed after %s", reason, exc_info=True)
+        return False
+    logger.info("Re-derived main chat agent config after %s", reason)
+    return True
 
 
 #: How many times :func:`require_fresh_derived_spec` re-runs its verification when the
@@ -9794,6 +9969,28 @@ def _project_shadow_of(
     return None
 
 
+#: The specs that MIRROR the default agent, by agent name -> filename. The freshness
+#: gate below is scoped to exactly these: every other agent mirrors nothing, so there
+#: is no generation for it to be stale against.
+_DERIVED_AGENT_FILES: dict[str, str] = {
+    Path(_WORKER_AGENT_FILENAME).stem: _WORKER_AGENT_FILENAME,
+    Path(_MAIN_CHAT_AGENT_FILENAME).stem: _MAIN_CHAT_AGENT_FILENAME,
+}
+
+
+def _rederive_derived_agent(agent: str, reason: str) -> bool:
+    """Re-derive the mirror *agent* names, through its own public seam.
+
+    Looked up at call time rather than stored in :data:`_DERIVED_AGENT_FILES`, so each
+    seam stays the one obvious thing a caller (or a test) reaches for.
+    """
+    rederive = {
+        Path(_WORKER_AGENT_FILENAME).stem: rederive_worker_agent,
+        Path(_MAIN_CHAT_AGENT_FILENAME).stem: rederive_main_chat_agent,
+    }[agent]
+    return rederive(reason)
+
+
 def _derived_spec_matches_default(agent: str) -> bool:
     """True only when *agent*'s mirror is PROVABLY the current default's.
 
@@ -9824,8 +10021,8 @@ def _derived_spec_matches_default(agent: str) -> bool:
         raise DerivedSpecStale(
             f"the default agent spec {kiro_agents_dir_path() / AGENT_FILENAME} exists but "
             "cannot be read (oversized, not JSON, or refused at the read gate), so the "
-            f"{_WORKER_AGENT_FILENAME} mirror cannot be checked against it; refusing to "
-            "start the worker on a mirror of unknown generation"
+            f"{_DERIVED_AGENT_FILES.get(agent, agent)} mirror cannot be checked against it; "
+            f"refusing to start {agent} on a mirror of unknown generation"
         )
     return agent_state.get_mirrored_from(agent) == expected
 
@@ -9853,8 +10050,8 @@ def require_fresh_derived_spec(
     caller aborts the spawn -- the same reasoning ``require_fork_governance`` applies
     to an unprojected fork.
     """
-    if not agent or agent != Path(_WORKER_AGENT_FILENAME).stem:
-        # SCOPE guard, not a freshness verdict: nothing else mirrors another spec, so
+    if not agent or agent not in _DERIVED_AGENT_FILES:
+        # SCOPE guard, not a freshness verdict: no other agent mirrors another spec, so
         # there is no generation to be stale against. Kept separate from the checks
         # below so "not applicable" can never be mistaken for "verified fresh".
         return None
@@ -9873,10 +10070,11 @@ def require_fresh_derived_spec(
     # bracket exists to catch, so the pair cannot come from the sidecar: the sidecar is
     # for the fast path that avoids a RE-DERIVE, and paying one hash of a small file on a
     # path that is already spawning a process is what buys coherence.
-    worker_path = kiro_agents_dir_path() / _WORKER_AGENT_FILENAME
+    derived_file = _DERIVED_AGENT_FILES[agent]
+    derived_path = kiro_agents_dir_path() / derived_file
     for _ in range(_DEFAULT_SPEC_OBSERVATION_ATTEMPTS):
         identity = default_spec_identity()
-        _require_fresh_worker_spec(work_dir)
+        _require_fresh_mirror(agent, work_dir)
         fingerprint = _spec_fingerprint(_installed_default_spec())
         # The derived spec is read HERE, inside the same window, and travels on the
         # snapshot. An in-process consumer that read it afterwards would be taking a
@@ -9885,28 +10083,28 @@ def require_fresh_derived_spec(
         # surface unchecked. Bracketed on its own identity too, because the bytes handed
         # out have to belong to the same instant as the verification that vouches for
         # them.
-        worker_identity = _file_identity(worker_path)
-        worker_spec = _read_spec_capped(worker_path)
+        derived_identity = _file_identity(derived_path)
+        derived_spec = _read_spec_capped(derived_path)
         if (
             identity is not None
             and fingerprint is not None
-            and worker_identity is not None
-            and worker_spec is not None
-            and _file_identity(worker_path) == worker_identity
+            and derived_identity is not None
+            and derived_spec is not None
+            and _file_identity(derived_path) == derived_identity
             and (default_spec_identity() == identity)
         ):
-            return DerivedSpecSnapshot(identity, fingerprint, worker_spec)
+            return DerivedSpecSnapshot(identity, fingerprint, derived_spec)
     # Fails CLOSED on a file that will not hold still. A snapshot taken anyway would be
     # the torn pair above, and the bracket built on it would either accept a stale spec
     # or kill a valid session -- neither is better than refusing a spawn that is
     # recoverable and reportable.
     raise DerivedSpecStale(
         f"the default agent spec {kiro_agents_dir_path() / AGENT_FILENAME} or the "
-        f"{_WORKER_AGENT_FILENAME} mirror kept changing while the mirror was being "
+        f"{derived_file} mirror kept changing while the mirror was being "
         f"verified, or the mirror could not be read "
         f"({_DEFAULT_SPEC_OBSERVATION_ATTEMPTS} attempts), so no coherent generation can "
         "be recorded and no verified spec can be handed to the session; refusing to "
-        "start the worker"
+        f"start {agent}"
     )
 
 
@@ -9949,8 +10147,8 @@ def require_unchanged_derived_spec(
         )
 
 
-def _require_fresh_worker_spec(work_dir: str | Path | None) -> None:
-    """Return only on POSITIVELY established freshness; raise on anything else.
+def _require_fresh_mirror(agent: str, work_dir: str | Path | None) -> None:
+    """Return only on POSITIVELY established freshness of *agent*'s mirror; raise otherwise.
 
     Written with NO ``return`` statement, which is the point: every earlier version of
     this check grew an early ``return`` for a case it could not evaluate -- a missing
@@ -9966,22 +10164,22 @@ def _require_fresh_worker_spec(work_dir: str | Path | None) -> None:
     cheaply next time, not what makes the spec correct -- while an unreadable DEFAULT
     is not, because there is nothing to derive from.
     """
-    agent = Path(_WORKER_AGENT_FILENAME).stem
+    derived_file = _DERIVED_AGENT_FILES[agent]
     shadow = _project_shadow_of(agent, work_dir)
     if shadow is not None:
         # Checked FIRST, because everything below reasons about the global pair while
         # kiro-cli would resolve THIS file instead: a fresh, verified derivation in
         # ~/.kiro/agents proves nothing about the spec the session actually gets. A
-        # checkout shipping its own worker spec can declare any ``autoApprove`` it
-        # likes, and no derivation this module performs would ever touch it.
+        # checkout shipping its own copy of a derived spec can declare any
+        # ``autoApprove`` it likes, and no derivation this module performs would ever
+        # touch it.
         #
         # Refused rather than repaired, and with no override knob: the file belongs to
         # the checkout, so rewriting it would be Crew editing a repository's tracked
-        # content, and honouring it would let a cloned repo choose its own dispatched
-        # worker's grants.
+        # content, and honouring it would let a cloned repo choose its own grants.
         raise DerivedSpecStale(
             f"the project checkout declares its own {agent} spec at {shadow}, which "
-            "kiro-cli resolves ahead of the derived one; refusing to start the worker "
+            f"kiro-cli resolves ahead of the derived one; refusing to start {agent} "
             "on a spec this derivation does not control"
         )
     agents_dir = kiro_agents_dir_path()
@@ -9990,19 +10188,19 @@ def _require_fresh_worker_spec(work_dir: str | Path | None) -> None:
         # A spawn needs the default spec present: the mirror is a function of it, and
         # with no default there is neither a way to verify the mirror nor a way to
         # rebuild it. A path that legitimately spawns before the default exists should
-        # materialize it first -- the worker gate is not the place to make that legal.
+        # materialize it first -- the mirror gate is not the place to make that legal.
         raise DerivedSpecStale(
             f"the default agent spec {default_path} is missing, so the "
-            f"{_WORKER_AGENT_FILENAME} mirror cannot be verified or rebuilt; refusing "
-            "to start the worker on a mirror of unknown generation"
+            f"{derived_file} mirror cannot be verified or rebuilt; refusing "
+            f"to start {agent} on a mirror of unknown generation"
         )
     if not _derived_spec_matches_default(agent):
-        logger.info("Worker spec predates the default agent spec; re-deriving before spawn")
-        if not rederive_worker_agent("a stale mirror observed on the spawn path"):
+        logger.info("%s predates the default agent spec; re-deriving before spawn", derived_file)
+        if not _rederive_derived_agent(agent, "a stale mirror observed on the spawn path"):
             raise DerivedSpecStale(
-                f"{agents_dir / _WORKER_AGENT_FILENAME} mirrors an older generation of "
-                f"{default_path} and could not be re-derived; refusing to start the "
-                "worker rather than run grants absent from the default agent"
+                f"{agents_dir / derived_file} mirrors an older generation of "
+                f"{default_path} and could not be re-derived; refusing to start "
+                f"{agent} rather than run grants absent from the default agent"
             )
 
 
@@ -10018,7 +10216,7 @@ def rederive_worker_agent(reason: str) -> bool:
     is exactly the window a dispatched worker runs in.
 
     ONE caller in the product: the spawn-path freshness gate
-    (:func:`_require_fresh_worker_spec`), which re-derives a mirror it finds stale. The
+    (:func:`_require_fresh_mirror`), which re-derives a mirror it finds stale. The
     boot path calls :func:`_install_worker_agent` directly. Public and named anyway,
     because the next writer of ``kirocrew.json`` needs one obvious thing to call rather
     than a reason to rediscover this -- the spawn gate covers a writer nobody names,

@@ -36,6 +36,10 @@ import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import RecoveryCard, { injectOpensTurn, resolveInjectCard } from './RecoveryCard'
+import SetupCard from '../../components/setup/SetupCard'
+import SetupGuardrailNotice, { isSetupGuardrailRow } from '../../components/setup/SetupGuardrailNotice'
+import HandoffDoneNotice, { isHandoffDoneRow } from './HandoffDoneNotice'
+import { setupCardRefOf } from '../../api/setupCards'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAuthRequired, isCapabilitiesChanged, isModelUnentitled, isSessionStartFailed, isUsageLimit, sessionStartFailureStreak } from './ErrorCard'
 import { FEATURE_REQUEST_FORM_URL, isFeatureRequestRow } from '../../prompts/featureRequest'
@@ -160,6 +164,15 @@ export interface TranscriptRendererOptions {
    *  policy block writes among them) are only here. Read for the steer-chip
    *  decision, never for layout. Meaningless without `crewmate`. */
   crewmateTranscript?: ChatMessage[]
+  /** This surface mounts the "needs your decision" tray (PendingSetupCards)
+   *  above its composer for the same slot. A live setup card's row then folds
+   *  to a one-line pointer so the card is on screen once; without the tray the
+   *  row keeps the full card. */
+  setupCardTray?: boolean
+  /** Send a message in this surface's chat AS the user, through its composer's
+   *  own send (the main chat's "Ask for the result" on a finished hand-off).
+   *  Omitted on a surface with no composer of its own for these rows. */
+  onSendAsUser?: (text: string) => void
 }
 
 /** Whether `row` OPENS a turn, for the two feature-request scans below. Read
@@ -398,6 +411,21 @@ export function createTranscriptRenderers(
         ),
     },
     {
+      // Refines `inject`, and must precede `recovery_inject`: a setup card row
+      // (one-chat first run) is an inject row whose `meta.setupCard` points at a
+      // server-side pending action. Its content is a model-visible summary and
+      // is NEVER drawn -- the card renders from `GET /api/setup/cards/{id}`
+      // only, so a row's text cannot forge a card's face or its buttons.
+      id: 'setup_card',
+      roles: ['inject'],
+      match: m => setupCardRefOf(m.meta) !== null,
+      render: (m, ctx) => {
+        const ref = setupCardRefOf(m.meta)
+        if (!ref) return null
+        return ctx.row(<SetupCard key={ctx.key} cardId={ref.id} placement={o.setupCardTray ? 'transcript' : 'inline'} />)
+      },
+    },
+    {
       // Refines `inject`: a gateway-authored injection is a one-line card, not
       // the cron-notification bubble the default draws.
       //
@@ -414,6 +442,29 @@ export function createTranscriptRenderers(
         if (!parsed) return null
         return ctx.row(<RecoveryCard parsed={parsed} disclosureKey={ctx.key} />)
       },
+    },
+    {
+      // Refines `system_notice`, so it must precede it: the first run's stall
+      // and spent-allowance notices (kind=setup_stalled / setup_quota) carry
+      // actions (Try again, Use classic setup) and localized copy keyed on the
+      // row's meta. SystemNoticeRow's plain notice stays the fallback for the
+      // surfaces that do not mount this registry.
+      id: 'setup_guardrail',
+      roles: ['assistant'],
+      match: isSetupGuardrailRow,
+      render: (m, ctx) => ctx.row(<SetupGuardrailNotice key={ctx.key} message={m} />),
+    },
+    {
+      // Refines `system_notice`, so it must precede it: the main chat's note
+      // that a chat it handed work to finished (kind=handoff_done) carries Open
+      // and Ask for the result, which need this surface's session hand-off and
+      // composer send. SystemNoticeRow draws it without them elsewhere.
+      id: 'handoff_done',
+      roles: ['assistant'],
+      match: isHandoffDoneRow,
+      render: (m, ctx) => ctx.row(
+        <HandoffDoneNotice key={ctx.key} message={m} onOpen={o.onSessionOpen} onAsk={o.onSendAsUser} />,
+      ),
     },
     {
       // Refines `assistant`: a gateway system notice (kind=compaction or

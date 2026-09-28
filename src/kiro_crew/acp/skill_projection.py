@@ -31,6 +31,7 @@ from typing import Any
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.acp import session_mcp
 from kiro_crew.agent_discovery import SCOPE_PROJECT, _read_agent_spec, list_agents
+from kiro_crew.agent_files import is_primary_agent
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_agents_dir, kiro_home, project_agents_dir
@@ -1535,7 +1536,7 @@ def prepare_native_skill_projection(
         view["resources"] = [
             r for r in resources if not (isinstance(r, str) and r.startswith("skill://"))
         ]
-        needs_search = agent.name == "kirocrew" or any(
+        needs_search = is_primary_agent(agent.name) or any(
             isinstance(r, str) and r.startswith("skill://") for r in resources
         )
         if needs_search:

@@ -914,7 +914,10 @@ class _CliLogQueueHandler(QueueHandler):
 # keep synchronous handlers: several replace the process via ``os.exec*``
 # (``logs -f`` -> tail/journalctl, ``config edit`` -> $EDITOR, ``pod exec``),
 # which skips atexit and would strand queued records -- and none of them runs
-# an event loop, so the queue buys them nothing.
+# an event loop, so the queue buys them nothing. ``start`` is short-lived in
+# that sense even with ``--foreground``: it runs no event loop, only waits on
+# the ``kirocrew gateway`` child it spawned, and that child sets up its own
+# queued logging as a ``gateway``.
 _LONG_LIVED_COMMANDS = {"serve", "gateway", "chat", None}
 
 _LOG_QUEUE_LISTENER: QueueListener | None = None
@@ -1448,6 +1451,66 @@ Examples:
             "yolo uses yolo). The boolean flags --no-open and --json-ready "
             "are forced on by --test-mode and cannot be opted out of."
         ),
+    )
+
+    # start -- the one command a fresh install runs (start.sh execs it)
+    start_parser = cli_help.add_command(
+        sub,
+        "start",
+        epilog="""
+Checks that the agent harness is installed and signed in, reuses a running
+gateway or starts one in the background, then opens the chat in your browser.
+On a host with no browser it prints the sign-in URL (and a QR code or an
+`ssh -L` hint) instead.
+
+Examples:
+  kirocrew start                    # background gateway, open the browser
+  kirocrew start --foreground       # run the gateway in this terminal
+  kirocrew start --no-browser       # print the URL instead of opening it
+  kirocrew start --home cloud       # build a home in your AWS account while you chat
+
+Exit codes: 0 running, 1 the gateway could not be started or reached,
+3 the agent harness is not installed.
+""",
+        formatter_class=_fmt,
+    )
+    start_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Dashboard port (default: resolved from KIROCREW_PORT env or dashboard.url config)",
+    )
+    start_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Print the sign-in URL instead of opening a browser",
+    )
+    start_parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Run the gateway in this terminal (Ctrl-C stops it) instead of in the background",
+    )
+    start_parser.add_argument(
+        "--no-input",
+        action="store_true",
+        help="Never prompt; print what to run instead (for scripts and CI)",
+    )
+    start_parser.add_argument(
+        "--home",
+        choices=("here", "cloud", "later"),
+        default=None,
+        help=(
+            "Answer ahead of time where the crew lives on a first run: this machine, a "
+            "home in the cloud built in your own AWS account, or later (when omitted, "
+            "the first-run chat asks)"
+        ),
+    )
+    start_parser.add_argument("--aws-region", default="", help="AWS region for a cloud home")
+    start_parser.add_argument("--aws-profile", default="", help="AWS CLI profile for a cloud home")
+    start_parser.add_argument(
+        "--skip-harness-check",
+        action="store_true",
+        help="Start even when the agent harness is not installed",
     )
 
     # setup
@@ -3260,6 +3323,12 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
             platform_boot_error=_platform_boot_error,
             bundle=getattr(args, "bundle", False),
         )
+    elif args.command == "start":
+        # Lazy: cli_start reaches cli_server, which only the commands that
+        # talk to a gateway may pay for (see test_cli_lazy_imports.py).
+        from kiro_crew.cli_start import run_start
+
+        sys.exit(run_start(args))
     elif args.command == "ledger-sweep":
         # Lazy on purpose, through ``importlib`` like ``secrets`` above: the
         # store modules behind the sweep are not part of the CLI's start-up cost.

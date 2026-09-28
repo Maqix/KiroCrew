@@ -4308,6 +4308,10 @@ const TURN_INJECT_DISPATCHED: Readonly<Record<InjectKind, boolean>> = {
   recovery: true,
   synthesis: true,
   user_replay: true,
+  // One-chat first run: the kickoff prompt and a decided card's result each
+  // dispatch a turn, so one left unanswered is an interrupted turn too.
+  first_run: true,
+  setup_result: true,
 }
 const TURN_INJECT_KINDS: ReadonlySet<unknown> = new Set<string>(
   (Object.keys(TURN_INJECT_DISPATCHED) as InjectKind[]).filter((k) => TURN_INJECT_DISPATCHED[k]),

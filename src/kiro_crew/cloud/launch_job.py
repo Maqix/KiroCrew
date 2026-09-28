@@ -133,6 +133,44 @@ class SigninPrompt:
         return cls(url=str(d.get("url", "")), code=str(d.get("code", "")), ports=ports)
 
 
+#: Sign-in prompts THIS process's launch worker received from the home's kiro-cli,
+#: by job id, with the start URL of the login target the worker held in memory.
+#: The job file is under ``run/``, which the tool gate fences but a sandboxed shell
+#: can still write, so the file's copy is fit to SHOW (the owner reads it on the
+#: card) but not to ACT on unattended. Whatever acts without a person reading it
+#: first, such as opening the page in the owner's browser, compares against this.
+_issued_signins: dict[str, tuple[SigninPrompt, str]] = {}
+_issued_lock = threading.Lock()
+#: Jobs remembered; the oldest is forgotten first. A home build is rare.
+_MAX_ISSUED = 32
+
+
+def _issue_signin(job: "LaunchJob", prompt: SigninPrompt) -> None:
+    job.signin = prompt
+    with _issued_lock:
+        _issued_signins.pop(job.id, None)
+        _issued_signins[job.id] = (
+            SigninPrompt(url=prompt.url, code=prompt.code, ports=list(prompt.ports)),
+            job.login_target.start_url,
+        )
+        while len(_issued_signins) > _MAX_ISSUED:
+            _issued_signins.pop(next(iter(_issued_signins)))
+
+
+def issued_signin(job_id: str) -> "tuple[SigninPrompt, str] | None":
+    """The sign-in prompt and start URL this process's worker issued for *job_id*.
+
+    ``None`` when no worker here issued one: another process, or a gateway that
+    restarted since. Never read from disk.
+    """
+    with _issued_lock:
+        found = _issued_signins.get(job_id)
+    if found is None:
+        return None
+    prompt, start_url = found
+    return SigninPrompt(url=prompt.url, code=prompt.code, ports=list(prompt.ports)), start_url
+
+
 @dataclass
 class LaunchStep:
     """One user-visible step in the launch."""
@@ -1002,8 +1040,9 @@ def run_launch(
                 s.detail = "Already signed in."
                 store.save(job)
             elif handle.url:
-                job.signin = SigninPrompt(
-                    url=handle.url, code=handle.code, ports=list(handle.ports or [])
+                _issue_signin(
+                    job,
+                    SigninPrompt(url=handle.url, code=handle.code, ports=list(handle.ports or [])),
                 )
                 job.status = AWAITING_SIGNIN
                 store.save(job)  # UI now shows the URL + code
@@ -1238,8 +1277,9 @@ def run_signin_retry(
             elif handle.already_logged_in:
                 mark_signed_in(job, "Already signed in.")
             elif handle.url:
-                job.signin = SigninPrompt(
-                    url=handle.url, code=handle.code, ports=list(handle.ports or [])
+                _issue_signin(
+                    job,
+                    SigninPrompt(url=handle.url, code=handle.code, ports=list(handle.ports or [])),
                 )
                 job.status = AWAITING_SIGNIN
                 store.save(job)  # UI now shows the new URL + code

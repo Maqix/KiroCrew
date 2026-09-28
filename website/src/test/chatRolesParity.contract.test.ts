@@ -48,6 +48,9 @@ const PAGE_ONLY_ENTRY_IDS: Record<string, string> = {
   // -- shared dashboard set (pages/chat/transcriptRenderers.tsx) --
   thinking_block: 'ThinkingBlock with disclosure state; the registry folds reasoning into the group summary',
   recovery_inject: 'RecoveryCard for gateway-authored inject rows; the registry renders inject as prose (resolveInjectCard decides, shared)',
+  setup_card: 'SetupCard for a first-run setup card row (meta.setupCard); renders from GET /api/setup/cards/{id}, never the row text, and must precede recovery_inject',
+  setup_guardrail: 'SetupGuardrailNotice for the first-run stall / quota notices (meta.kind setup_stalled | setup_quota) with Try again and classic-setup actions; must precede system_notice',
+  handoff_done: 'HandoffDoneNotice for the main chat\'s finished-hand-off note (meta.kind handoff_done) with Open and Ask for the result, which need the host\'s session hand-off and composer send; must precede system_notice',
   workflow_completion: 'WorkflowCompletionCard needs session/folder/panel hand-offs the SDK has no seam for',
   workflow_run_tool: 'launch card refining the tool line; store-connected',
   subagent_run_tool: 'launch card refining the tool line; store-connected',

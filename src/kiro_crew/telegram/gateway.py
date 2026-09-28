@@ -108,6 +108,12 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
         # Handed to the dispatcher so its config applier can push a reloaded
         # allow-list at the live transport instead of waiting for a restart.
         dispatcher.transport = transport
+        if orch.dashboard_state is not None:
+            # ``/pair <code>`` from a dashboard setup card: the only message read
+            # before authorization, and only while the owner's code is live.
+            from kiro_crew.dashboard.setup_channel import telegram_pair_attempt
+
+            transport.pair_handler = telegram_pair_attempt
 
         # Channel-side spawn-approval delivery. Register this
         # dispatcher's in-channel Approve/Deny/Trust prompt as the "telegram"

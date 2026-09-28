@@ -1087,7 +1087,7 @@ def is_stop_event_row(m: dict) -> bool:
 #: turn; here the question is whether a dispatch happened that got no reply,
 #: and a recovery or replay dispatch that died is exactly such a turn.
 _TURN_INJECT_KINDS: frozenset[str] = frozenset(
-    {"cron", "mcp_app", "recovery", "user_replay", "synthesis"}
+    {"cron", "mcp_app", "recovery", "user_replay", "synthesis", "first_run", "setup_result"}
 )
 
 
@@ -1721,6 +1721,16 @@ SUBAGENT_COMPLETION_PREFIXES = (
 # user-facing summary. Rendered as an "inject" message (not a user bubble); the
 # prefix marks it as a synthetic continuation so it is NOT mirrored to linked
 # surfaces (Slack/Telegram) as though the user typed it.
+# The first-run kickoff: the gateway's first model turn in a fresh install's
+# first-run session, dispatched when the owner acknowledges the privacy card.
+# Rendered as an inject note, never mirrored to a linked surface as user text.
+FIRST_RUN_PREFIX = "[First run]"
+FIRST_RUN_END = "[End of first run]"
+# A setup card's decision, delivered to the agent so it can continue the flow.
+# The decision itself was committed by the owner's click on the card; this
+# envelope only reports it (see dashboard/setup_flow.py).
+SETUP_RESULT_PREFIX = "[Setup card result]"
+SETUP_RESULT_END = "[End of setup card result]"
 SUBAGENT_SYNTHESIS_PREFIX = "[SYSTEM] Sub-agent synthesis:"
 SUBAGENT_SYNTHESIS_PROMPT = (
     f"{SUBAGENT_SYNTHESIS_PREFIX} all sub-agents you spawned have completed and each result was "
@@ -5232,6 +5242,10 @@ class DashboardState:
         # gateway via ``register_channel_transport``. Slack keeps its dedicated
         # ``slack_client`` above (rich streaming mirror), so it is not stored here.
         self.channel_transports: dict[str, "MessagingTransport"] = {}
+        # The gateway's ``restart_channel(channel_type)``, published at dashboard
+        # start. A setup card that stores a channel credential calls it when the
+        # config write alone would not reconnect the channel (``setup_channel.py``).
+        self.restart_channel: Any = None
         self.owner_id = owner_id
         self._owner_hash: str | None = None
         # Branch+commit are resolved once by the CLI entrypoint (set_build_info,
@@ -6421,8 +6435,13 @@ class DashboardState:
         tool_purpose: str = "",
         slot: str = "",
         is_background: bool = False,
+        run_session: str = "",
     ) -> bool:
-        """Request interactive approval and deny on timeout or cancellation."""
+        """Request interactive approval and deny on timeout or cancellation.
+
+        ``run_session`` is provenance only (the session whose turn asked); see
+        ``ApprovalCoordinator.request``.
+        """
         return await _approvals_for(self).request(
             self,
             approval_id,
@@ -6432,6 +6451,7 @@ class DashboardState:
             tool_purpose=tool_purpose,
             slot=slot,
             is_background=is_background,
+            run_session=run_session,
             redact_url=redact_exfiltration_urls,
             redact_secret=redact_credentials,
         )

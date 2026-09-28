@@ -53,6 +53,7 @@ cannot disagree with what was sent.
 | 7 | `[UI LANGUAGE]` | `_build_ui_language_section`, the configured language | only when set explicitly |
 | 8 | `[CONTEXT SCOPE]` | `_build_context_scope_section` | a parent withheld a group (§3) |
 | 9 | `[USER PROFILE]` | onboarding answers in config | non-empty, `lessons` group |
+| 9a | `[AGENT PERSONA]` / `[USER NOTES]` | `data_home()/persona/SOUL.md` / `USER.md`, approved through a setup card (`context.py` `_build_persona_files_section`) | non-empty, `lessons` group, the `kirocrew` agent only |
 | 10 | `[WORKSPACE IDENTITY]` | `workspace_dir_for` | `kirocrew` agent only |
 | 11 | `[DOCUMENTATION]` | `_build_docs_section`, the packaged docs dir | `kirocrew` agent, `project` group |
 | 12 | `[Steering resources]` | `_load_steering_resources` → `file://*.md` in `~/.kiro/agents/kirocrew.json` | **Claude Code backend**, `kirocrew` agent, `project` group |
@@ -199,6 +200,15 @@ The guidance paragraphs sit **before** the request header on purpose: trailing
 them displaced the request from the prompt's recency edge and the model regressed
 to an older question.
 
+### The main chat's crew overview
+
+In the chat recorded as the main chat
+([first-run](../system-specs/modules/first-run.md)), every top-level turn is
+prefixed with a `[CREW OVERVIEW]` block built by `setup_flow.crew_overview`:
+other live chats and their status, open setup cards, enabled jobs in due order,
+and the home's state. It rides the request prefix beside the theme persona, is
+capped at `OVERVIEW_MAX_CHARS`, and is empty for every other chat.
+
 ### Trigger-matched skills
 
 Off by default. `skills.max_triggered` defaults to **0**, which disables per-turn
@@ -344,6 +354,14 @@ One function decides, for both session start and post-compaction re-injection:
 facts — whether the agent's JSON maps skills, and whether the agent is the
 built-in `kirocrew`. The backend is not one of them: it accepts `is_cc` and ignores
 it (steering, below, is the one block the backend does gate).
+
+"The built-in `kirocrew`" means either name in `agent_files.PRIMARY_AGENT_NAMES`:
+`kirocrew`, and `kirocrew-main`, the main chat's spec
+([first-run](../system-specs/modules/first-run.md)), which is the default agent
+plus session control. Every `is_custom` gate in `context.py` (persona files,
+workspace identity, docs pointer, skills, trigger matching) reads it the same way,
+as do `agent_discovery.session_skill_globs` and the model tiers, so the main chat
+is never a custom agent with no mapping.
 
 | Agent | `skill://` mapping | Skills it sees | Why |
 |---|---|---|---|

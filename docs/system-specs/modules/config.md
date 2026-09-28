@@ -936,7 +936,12 @@ keys`. Two exclusions from that warning are named in code:
 
 A deprecated field is announced only when it holds something: `null` and an
 empty map, list or string carry nothing to migrate, so `validation` stays
-silent on them (`False` and `0` are chosen values and are still announced). A
+silent on them (`False` and `0` are chosen values and are still announced,
+unless they are the field's own default). A value equal to the field's default
+(`_is_its_default`; a `bool` never matches a number) is not announced either: a
+save writes every default back, so a fresh install's first start materialized
+`agent.subagent_cpu_cost_cores: 1.0` and the next launch warned about a key
+nobody wrote, in the `kirocrew start` terminal. A
 schema entry that is marked `deprecated=True` therefore accepts that an empty
 value of its type gets no notice; a field for which `""` or `[]` is itself a
 meaningful choice must not rely on the deprecation notice to surface that

@@ -378,10 +378,13 @@ def resolve_serving_port() -> int:
 
 # Subcommands that launch a long-running Kiro Crew *server* process which
 # ``kirocrew stop`` may need to terminate. These mirror the entry-point
-# subcommands dispatched in ``cli.py`` (``gateway`` / ``dashboard``; ``start``
-# is the historical alias). The task runner (``run``) is intentionally excluded:
-# it is not bound to the dashboard port, so we must never SIGTERM it from
-# ``kirocrew stop``.
+# subcommands dispatched in ``cli.py`` (``gateway`` / ``dashboard``). ``start``
+# never binds the port itself -- it spawns ``kirocrew gateway`` -- but
+# ``kirocrew start --foreground`` stays in the foreground as that gateway's
+# parent and forwards SIGTERM to it, so recognising it as a server process can
+# only ever stop the gateway it launched. The task runner (``run``) is
+# intentionally excluded: it is not bound to the dashboard port, so we must
+# never SIGTERM it from ``kirocrew stop``.
 _KIROCREW_SERVER_SUBCOMMANDS = frozenset({"gateway", "dashboard", "start"})
 
 

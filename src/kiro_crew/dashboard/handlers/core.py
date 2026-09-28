@@ -603,7 +603,32 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "import_onboarded": cfg.dashboard.import_onboarded,
         "privacy_acked": cfg.dashboard.privacy_acked,
         "crewmates_onboarded": cfg.dashboard.crewmates_onboarded,
+        # The one-chat first run replaces the auto-opening chapters for the install
+        # it was created on. Presentation only: the state file behind it gates nothing.
+        "first_run_slot": _first_run_slot(),
+        # The chat the product opens on when no other chat is asked for.
+        "main_slot": _main_slot(),
     }
+
+
+def _main_slot() -> str | None:
+    try:
+        from kiro_crew.first_run import read_main_slot
+
+        return read_main_slot()
+    except Exception:
+        logger.warning("first-run state unreadable", exc_info=True)
+        return None
+
+
+def _first_run_slot() -> str | None:
+    try:
+        from kiro_crew.first_run import read_first_run_slot
+
+        return read_first_run_slot()
+    except Exception:
+        logger.warning("first-run state unreadable", exc_info=True)
+        return None
 
 
 async def api_theme_boot(request: web.Request) -> web.Response:

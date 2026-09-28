@@ -605,6 +605,35 @@ class TestSigninRetry:
         assert seen == [old], "the old prompt was dropped before the box replaced the login"
         assert out.signin is not None and out.signin.url.endswith("NEW-1")
 
+    def test_both_sign_in_paths_record_what_this_process_issued(self, tmp_path, monkeypatch):
+        """The launch and the retry each publish a code through `_issue_signin`,
+        which keeps the worker's own copy, with the target's start URL, in memory.
+        That copy (never the job file, which the agent's sandbox can write) is what
+        the home card may open in the owner's browser (dashboard/home_signin.py)."""
+        monkeypatch.setattr(lj, "_issued_signins", {})
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced", login_target=COMPANY)
+        first = FakeHandle(url="https://x/?user_code=OLD-1", code="OLD-1", signed=False)
+        lj.run_launch(job, s, TargetEngine(first))
+        issued = lj.issued_signin(job.id)
+        assert issued is not None
+        assert (issued[0].url, issued[0].code, issued[1]) == (
+            "https://x/?user_code=OLD-1",
+            "OLD-1",
+            COMPANY.start_url,
+        )
+        # The file says something else; the in-memory record does not follow it.
+        planted = s.get(job.id)
+        planted.signin = lj.SigninPrompt(url="https://evil.example/?user_code=E", code="E")
+        s.save(planted)
+        assert lj.issued_signin(job.id)[0].code == "OLD-1"
+        fresh = FakeHandle(url="https://x/?user_code=NEW-1", code="NEW-1", signed=False)
+        lj.run_signin_retry(s.get(job.id), s, TargetEngine(fresh))
+        issued = lj.issued_signin(job.id)
+        assert issued is not None and issued[0].code == "NEW-1" and issued[1] == COMPANY.start_url
+        # Another process (or this one after a restart) has issued nothing.
+        assert lj.issued_signin("launch-from-elsewhere") is None
+
     def test_an_empty_handle_keeps_the_old_code_tracked(self, tmp_path):
         """The real engine swallows an SSM failure into an EMPTY handle rather than
         raising: no code, not signed in, no error. The remote pkill never ran, so

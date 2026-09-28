@@ -99,6 +99,8 @@ describe('isSystemNoticeRow', () => {
     expect(isSystemNoticeRow(msg('assistant', { meta: { kind: 'compaction' } }))).toBe(true)
     expect(isSystemNoticeRow(msg('assistant', { kind: 'session_reload' }))).toBe(true)
     expect(isSystemNoticeRow(msg('assistant', { meta: { kind: 'session_reload' } }))).toBe(true)
+    expect(isSystemNoticeRow(msg('assistant', { kind: 'secret_captured' }))).toBe(true)
+    expect(isSystemNoticeRow(msg('assistant', { meta: { kind: 'secret_captured' } }))).toBe(true)
   })
 
   it('never matches an untagged assistant row (even with compaction-shaped text), a tagged non-assistant row, or an unknown kind', () => {
@@ -252,6 +254,47 @@ describe('registry resolution', () => {
     expect(container.querySelector('[data-testid="notice-card"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="compaction-card"]')).toBeNull()
     expect(screen.getByText('Reloading session: relaunching the agent process.')).toBeInTheDocument()
+  })
+
+  it('SystemNoticeRow draws a secret_captured row as a verbatim notice, never as a reply', () => {
+    // Gateway-authored status (it names only vault references), so the text is
+    // drawn as-is, on the shared notice card rather than the assistant bubble.
+    const text = 'I moved 1 pasted secret(s) out of this chat into the vault: secret://GITHUB_TOKEN. The chat keeps only the reference.'
+    const row = msg('assistant', { content: text, meta: { kind: 'secret_captured' } })
+    const registry = mergeRenderers(createTranscriptRenderers({ slot: 's1' }))
+    expect(resolveRenderer(row, registry)?.id).toBe('system_notice')
+    const { container } = render(<SystemNoticeRow message={row} />)
+    expect(container.querySelector('[data-testid="notice-card"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="compaction-card"]')).toBeNull()
+    expect(container.querySelector('svg.lucide-key-round')).not.toBeNull()
+    expect(screen.getByText(text)).toBeInTheDocument()
+  })
+
+  it('SystemNoticeRow draws the main-chat graduation as a verbatim, accented notice', () => {
+    const text = 'Setup is done. This is your main chat with Nova: start here, and ask for anything else — other chats, schedules, connections, your home — from here.'
+    const row = msg('assistant', { content: text, meta: { kind: 'main_chat' } })
+    const registry = mergeRenderers(createTranscriptRenderers({ slot: 's1' }))
+    expect(resolveRenderer(row, registry)?.id).toBe('system_notice')
+    expect(isSystemNoticeRow(row)).toBe(true)
+    const { container } = render(<SystemNoticeRow message={row} />)
+    const card = container.querySelector('[data-testid="notice-card"]')
+    expect(card).not.toBeNull()
+    expect(card).toHaveAttribute('data-emphasis', 'true')
+    expect(card?.className).toContain('ring-accent')
+    expect(container.querySelector('svg.lucide-house')).not.toBeNull()
+    expect(screen.getByText(text)).toBeInTheDocument()
+  })
+
+  it('SystemNoticeRow draws a first-week tip as a verbatim notice with a lightbulb', () => {
+    const text = 'Tip: connect your calendar and I can brief you on the day ahead.'
+    const row = msg('assistant', { content: text, meta: { kind: 'first_week_tip', tip: 'connect' } })
+    const registry = mergeRenderers(createTranscriptRenderers({ slot: 's1' }))
+    expect(resolveRenderer(row, registry)?.id).toBe('system_notice')
+    expect(isSystemNoticeRow(row)).toBe(true)
+    const { container } = render(<SystemNoticeRow message={row} />)
+    expect(container.querySelector('[data-testid="notice-card"]')).not.toBeNull()
+    expect(container.querySelector('svg.lucide-lightbulb')).not.toBeNull()
+    expect(screen.getByText(text)).toBeInTheDocument()
   })
 
   it('renders the card, not markdown prose, through the row set', () => {

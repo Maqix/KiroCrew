@@ -1340,6 +1340,14 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # that is available unless a policy explicitly sets
     # ``{"capabilities": {"browse": {"enabled": false}}}``.
     "capabilities.browse": ScopeSpec(CAPABILITY, capability_default=True),
+    # Setup cards (the one-chat first run and "connect X" from any chat): the
+    # agent proposes, the owner's click commits. Default True (on) like browse --
+    # an ordinary capability unless a policy sets ``enabled: false``. The inner
+    # ``kinds`` ruleset lets a fleet keep cards but refuse some, e.g. deny
+    # ``service`` or ``connect``; the item checked is the card kind.
+    "capabilities.setup": ScopeSpec(
+        CAPABILITY, capability_default=True, scope_matchers={"kinds": "identifier"}
+    ),
     "capabilities.script_hooks": ScopeSpec(CAPABILITY, capability_default=False),
     "capabilities.cron": ScopeSpec(CAPABILITY, capability_default=False),
     "capabilities.messaging": ScopeSpec(CAPABILITY, capability_default=False),

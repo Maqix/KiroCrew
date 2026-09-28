@@ -131,6 +131,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.acp_backends import selectable_backends
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import _read_agent_spec, spec_model
+from kiro_crew.agent_files import is_primary_agent
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.backends import model_registry_namespace
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
@@ -828,7 +829,7 @@ def _session_model(
         agent = crew.kiro_agent or agent
 
     per_agent_model = ""
-    if agent and agent != "kirocrew":
+    if agent and not is_primary_agent(agent):
         per_agent_model = cfg._resolve_named_agent_model(agent)
     return _model_fallback(per_agent_model, cfg.agent.model)
 

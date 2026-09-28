@@ -68,7 +68,7 @@ QUESTION_CARD_SHOWN_PREFIX = "Question card shown in this session."
 # Card directives require a connected dashboard surface. ``set_project`` is
 # admitted by the user-surface provenance gate below, then separately requires
 # the current turn to own the slot it would mutate.
-_DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup", "ask_question"})
+_DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup", "ask_question", "setup_card"})
 _USER_SURFACE_DIRECTIVES = frozenset({"set_project", "reset_conversation", "chat_tag"})
 # Directives whose effect is "this session will be woken later". A refusal of
 # one of these is the failure the caller can least observe: the MCP tool has
@@ -361,6 +361,16 @@ async def apply_session_directive(
             result = await _suggest_followup(state, slot, args)
         elif kind == "ask_question":
             result = await _ask_question(state, slot, args)
+        elif kind == "setup_card":
+            from kiro_crew.dashboard import setup_flow
+
+            result = await setup_flow.propose(
+                state,
+                slot,
+                session_key,
+                args,
+                producer_is_user_facing=producer_is_user_facing,
+            )
         else:
             _audit(session_key, kind, "error")
             return f"Error: unknown session directive {kind!r}."

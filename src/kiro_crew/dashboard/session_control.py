@@ -44,6 +44,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_files import MAIN_CHAT_AGENT_NAME
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     _workspace_name_for_dir,
@@ -1755,7 +1756,16 @@ async def create_session(
     # what keeps a credential-shaped string out of storage and out of the sidebar.
     # An inherited caller agent is already internal, but running both through the
     # same call keeps the guard on the field rather than on one of its sources.
-    agent_name = sanitize_outbound(agent.strip() or (getattr(caller_slot, "agent", "") or ""))
+    #
+    # The one agent NOT inherited is the main chat's own: ``kirocrew-main`` is the
+    # default agent plus session control, and a chat the main chat hands work to is
+    # an ordinary chat. Inheriting it would give every child the session verbs and
+    # its create/read grants, so the child starts from the unset agent a new chat
+    # has instead -- the same workspace, so no boundary moves.
+    inherited_agent = getattr(caller_slot, "agent", "") or ""
+    if inherited_agent == MAIN_CHAT_AGENT_NAME:
+        inherited_agent = ""
+    agent_name = sanitize_outbound(agent.strip() or inherited_agent)
 
     log = state.conversation_log
     if log is None:

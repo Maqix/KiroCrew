@@ -1,0 +1,66 @@
+"""The ``setup_card`` / ``setup_status`` MCP tools."""
+
+from __future__ import annotations
+
+import pytest
+
+from kiro_crew import mcp_core, session_directive
+from kiro_crew import setup_cards as sc
+from kiro_crew.mcp_tools import setup as setup_tools
+
+
+@pytest.fixture
+def dashboard_key(monkeypatch):
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1-1")
+    monkeypatch.setattr(setup_tools, "has_dashboard_surface", lambda sk: True)
+    return "dashboard:chat-1-1"
+
+
+def test_a_valid_proposal_returns_a_directive(dashboard_key):
+    out = setup_tools.setup_card(
+        "setup_card", {"kind": "cron", "name": "Brief", "prompt": "Summarize", "every_secs": 86400}
+    )
+    decoded = session_directive.decode(out, "setup_card")
+    assert decoded == {"kind": "cron", "name": "Brief", "prompt": "Summarize", "every_secs": 86400}
+
+
+def test_an_invalid_proposal_is_an_error_not_a_directive(dashboard_key):
+    out = setup_tools.setup_card("setup_card", {"kind": "cron", "name": "x"})
+    assert out.startswith("Error:")
+    assert not session_directive.has_marker(out)
+
+
+def test_the_privacy_card_is_not_proposable(dashboard_key):
+    out = setup_tools.setup_card("setup_card", {"kind": "privacy"})
+    assert out.startswith("Error:")
+
+
+def test_a_session_without_a_dashboard_gets_a_pointer_not_a_card(monkeypatch):
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "telegram:42")
+    monkeypatch.setattr(setup_tools, "has_dashboard_surface", lambda sk: False)
+    out = setup_tools.setup_card("setup_card", {"kind": "service"})
+    assert out.startswith("Error:") and "dashboard" in out
+
+
+def test_setup_status_reports_this_sessions_cards(dashboard_key):
+    card = sc.create_card(
+        slot="chat-1-1",
+        session_key=dashboard_key,
+        kind=sc.KIND_SERVICE,
+        payload={"installed": False},
+    )
+    sc.create_card(
+        slot="chat-2-2",
+        session_key="dashboard:chat-2-2",
+        kind=sc.KIND_PROFILE,
+        payload={"fields": {}},
+    )
+    out = setup_tools.setup_status("setup_status", {})
+    assert card.id in out and "pending" in out
+    assert "chat-2-2" not in out and "profile" not in out
+
+
+def test_the_tools_are_registered():
+    names = {d["name"] for d in setup_tools.schemas()}
+    assert names == set(setup_tools.HANDLERS) == {"setup_card", "setup_status"}
+    assert "setup_card" in session_directive.DIRECTIVE_TOOLS

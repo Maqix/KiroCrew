@@ -369,6 +369,9 @@ _HOSTILE_CALLS: dict[str, dict] = {
     # chat_tag: an unknown tag id is the cheapest deterministic
     # refusal — it fails validation before any grant or persistence path.
     "chat_tag": {"add": ["definitely-not-a-vocabulary-tag-xyz"]},
+    # setup_card: a cron proposal with no prompt fails validation before any
+    # directive is encoded.
+    "setup_card": {"kind": "cron", "name": "brief", "cron_expr": "0 8 * * *"},
 }
 
 

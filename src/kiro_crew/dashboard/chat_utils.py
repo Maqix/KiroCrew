@@ -3790,8 +3790,15 @@ def owned_stage_delivery_entry(boundary: Any, entries: list[dict]) -> dict | Non
 
 
 #: All system-injection kinds (for set-membership checks).
-_SYSTEM_INJECTION_KINDS = STAGE_DELIVERY_KINDS | frozenset(
-    (CRON_NOTIFICATION_KIND, MCP_APP_MESSAGE_KIND, FALSE_TOOL_BLOCKER_REPLAY_KIND)
+#: Queue kinds of the one-chat first run's gateway envelopes
+#: (``dashboard/setup_flow.py``): the ``[First run]`` kickoff and a
+#: ``[Setup card result]``. Each is also the ``injectKind`` its drained row carries.
+SETUP_ENVELOPE_KINDS: frozenset[str] = frozenset({"first_run", "setup_result"})
+
+_SYSTEM_INJECTION_KINDS = (
+    STAGE_DELIVERY_KINDS
+    | frozenset((CRON_NOTIFICATION_KIND, MCP_APP_MESSAGE_KIND, FALSE_TOOL_BLOCKER_REPLAY_KIND))
+    | SETUP_ENVELOPE_KINDS
 )
 
 

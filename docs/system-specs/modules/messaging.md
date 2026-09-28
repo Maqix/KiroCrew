@@ -3066,6 +3066,23 @@ The channel's transport, forum routing and mid-turn machinery are described in
 the sections above; what follows is what is specific to its rendering and its
 Bot API surface.
 
+### Telegram `/pair`
+
+`TelegramTransport.receive` reads exactly one kind of message before
+`authorize`: a private-chat `/pair <code>` (`commands.parse_pair_command`,
+whole-message, an optional `@BotUsername` suffix), handed to
+`transport.pair_handler`. The gateway sets that handler to
+`dashboard.setup_channel.telegram_pair_attempt` when a dashboard is present. It
+answers `None` unless a channel setup card's one-time code is live, and then the
+message takes the ordinary deny-by-default path; otherwise the transport sends
+the handler's reply and drops the message, so a `/pair` never reaches the
+agent. A match adds the sender's numeric id to `telegram.allowed_user_ids` (the
+list the Settings page edits) and the live transport picks it up through
+`reconfigure`. Groups and forum Topics are never read for a pairing. The code,
+its expiry and its attempt limit are the first-run spec's
+([first-run](first-run.md), Channel pairing). `/pair` is not in
+`COMMAND_SPEC`, so it is in neither `/help` nor the `/` menu.
+
 ### Telegram session resume
 
 `/sessions` and its singular `/session` alias are direct-message-only and
@@ -3320,6 +3337,11 @@ Slack settings API they are registered in the dashboard route block (NOT
   `soft_threshold_pct` are read per turn, and a `bot_token` or `enabled` change
   reconnects the Telegram channel alone. `restart_required` is therefore true
   only for a `.env` credential write.
+- The token check and Phase 2 are helpers the channel setup card reuses
+  (`clean_telegram_token`, `commit_telegram_writes`), so a token pasted into
+  the card is shaped, stored and purged exactly as one saved here.
+  `add_telegram_allowed_user` is the card's `/pair` write to the same
+  `allowed_user_ids` key.
 
 ## Webex channel
 

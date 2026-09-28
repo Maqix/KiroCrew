@@ -254,6 +254,7 @@ class TestSpawnListUsesTheSameFilter:
         assert sa.UNADVERTISED_AGENTS == frozenset(
             {
                 "kirocrew",
+                "kirocrew-main",
                 "kirocrew-conductor",
                 "kirocrew-pipeline-conductor",
                 "kirocrew-security-conductor",

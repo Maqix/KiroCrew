@@ -99,7 +99,7 @@ from kiro_crew.context_management import (
     validate_plan_format,
 )
 from kiro_crew.crew_log import emit as crew_log_emit
-from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import directive_queue, handoff_notice
 from kiro_crew.dashboard.chat_delivery import (
     STEER_STATE_CONSUMED,
     STEER_STATE_REQUEUED,
@@ -425,6 +425,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     MCP_APP_MESSAGE_KIND,
     MODEL_UNENTITLED_KIND,
     SESSION_START_FAILED_KIND,
+    SETUP_ENVELOPE_KINDS,
     STAGE_DELIVERY_KINDS,
     SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
@@ -6194,6 +6195,7 @@ _DIRECTIVE_NOT_APPLIED_OUTCOMES: dict[str, str] = {
     "chat_tag": "The session tags were not changed.",
     "ask_question": "The question was not shown.",
     "suggest_followup": "The follow-up suggestions were not shown.",
+    "setup_card": "The setup card was not shown.",
 }
 
 #: The human-worded outcome for a directive tool this table does not name. The
@@ -8782,6 +8784,13 @@ async def _start_next_queued_turn(
     # message never merges (it is a system-injection kind, so the merge stops
     # at it), so `consumed` holds it alone.
     is_app_message = any(item.get("kind") == MCP_APP_MESSAGE_KIND for item in consumed)
+    # A queued first-run envelope (kickoff or setup-card result) is gateway text,
+    # classified by its enqueue tag like the app message above.
+    setup_envelope_kind = next(
+        (str(item.get("kind")) for item in consumed if item.get("kind") in SETUP_ENVELOPE_KINDS),
+        "",
+    )
+    is_app_message = is_app_message or bool(setup_envelope_kind)
     if not (is_cron or is_subagent or is_recovery or is_app_message):
         slot._pending_synthesis = False
 
@@ -8840,6 +8849,8 @@ async def _start_next_queued_turn(
         # A cron row's `cls` slot carries a JSON payload, not a CSS class name:
         # `cronLabel` is structured data the frontend reads off the row.
         row_cls = json.dumps({"cronLabel": cron_label})
+    elif setup_envelope_kind:
+        row_cls = "msg msg-inject"
     elif is_app_message:
         # The ONE row shape both delivery paths share (`app_inject_row`):
         # plain CSS cls, identity in meta — a JSON cls would make
@@ -8937,6 +8948,8 @@ async def _start_next_queued_turn(
     if row_role == "inject":
         if is_cron:
             _inject_kind = "cron"
+        elif setup_envelope_kind:
+            _inject_kind = setup_envelope_kind
         elif is_app_message:
             # Before the synthetic_payload arm: an app entry IS a synthetic
             # payload (that is what suppresses the channel mirror), but its
@@ -8949,7 +8962,7 @@ async def _start_next_queued_turn(
         _inject_meta: dict = {"injectKind": _inject_kind}
         if is_cron:
             _inject_meta["cronLabel"] = cron_label
-        elif is_app_message:
+        elif is_app_message and not setup_envelope_kind:
             _inject_meta["appLabel"] = app_label or "app"
         _drained_meta.update(_inject_meta)
     current_row = slot.append(
@@ -9287,6 +9300,9 @@ async def _finish_queue_cycle(
     slot.task = None
     state.push_slots_update()
     state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
+    # A chat the main chat handed work to tells it that it finished (MC.9). Never
+    # raises, and returns at once for every chat nobody created with session_create.
+    handoff_notice.note_cycle_end(state, slot)
     # The turn that just finished is the most likely moment for this session's
     # PRs to have moved (opened, pushed, merged, reviewed), so re-read their
     # status now instead of leaving the sidebar chips on TTL rotation and the
@@ -9679,6 +9695,13 @@ async def _run_chat(
     # cannot miss one. This turn publishes later (during prompt assembly), so its
     # own outcome is unaffected; see `_decisions_strip_meta` for the claim side.
     _discard_stale_decision(slot)
+
+    # The first-run chat's stall watchdog and quota notice; a no-op for every
+    # other chat. Armed at the one entry for the reason given above.
+    if _prompt_depth == 0:
+        from kiro_crew.dashboard import setup_guardrails
+
+        setup_guardrails.watch_turn(state, slot)
 
     # Immutable authority for ORIGINAL replay. ``message`` is enriched later
     # with cancelled-turn preambles, subagent failures, and silent app context;
@@ -12280,6 +12303,17 @@ async def _run_chat(
                 )
                 message, persona_context = _detach_appended_context(message, persona_message)
                 _request_prefix_context += persona_context
+            # The main chat's view of everything else (other chats, open setup
+            # cards, jobs, the home). Information the session tools already
+            # return, attached so the main chat need not look it up; empty for
+            # every other chat.
+            if _prompt_depth < 1:
+                try:
+                    from kiro_crew.dashboard.setup_flow import crew_overview
+
+                    _request_prefix_context += await crew_overview(state, slot)
+                except Exception:
+                    logger.warning("crew overview for the main chat failed", exc_info=True)
             # Scale the injected-context budget to the active model's context
             # window so a 200K model gets one-fifth the memory/lessons/history
             # chars a 1M model gets (same share of the window). Resolve from the

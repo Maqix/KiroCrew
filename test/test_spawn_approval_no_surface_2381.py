@@ -320,13 +320,16 @@ class TestTheOtherTwoOutcomesAreUnchanged:
     """The refusal must not swallow a human decline, nor a prompt that landed."""
 
     @pytest.mark.asyncio
-    async def test_a_human_decline_keeps_its_plain_refusal(self) -> None:
+    async def test_a_human_decline_keeps_its_own_refusal(self) -> None:
+        from kiro_crew.subagent_manager.admission.pump import SPAWN_DECLINED_ERROR
+
         mgr = _manager(_declined)
         info = mgr.spawn("Return only the result of 1+1")
         assert info is not None
         await _settle(mgr, info)
         assert info.done is True
-        assert info.error == "spawn rejected"
+        assert info.error == SPAWN_DECLINED_ERROR
+        assert "no surface" not in info.error
         assert info.error_code == "", "a decline is a decision, not a misconfiguration"
 
     @pytest.mark.asyncio

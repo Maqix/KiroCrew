@@ -31,6 +31,7 @@ import { isSpawnRunTool } from '../pages/chat/SubagentRunCard'
 import { isWorkflowCompletionMessage } from '../pages/chat/WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
+import SetupCard from '../components/setup/SetupCard'
 
 const msg = (role: string, over: Partial<ChatMessage> = {}): ChatMessage =>
   ({ role, content: '', cls: '', ...over }) as ChatMessage
@@ -139,6 +140,39 @@ describe('narrow rows win over the broad row they refine', () => {
       content: 'run the backend gates on the changed modules',
       meta: { injectKind: 'user_replay' },
     }))).toBe('inject')
+  })
+
+  it('routes a setup card row to SetupCard, ahead of the inject note and bubble', () => {
+    // One-chat first run: the row carries `meta.setupCard` and a model-visible
+    // summary. The card renders from the gateway by id; the summary is never
+    // drawn, and a recovery-shaped summary must not divert it to a note.
+    const row = msg('inject', {
+      content: 'Proposed a scheduled job card (awaiting user).',
+      meta: { setupCard: { id: 'sc-0123456789abcdef', kind: 'cron' } },
+    })
+    expect(idFor(row)).toBe('setup_card')
+    const drawn = render(row) as ReactElement<{ cardId: string; placement?: string }>
+    expect(drawn.type).toBe(SetupCard)
+    expect(drawn.props.cardId).toBe('sc-0123456789abcdef')
+    // A surface without the decision tray keeps the full card in the row…
+    expect(drawn.props.placement).toBe('inline')
+    // …and one that mounts the tray lets a live card's row fold to a pointer.
+    const withTray = render(row, { slot: 's1', setupCardTray: true }) as ReactElement<{ placement?: string }>
+    expect(withTray.props.placement).toBe('transcript')
+    expect(idFor(msg('inject', {
+      content: '[Stalled turn — automatic recovery]\ncontinue',
+      meta: { setupCard: { id: 'sc-1', kind: 'cron' } },
+    }))).toBe('setup_card')
+    // A malformed pointer is not a card: it keeps the inject row's usual path.
+    expect(idFor(msg('inject', { content: 'plain', meta: { setupCard: { id: '' } } }))).toBe('inject')
+    expect(idFor(msg('inject', { content: 'plain', meta: { setupCard: 'sc-1' } }))).toBe('inject')
+  })
+
+  it('folds the first-run kickoff and a setup result into notes, never a raw bubble', () => {
+    for (const injectKind of ['first_run', 'setup_result']) {
+      const row = msg('inject', { content: 'machine-facing prompt for the agent', meta: { injectKind } })
+      expect(idFor(row), injectKind).toBe('recovery_inject')
+    }
   })
 
   it('routes a workflow completion to its card and leaves a plain reply alone', () => {

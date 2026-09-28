@@ -1,10 +1,20 @@
 name: Publish Installer
 
-# Publishes cli.sh -- the bootstrap installer behind the documented one-liner
+# Publishes the three bootstrap scripts behind the documented one-liners
 #
 #   curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel X
+#   curl -fsSL https://download.crew.kiro.dev/start.sh | sh
+#   irm https://download.crew.kiro.dev/start.ps1 | iex
 #
-# to the ROOT of the public distribution bucket. It is the only root object.
+# to the ROOT of the public distribution bucket. They are the only three root
+# objects. cli.sh is the installer and carries the trust root; start.sh holds
+# no trust of its own -- it downloads the live cli.sh, runs it unchanged, then
+# runs `kirocrew start` -- so it is published only AFTER the cli.sh it depends
+# on is verified live, and a failed cli.sh publish never leaves a start.sh that
+# points at a stale or broken installer. start.ps1 is the Windows counterpart:
+# it runs the Authenticode-signed desktop installer publish-windows.yml ships
+# rather than cli.sh, so it depends on nothing this run publishes and goes
+# last.
 #
 # Why this is its own workflow rather than a step in publish-cli.yml:
 # publish-cli.yml is workflow_call'd by BOTH nightly.yml (schedule, checks out
@@ -29,6 +39,8 @@ on:
     branches: [main]
     paths:
       - 'cli.sh'
+      - 'start.sh'
+      - 'start.ps1'
       - '.github/workflows/publish-installer.yml'
   # Manual re-publish. Restricted to main by the ref guard in the first step:
   # the Actions UI lets a maintainer pick any ref, and `environment: prod` does
@@ -112,6 +124,8 @@ jobs:
             exit 1
           fi
           test -f cli.sh || { echo "::error::cli.sh is missing from the checkout."; exit 1; }
+          test -f start.sh || { echo "::error::start.sh is missing from the checkout."; exit 1; }
+          test -f start.ps1 || { echo "::error::start.ps1 is missing from the checkout."; exit 1; }
 
       # The strict installer ships fail-closed: until KMS provisioning pins a
       # real key fingerprint, cli.sh carries CLI_MANIFEST_KEY_ID=UNCONFIGURED
@@ -205,6 +219,33 @@ jobs:
             exit 1
           fi
 
+      # start.sh forwards cli.sh's flags and keeps its own, so a syntax error or
+      # an argument loop that stops recognising one of them breaks the fastest
+      # documented install path. `--help` exits before any download, which is
+      # also what proves the parse reached the argument loop at all.
+      - name: Check the start script parses
+        run: |
+          set -euo pipefail
+          sh -n start.sh
+          sh start.sh --help > /dev/null
+          if sh start.sh --definitely-not-a-flag 2>/dev/null; then
+            echo "::error::start.sh accepted an unknown argument; it must refuse it before downloading anything."
+            exit 1
+          fi
+
+      # The same three checks for the Windows script, under the pwsh the
+      # ubuntu runner ships. Off Windows it refuses to install, and every check
+      # here returns before a download is attempted, so this never fetches.
+      - name: Check the Windows start script parses
+        run: |
+          set -euo pipefail
+          pwsh -NoProfile -NonInteractive -Command '$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./start.ps1), [ref]$null, [ref]$e); if ($e) { $e | ForEach-Object { $_.Message }; exit 1 }'
+          pwsh -NoProfile -NonInteractive -File start.ps1 -Help > /dev/null
+          if pwsh -NoProfile -NonInteractive -File start.ps1 -DefinitelyNotAFlag 2>/dev/null; then
+            echo "::error::start.ps1 accepted an unknown parameter; it must refuse it before downloading anything."
+            exit 1
+          fi
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
@@ -257,6 +298,96 @@ jobs:
                 echo "- URL: \`${URL}\`"
                 echo "- sha256: \`${EXPECTED}\`"
                 echo "- source: \`cli.sh\` @ \`${PUBLISHED_SHA}\` (tip of main)"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Attempt ${attempt}: live sha256 '${ACTUAL:-<fetch failed>}' != '${EXPECTED}'; retrying..."
+            sleep 10
+          done
+          echo "::error::${URL} did not converge on the published bytes. The upload may have landed without going live -- check the CloudFront behaviour for the bucket root."
+          exit 1
+
+      # Same object class and cache policy as cli.sh (a mutable root pointer,
+      # `no-cache`), and only after cli.sh is verified live: start.sh runs
+      # whatever cli.sh the CDN serves, so it must never go live ahead of it.
+      - name: Publish start.sh
+        run: |
+          set -euo pipefail
+          aws s3api put-object \
+            --bucket "${BUCKET}" \
+            --key start.sh \
+            --body start.sh \
+            --content-type 'text/x-shellscript' \
+            --cache-control 'no-cache' > /dev/null
+          echo "Uploaded s3://${BUCKET}/start.sh"
+
+      # The same read-back as cli.sh's: over the PUBLIC CloudFront URL, sha256
+      # against the published file, the `no-cache` header, retries for edge
+      # revalidation, then fail closed.
+      - name: Verify the published start script is live
+        run: |
+          set -euo pipefail
+          EXPECTED=$(sha256sum start.sh | awk '{print $1}')
+          PUBLISHED_SHA=$(git rev-parse HEAD)
+          URL="${CDN_BASE%/}/start.sh"
+          for attempt in 1 2 3 4 5; do
+            ACTUAL=$(curl -fsSL "$URL" | sha256sum | awk '{print $1}') || ACTUAL=""
+            if [ "$ACTUAL" = "$EXPECTED" ]; then
+              echo "Verified ${URL} == start.sh@${PUBLISHED_SHA} (sha256 ${EXPECTED})"
+              CACHE=$(curl -fsSI "$URL" | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}')
+              [ "$CACHE" = "no-cache" ] || {
+                echo "::error::Published start script is served with cache-control='${CACHE}', expected 'no-cache'."
+                exit 1
+              }
+              {
+                echo "### Start script published"
+                echo "- URL: \`${URL}\`"
+                echo "- sha256: \`${EXPECTED}\`"
+                echo "- source: \`start.sh\` @ \`${PUBLISHED_SHA}\` (tip of main)"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Attempt ${attempt}: live sha256 '${ACTUAL:-<fetch failed>}' != '${EXPECTED}'; retrying..."
+            sleep 10
+          done
+          echo "::error::${URL} did not converge on the published bytes. The upload may have landed without going live -- check the CloudFront behaviour for the bucket root."
+          exit 1
+
+      # A mutable root pointer like the other two, so the same `no-cache`.
+      # text/plain with a charset because `irm` decodes by it; the script is
+      # ASCII, so any charset reads the same bytes.
+      - name: Publish start.ps1
+        run: |
+          set -euo pipefail
+          aws s3api put-object \
+            --bucket "${BUCKET}" \
+            --key start.ps1 \
+            --body start.ps1 \
+            --content-type 'text/plain; charset=utf-8' \
+            --cache-control 'no-cache' > /dev/null
+          echo "Uploaded s3://${BUCKET}/start.ps1"
+
+      # The same read-back as the other two, then fail closed.
+      - name: Verify the published Windows start script is live
+        run: |
+          set -euo pipefail
+          EXPECTED=$(sha256sum start.ps1 | awk '{print $1}')
+          PUBLISHED_SHA=$(git rev-parse HEAD)
+          URL="${CDN_BASE%/}/start.ps1"
+          for attempt in 1 2 3 4 5; do
+            ACTUAL=$(curl -fsSL "$URL" | sha256sum | awk '{print $1}') || ACTUAL=""
+            if [ "$ACTUAL" = "$EXPECTED" ]; then
+              echo "Verified ${URL} == start.ps1@${PUBLISHED_SHA} (sha256 ${EXPECTED})"
+              CACHE=$(curl -fsSI "$URL" | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}')
+              [ "$CACHE" = "no-cache" ] || {
+                echo "::error::Published Windows start script is served with cache-control='${CACHE}', expected 'no-cache'."
+                exit 1
+              }
+              {
+                echo "### Windows start script published"
+                echo "- URL: \`${URL}\`"
+                echo "- sha256: \`${EXPECTED}\`"
+                echo "- source: \`start.ps1\` @ \`${PUBLISHED_SHA}\` (tip of main)"
               } >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi

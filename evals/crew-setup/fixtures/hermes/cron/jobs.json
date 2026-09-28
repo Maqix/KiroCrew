@@ -1,0 +1,25 @@
+{
+ "jobs": [
+  {
+   "id": "cron-1",
+   "name": "PR review digest",
+   "prompt": "List the open pull requests on my main repository that are waiting for my review, oldest first, one line each.",
+   "schedule": {"kind": "cron", "expr": "30 8 * * 1-5", "timezone": "America/Chicago"},
+   "enabled": true, "repeat": null, "origin": "", "deliver": "local"
+  },
+  {
+   "id": "cron-2",
+   "name": "Flaky test report",
+   "prompt": "Summarize this week's failed CI runs on my main repository and say which failures look flaky rather than real.",
+   "schedule": {"kind": "cron", "expr": "0 16 * * 5", "timezone": "America/Chicago"},
+   "enabled": true, "repeat": null, "origin": "", "deliver": "local"
+  },
+  {
+   "id": "cron-3",
+   "name": "Release notes draft",
+   "prompt": "Draft release notes from the commits merged to main since the last tag, grouped into features, fixes and chores.",
+   "schedule": {"kind": "cron", "expr": "0 10 * * 4", "timezone": "America/Chicago"},
+   "enabled": true, "repeat": null, "origin": "", "deliver": "local"
+  }
+ ]
+}

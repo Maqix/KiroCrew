@@ -686,6 +686,7 @@ class TestInteractiveApproval:
             tool_purpose="review changes",
             slot="parent-slot",
             is_background=False,
+            run_session="",
         )
 
     @pytest.mark.asyncio

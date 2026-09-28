@@ -1839,6 +1839,7 @@ export default function App() {
     importOnboarded,
     privacyAcked,
     themeBootReady,
+    firstRunSlot,
     markOnboarded,
     markImportOnboarded,
     markPrivacyAcked,
@@ -1893,8 +1894,26 @@ export default function App() {
   // so each chapter opens only once its predecessor is marked done. Runs on
   // every flag change (not just boot) so the hand-offs below and this effect
   // can never disagree about what should be on screen.
+  // One-shot: the first boot-ready pass under a first-run session closes a tour
+  // the localStorage seed above opened (a first-run user who already went
+  // through the classic import and the privacy card has both marks cached).
+  // Only that first pass -- a tour the classic import's hand-off opens later
+  // (`mc-start-import` with `continueOnboarding`) is the user's own and stays.
+  const firstRunSeedClosed = useRef(false)
   useEffect(() => {
     if (!themeBootReady) return
+    // The one-chat first-run session owns onboarding (RFC one-chat first run,
+    // §6.2): the chapters do not open on their own there. Their manual entry
+    // points are untouched -- `mc-start-import` below (Settings → Import, a
+    // setup card's "Use classic setup") and `/onboarding` -- so the classic path
+    // stays one click away.
+    if (firstRunSlot) {
+      if (!firstRunSeedClosed.current) {
+        firstRunSeedClosed.current = true
+        setShowOnboarding(false)
+      }
+      return
+    }
     // OPEN-ONLY for the import chapter. Deriving `false` here is what made the
     // page close itself: Import is the one chapter with a manual entry point
     // (the `mc-start-import` event below), and for a user who already finished
@@ -1908,7 +1927,7 @@ export default function App() {
     if (!importOnboarded) setShowAgentImport(true)
     setShowPrivacy(importOnboarded && !privacyAcked)
     setShowOnboarding(importOnboarded && privacyAcked && !onboarded)
-  }, [importOnboarded, privacyAcked, onboarded, themeBootReady])
+  }, [importOnboarded, privacyAcked, onboarded, themeBootReady, firstRunSlot])
   useEffect(() => {
     const replay = (event: Event) => {
       continueTourAfterImport.current =
@@ -3363,7 +3382,13 @@ export default function App() {
   // the launch -- and the video would open beside Agent Import on a brand-new
   // install's first screen. These three are what that effect derives from, so they
   // are already correct in the same commit.
-  const onboardingOwed = !importOnboarded || !privacyAcked || !onboarded
+  //
+  // Under a one-chat first-run session the chapters are not owed (they do not
+  // open on their own), but the first-run conversation itself claims the launch
+  // exactly as the chapters would have: a feature video opening over the privacy
+  // card on a brand-new install's first screen is the collision this gate exists
+  // to prevent. So the session counts as owed onboarding for the video gate.
+  const onboardingOwed = !!firstRunSlot || !importOnboarded || !privacyAcked || !onboarded
 
   // Latched, not sampled: an interruption that has already been dismissed still
   // spends the launch. Sampling would let the video open the instant the user

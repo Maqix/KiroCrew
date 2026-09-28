@@ -6247,6 +6247,31 @@ async def start_dashboard(
         # re-mint a colliding low index (which scrambles the tab -> session map).
         state.reseed_slot_counter()
 
+    # A fresh install gets its one-chat first run: a pinned session whose first
+    # row is the privacy card. Idempotent, and never for an onboarded install or
+    # one that already has sessions. Best-effort: a failure here must not stop
+    # the dashboard from serving, and the classic chapters still work.
+    try:
+        from kiro_crew.dashboard.setup_flow import ensure_first_run_session
+
+        await ensure_first_run_session(state)
+    except Exception:
+        logger.warning("first-run session setup failed", exc_info=True)
+    # The first week's daily tips in the main chat (a no-op without a first run).
+    from kiro_crew.dashboard import first_week
+
+    _first_week_task = asyncio.create_task(first_week.run(state))
+    state._background_tasks.add(_first_week_task)
+    _first_week_task.add_done_callback(state._background_tasks.discard)
+    # Hand-off notices the main chat was still owed when the gateway stopped, now
+    # that the restore has brought it back (a no-op when none were held).
+    try:
+        from kiro_crew.dashboard import handoff_notice
+
+        await handoff_notice.restore_held(state)
+    except Exception:
+        logger.warning("held hand-off notices were not restored", exc_info=True)
+
     # Surface conversations started on Slack/Discord/Teams (etc.) in the chat
     # list. These persist under channel-namespaced keys (``slack:<ts>``), which
     # neither restore path above builds slots for — without this they exist only

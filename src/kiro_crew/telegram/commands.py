@@ -18,6 +18,8 @@ Commands:
   /task        — drive the task runner (run / status / cancel)
   /help        — show available commands
   /kirocrew dashboard [<N>h|<N>m] — send a presigned dashboard login link
+  /pair <code> — pair this account from a dashboard setup card (read before
+                 authorization; not in /help or the menu)
 
 Mid-turn overrides (prefix a message sent WHILE a reply is running; they
 override the global ``messaging.queue_mode`` for that one message):
@@ -194,6 +196,25 @@ def parse_dashboard_argument(text: str) -> str:
     """
     parts = text.strip().split(None, 2)
     return parts[2].strip() if len(parts) == 3 else ""
+
+
+#: ``/pair <code>``, optionally with an ``@BotUsername`` suffix. Whole-message:
+#: the command is only ever a pasted pairing line, so anything around it means it
+#: is not one.
+_PAIR_RE = re.compile(r"^/pair(?:@[A-Za-z0-9_]{1,64})?\s+(\d{1,12})\s*$", re.IGNORECASE)
+
+
+def parse_pair_command(text: str) -> str | None:
+    """The code of a ``/pair <code>`` message, or ``None`` when *text* is not one.
+
+    Unlike every other command here, ``/pair`` is read BEFORE the sender is
+    authorized (``TelegramTransport.receive``): pairing is how a sender who is not
+    on ``telegram.allowed_user_ids`` yet gets there, from a code shown on a
+    dashboard setup card. It is not in :data:`COMMAND_SPEC`, so it appears in
+    neither ``/help`` nor the ``/`` menu.
+    """
+    m = _PAIR_RE.match(text.strip())
+    return m.group(1) if m else None
 
 
 _QUEUE_ALIASES = frozenset(("/queue",))

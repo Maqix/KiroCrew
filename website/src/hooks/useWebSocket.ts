@@ -76,6 +76,7 @@ import { MEMBERS_ROSTER_QUERY_KEY, MEMBER_PROJECTIONS_QUERY_PREFIX } from '../ap
 import { memberProjectionStore } from '../state/memberProjectionStore'
 import { threadLiveStore, type ThreadReplyFrame } from '../state/threadLiveStore'
 import { threadQueryKey, threadsQueryKey } from '../api/threads'
+import { applySetupCardUpdate, isSetupCardShape } from '../api/setupCards'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { deriveToolCallTitle } from '../utils/toolCallTitle'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
@@ -1359,6 +1360,13 @@ export function useWebSocket() {
         threadLiveStore.reset()
         queryClient.invalidateQueries({ queryKey: ['chat-thread'] })
         queryClient.invalidateQueries({ queryKey: ['chat-threads'] })
+        // Same one-shot problem for setup cards: `setup_card_update` is pushed
+        // with no replay, so a card that moved while the socket was down (an
+        // OAuth consent that landed, a `/pair` that arrived) would keep showing
+        // its stale state until its own poll — and a card that is not `working`
+        // or `waiting` does not poll at all. Only observed entries refetch.
+        queryClient.invalidateQueries({ queryKey: ['setup-card'] })
+        queryClient.invalidateQueries({ queryKey: ['setup-cards'] })
         // A dropped socket is the one client-visible sign the gateway may have
         // restarted — and a restart drops an unmessaged member slot while its
         // binding survives. The Crew Members page mounts a cached thread key
@@ -1714,6 +1722,26 @@ export function useWebSocket() {
             }
             break
           }
+          case 'setup_card_update': {
+            // Owner-only: a setup card (one-chat first run) was created or
+            // changed. The frame carries the whole card, so it is applied to the
+            // cache directly rather than invalidated -- the transcript row renders
+            // from `['setup-card', id]` and the next state (a consent link, a
+            // pair code, a result) should appear without a round trip. A frame
+            // that is not card-shaped is ignored rather than written, so a
+            // malformed push cannot blank a card on screen. Not exposed to apps
+            // (app-sdk's event tables do not list it; the gateway gates it).
+            const frame = data as { slot?: unknown; card?: unknown } | undefined
+            if (frame && isSetupCardShape(frame.card)) {
+              applySetupCardUpdate(queryClient, frame.card, typeof frame.slot === 'string' ? frame.slot : undefined)
+              // Keeping the first job is what graduates the first run into the
+              // main chat; re-read the boot flags that carry `main_slot`.
+              if (frame.card.kind === 'cron' && frame.card.status === 'committed') {
+                void queryClient.invalidateQueries({ queryKey: ['theme-boot'] })
+              }
+            }
+            break
+          }
           case 'pins_changed': {
             // A pin was created or deleted on another tab (or via the API).
             // Invalidate only the affected slot's cache so the pin affordance
@@ -1991,6 +2019,13 @@ export function useWebSocket() {
           case 'chat_message':
             flushChunks()
             dispatch(sseChatMessage(data))
+            // The first run just graduated into the main chat (RFC §6.9): the
+            // gateway recorded `main_slot`, which the boot payload carries, so
+            // re-read it — the landing target and the sidebar's Main badge key
+            // off it, and graduation happens mid-session.
+            if (data.role === 'assistant' && (data.kind === 'main_chat' || (data.meta as { kind?: unknown } | undefined)?.kind === 'main_chat')) {
+              void queryClient.invalidateQueries({ queryKey: ['theme-boot'] })
+            }
             // Approval-blocked chime for an INTERACTIVE chat. The chat runner
             // parks its turn on this `permission` row and emits no `approval`
             // frame for it (that frame is the coordinator registry's, and chimes

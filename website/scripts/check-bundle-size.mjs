@@ -131,7 +131,12 @@ export const CHUNK_BUDGETS = {
   // the regenerated `en-XA`, which all land in this chunk by construction: measured
   // 907.7 KB on this branch before the judge row above landed on main, so the two
   // features together sit near 909 KB; same 5% convention over that size.
-  t: 955 * KB, // measured ~909 KB on this branch (~5% headroom)
+  // One-chat first-run setup cards (components.setupCard.*, ~118 English keys
+  // for ten card kinds plus their inline notes) land here by the same
+  // construction -- English is the always-loaded fallback -- and took the chunk
+  // to a measured 961.0 KB, 6 KB over the ceiling above. Same 5% convention over
+  // the new measured size.
+  t: 1010 * KB, // measured 961.0 KB on this branch (~5% headroom)
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor

@@ -36,6 +36,12 @@ PIPELINE_CONDUCTOR_AGENT_FILENAME = "kirocrew-pipeline-conductor.json"
 LEDGER_CONDUCTOR_AGENT_FILENAME = "kirocrew-ledger-conductor.json"
 SECURITY_CONDUCTOR_AGENT_FILENAME = "kirocrew-security-conductor.json"
 WORKER_AGENT_FILENAME = "kirocrew-worker.json"
+# The main chat's agent: the default agent plus the session-control set, so the
+# one chat the first run graduates into can hand long work to its own chat while
+# every other chat keeps the default agent's surface unchanged.
+MAIN_CHAT_AGENT_FILENAME = "kirocrew-main.json"
+# The name a slot records to run on it (``slot.agent``).
+MAIN_CHAT_AGENT_NAME = MAIN_CHAT_AGENT_FILENAME.removesuffix(".json")
 KNOWLEDGE_AGENT_FILENAME = "kirocrew-knowledge.json"
 RESEARCH_AGENT_FILENAME = "kirocrew-research.json"
 HEARTBEAT_AGENT_FILENAME = "kirocrew-heartbeat.json"
@@ -53,10 +59,26 @@ OWNED_KIRO_AGENT_FILES = (
     LEDGER_CONDUCTOR_AGENT_FILENAME,
     SECURITY_CONDUCTOR_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
+    MAIN_CHAT_AGENT_FILENAME,
     KNOWLEDGE_AGENT_FILENAME,
     RESEARCH_AGENT_FILENAME,
     HEARTBEAT_AGENT_FILENAME,
 )
+
+# The agent names every Crew-side reader treats as THE default agent rather than a
+# custom one: the persona files, the workspace identity, the whole skill catalog,
+# trigger-matched skills and the global model tier. ``kirocrew-main`` is the default
+# agent's own spec plus one assigned server, so a reader that asked "is this the
+# default agent" by comparing against ``kirocrew`` alone would strip the main chat of
+# the persona and skills the first run just set up. The spec FILE is still separate:
+# kiro-cli selects a spec by name, which is why the main chat has one at all.
+PRIMARY_AGENT_NAMES = frozenset({AGENT_FILENAME.removesuffix(".json"), MAIN_CHAT_AGENT_NAME})
+
+
+def is_primary_agent(name: str | None) -> bool:
+    """Whether *name* is the default agent for context, skills and model resolution."""
+    return name in PRIMARY_AGENT_NAMES
+
 
 # The specs that MUST exist for the product to work at all. kiro-cli resolves an
 # agent by reading ``<agents dir>/<name>.json``; with the file absent it answers

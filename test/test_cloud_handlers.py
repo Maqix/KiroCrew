@@ -924,7 +924,13 @@ class TestProvisionerSeam:
         import inspect
         import textwrap
 
-        tree = ast.parse(textwrap.dedent(inspect.getsource(hc.api_cloud_launch_create)))
+        # The handler validates and delegates; start_launch_job (the path the first-run
+        # home card shares) resolves the engine, so both are read as one unit.
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(hc.api_cloud_launch_create))
+            + "\n"
+            + textwrap.dedent(inspect.getsource(hc.start_launch_job))
+        )
         wrapped = [
             n
             for n in ast.walk(tree)
@@ -1278,7 +1284,13 @@ class TestProvisionerSeam:
         import inspect
         import textwrap
 
-        tree = ast.parse(textwrap.dedent(inspect.getsource(hc.api_cloud_launch_create)))
+        # The handler validates and delegates; start_launch_job (the path the first-run
+        # home card shares) resolves the engine, so both are read as one unit.
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(hc.api_cloud_launch_create))
+            + "\n"
+            + textwrap.dedent(inspect.getsource(hc.start_launch_job))
+        )
         reads = [
             n
             for n in ast.walk(tree)

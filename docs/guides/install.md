@@ -148,8 +148,52 @@ that path binding. Prefer a package where you can.
 
 ### a. One-line install (fastest)
 
-Installs a prebuilt, sha256-verified wheel from the release CDN. No clone, no
-npm, no local build:
+From nothing to an open chat in one command:
+
+```bash
+curl -fsSL https://download.crew.kiro.dev/start.sh | sh
+```
+
+`start.sh` installs Kiro Crew exactly as `cli.sh` below does — it downloads the
+live `cli.sh` and runs it unchanged, so the signed-manifest check and its pinned
+key are the same ones — and then runs [`kirocrew start`](#first-run). That
+command checks the agent harness (kiro-cli by default: it prints the official
+install link when kiro-cli is missing, and offers kiro-cli's own sign-in when it
+is signed out), starts the gateway in the background, and opens the first-run
+chat in your browser. On a host with no browser (SSH, a server) it prints the
+sign-in link instead, with a QR code when the dashboard has an origin another
+device can reach, or the `ssh -L` command to tunnel to it when it listens on
+loopback only. It accepts `cli.sh`'s flags (`--channel`, `--version`, `--cdn`,
+`--managed-python`, `--system-python`) and passes them on, plus its own:
+`--no-browser`, `--foreground` (run the gateway in that terminal) and
+`--skip-install` (use the `kirocrew` already on `PATH`):
+
+```bash
+curl -fsSL https://download.crew.kiro.dev/start.sh | sh -s -- --channel insider --no-browser
+```
+
+An install that ran through `start.sh` records `start` in
+`~/.kiro/crew/install-origin`, next to the `channel` marker `cli.sh` writes.
+
+On Windows the PowerShell counterpart is `start.ps1`:
+
+```powershell
+irm https://download.crew.kiro.dev/start.ps1 | iex
+& ([scriptblock]::Create((irm https://download.crew.kiro.dev/start.ps1))) -Channel insider -NoBrowser
+```
+
+`cli.sh` does not run on Windows, so `start.ps1` installs the
+[desktop app](#d-bundled-desktop-app) instead. It downloads the channel's
+`KiroCrew-Setup.exe` from the same CDN and runs it only when Windows reports its
+Authenticode signature valid and the signer is the publisher that the app's own
+updater pins. It then runs the app's bundled `kirocrew start`. The flags are
+`-NoBrowser`, `-Foreground`, `-SkipInstall`, `-Channel`, `-Version` and `-Cdn`,
+and it writes the same `install-origin` marker. The
+[Windows guide](windows-install.md#one-command-startps1) covers the details.
+
+To install without starting anything, run `cli.sh` itself. It installs a
+prebuilt, sha256-verified wheel from the release CDN. No clone, no npm, no local
+build:
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
@@ -507,9 +551,30 @@ app" interstitial.
 
 ## First run
 
-After installing by any path:
+After installing by any path, one command takes you to the chat:
 
-Install Kiro CLI from <https://kiro.dev/cli/> and sign in for the default agent:
+```bash
+kirocrew start            # check kiro-cli, start the gateway, open the chat
+```
+
+It asks nothing. It checks that the agent harness is installed (it does not
+install kiro-cli for you: when it is missing it prints <https://kiro.dev/cli/>
+and exits 3) and signed in (on a terminal a signed-out kiro-cli runs its own
+`kiro-cli login` straight away, the device-code variant on a headless host),
+reuses a gateway that is already running or starts one in the background, and
+opens the dashboard in your browser — on the first-run chat when the gateway has
+created one for a fresh install, otherwise on the dashboard itself. Every other
+choice is made in that chat: when the AWS CLI on this machine is already signed
+in, the first message offers a home in the cloud in that account, with its
+monthly cost, and a yes builds it in the background while setup carries on
+(`--home here|cloud|later` lets a script answer ahead of time). `--foreground`
+keeps the gateway in that terminal (Ctrl-C stops it), `--no-browser` prints the
+sign-in link instead of opening it, and `--no-input` never runs the sign-in. Stop a background gateway with
+`kirocrew stop`; keep it running across logouts and reboots with
+`kirocrew service install`.
+
+The same steps by hand: install Kiro CLI from <https://kiro.dev/cli/> and sign
+in for the default agent:
 
 ```bash
 kiro-cli login

@@ -233,5 +233,9 @@
   "pages.contextBreakdown.earlier_hidden",
   "pages.contextBreakdown.scope_all_turns",
   "components.fileChangeChips.omitted_files_notice",
-  "pages.chatSidebar.opened_sessions_count"
+  "pages.chatSidebar.opened_sessions_count",
+  "components.setupCard.import_result",
+  "components.setupCard.import_jobs_result",
+  "components.setupCard.cron_approvals_every_run",
+  "components.setupCard.cron_preview_approval_not_given"
 ]

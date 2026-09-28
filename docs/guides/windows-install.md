@@ -11,6 +11,63 @@ platforms; provisioning uses owner-only NTFS permissions, and SQLite's native
 file handles provide the Windows protection where POSIX uses a shared store-use
 lock.
 
+## One command: `start.ps1`
+
+From nothing to an open chat, in PowerShell:
+
+```powershell
+irm https://download.crew.kiro.dev/start.ps1 | iex
+```
+
+`start.ps1` is the Windows counterpart of `start.sh`. `cli.sh` is POSIX-only,
+so on Windows it installs the [desktop app](#desktop-installer) instead. It
+downloads `KiroCrew-Setup.exe` for the channel from the same CDN,
+`desktop/<channel>/latest/` (or `desktop/<channel>/<version>/` with `-Version`),
+and checks it before running anything. `Get-AuthenticodeSignature` must report
+the signature `Valid`, and the signing certificate must name the publisher that
+the app's own updater requires of every update (`publisherName` in
+`website/electron/package.json`). Otherwise it refuses and runs nothing. The
+script carries no key or digest of its own: this check is the whole trust
+decision. It then installs silently for the current user (`/S /currentuser`, no
+elevation) and runs the app's bundled CLI as `kirocrew start`, pointed at the
+kiro-cli the app bundles (as the app itself is), which checks the agent harness,
+starts the gateway in the background and opens the first-run chat in your
+browser. It asks nothing; every choice after that is made in the chat.
+
+Flags need the script-block form, because `iex` passes no arguments:
+
+```powershell
+& ([scriptblock]::Create((irm https://download.crew.kiro.dev/start.ps1))) -Channel insider -NoBrowser
+```
+
+| Flag | Does |
+|---|---|
+| `-NoBrowser` | print the sign-in URL (and a QR code) instead of opening a browser |
+| `-Foreground` | run the gateway in that PowerShell window; Ctrl-C stops it |
+| `-SkipInstall` | use the `kirocrew` already installed (on `PATH`, else the one desktop install's bundled CLI); installs only when there is none |
+| `-Channel <nightly\|insider\|stable>` | which installer; also `$env:KIROCREW_CHANNEL`, default `stable` |
+| `-Version <X.Y.Z>` | that exact release of the channel |
+| `-Cdn <https-url>` | where the installer comes from; also `$env:KIROCREW_CDN_BASE` |
+
+Under `irm | iex` the script never calls `exit`, which would close your
+PowerShell window. It leaves its status in `$LASTEXITCODE` instead. An install
+that ran through it records `start` in `%USERPROFILE%\.kiro\crew\install-origin`
+(or under `KIROCREW_HOME`), the same marker `start.sh` writes. The daily
+heartbeat reports that origin as its install-path value. Re-running the one-liner
+downloads and reinstalls the app each time; add `-SkipInstall` to go straight to
+`kirocrew start`.
+
+Two limits worth knowing:
+
+- **The harness is found as on any other platform.** The bundled CLI runs outside
+  the app, so `kirocrew start` uses a kiro-cli installed on this machine (for
+  example under `%LOCALAPPDATA%\Kiro-Cli`), not the copy bundled inside the app.
+  When there is none, it prints the official install link and exits 3.
+- **A signature that cannot be checked is refused.** On a machine that cannot
+  reach certificate revocation (offline, or a proxy that blocks it), Windows
+  reports `UnknownError` rather than `Valid`, and the script stops. Download the
+  installer from the URL it printed and run it yourself, as in the next section.
+
 ## Desktop installer
 
 CI's Windows lane (`build-windows.yml`) builds a Windows desktop app: an NSIS

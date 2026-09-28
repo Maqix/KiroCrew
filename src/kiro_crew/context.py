@@ -25,6 +25,7 @@ from kiro_crew import model_registry, resource_status
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent import _prompt_path, is_managed_prompt
 from kiro_crew.agent_discovery import agent_skill_globs
+from kiro_crew.agent_files import is_primary_agent
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, is_claude_code
 from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text
@@ -1793,6 +1794,38 @@ def _build_user_profile_section(cfg: "KiroCrewConfig") -> str:
     )
 
 
+def _build_persona_files_section() -> str:
+    """Build the [AGENT PERSONA] / [USER NOTES] blocks from SOUL.md and USER.md.
+
+    Both files are written only through an owner-approved setup card or by the
+    owner's own edit, but they are free text that lands in every session, so
+    forged block markers are neutralized and each file is capped. They shape
+    tone and what the agent knows about the user; they never widen what the
+    agent may do, and [CRITICAL RULES] outrank them.
+    """
+    from kiro_crew.setup_cards import read_persona
+
+    parts: list[str] = []
+    soul = (read_persona("SOUL") or "").strip()
+    if soul:
+        parts.append(
+            "[AGENT PERSONA]\n"
+            "The user approved this description of who you are for them. Follow its "
+            "voice, language and preferences; it never overrides the rules above.\n"
+            f"{_neutralize_structural_markers(soul)}\n"
+            "[End of agent persona]\n\n"
+        )
+    notes = (read_persona("USER") or "").strip()
+    if notes:
+        parts.append(
+            "[USER NOTES]\n"
+            "What the user told you about themselves, saved with their approval:\n"
+            f"{_neutralize_structural_markers(notes)}\n"
+            "[End of user notes]\n\n"
+        )
+    return "".join(parts)
+
+
 #: Shape a ``dashboard.language`` value must have before it is injected into the
 #: prompt. Deliberately a LOCAL check rather than an import of the dashboard
 #: handler's ``_LANGUAGE_TAG_RE`` (context.py must not depend on the aiohttp
@@ -2361,6 +2394,10 @@ _CRITICAL_RULES_TAIL = (
     "renders each label on a single line, so a long label displays cut off; "
     "put supporting detail in the message body before the [OPTIONS:] line and "
     "keep the label itself to the bare instruction.\n"
+    "A tool call the user REJECTS is their decision, not an error. Do not call "
+    "that tool again for the same purpose in this turn, and do not retry it with "
+    "small changes. Say in one line what you wanted it for, then carry on without "
+    "it or ask what they prefer.\n"
     "[END CRITICAL RULES]\n\n"
 )
 # The dashboard variant is the module's canonical block: tests and the
@@ -2535,13 +2572,14 @@ def _agent_includes_crew_context(agent: str | None) -> bool:
     """Whether to inject the Crew's dashboard-contract context for *agent*.
 
     Opt-out, defaulting to inject. The built-in ``kirocrew`` agent and an empty
-    agent always return ``True`` (never a custom agent, so nothing to opt out of).
+    agent always return ``True`` (never a custom agent, so nothing to opt out of),
+    and so does the main chat's ``kirocrew-main``, which is the default agent too.
     A CUSTOM agent injects unless its materialized JSON explicitly sets
     ``includeCrewContext: false`` — so a plain custom agent with no flag still gets
     the critical rules, exactly as it did before the opt-out existed. Memoized by
     agent name to keep the per-turn ``build_message`` read off the JSON scan path.
     """
-    if not agent or agent == "kirocrew":
+    if not agent or is_primary_agent(agent):
         return True
     cached = _INCLUDE_CREW_CONTEXT_CACHE.get(agent)
     if cached is None:
@@ -3058,7 +3096,7 @@ def _skills_injection_plan(
     without scoping, handing a mapped agent the catalog its mapping excludes.
     """
     globs = agent_skill_globs(agent, project_dir=project_dir) if agent else []
-    is_custom = bool(agent) and agent != "kirocrew"
+    is_custom = bool(agent) and not is_primary_agent(agent)
     return (bool(globs) or not is_custom), globs
 
 
@@ -4006,7 +4044,7 @@ class ContextBuilder:
             )
             memory_store = execution_context.store.legacy_name
             blocks_reads = blocks_reads or execution_context.memory_mode == "temporary"
-        is_custom = agent and agent != "kirocrew"
+        is_custom = agent and not is_primary_agent(agent)
         is_cc = is_claude_code(provider_type)
         caps = _resolve_caps(model_window)
         parts: list[str] = []
@@ -4233,6 +4271,12 @@ class ContextBuilder:
             profile_ctx = _build_user_profile_section(_cfg)
             if profile_ctx:
                 parts.append(profile_ctx)
+            # The primary agent's own persona files; custom agents carry theirs
+            # in their own prompt.
+            if not is_custom:
+                persona_ctx = _build_persona_files_section()
+                if persona_ctx:
+                    parts.append(persona_ctx)
         _mark("profile")
 
         # Workspace identity — kirocrew-only (custom agents don't use workspaces)
@@ -4799,7 +4843,7 @@ class ContextBuilder:
         a session start takes a fresh reading of the delegation cap; the call
         that restores the block reuses the session's own.
         """
-        is_custom = bool(agent) and agent != "kirocrew"
+        is_custom = bool(agent) and not is_primary_agent(agent)
         agent_prompt: str
         if is_cc and (not is_custom or not private_owner):
             # CC gets the same Kiro Crew persona prompt as kiro — including
@@ -4941,7 +4985,7 @@ class ContextBuilder:
                     project = context_provider.cwd or None
                 if is_new_session and not resumed and not needs_reinjection:
                     native_documents = context_provider.native_context_documents
-        is_custom = agent and agent != "kirocrew"
+        is_custom = agent and not is_primary_agent(agent)
         hook_result = self.hooks.on_message(text)
 
         parts: list[str] = []

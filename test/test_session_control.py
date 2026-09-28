@@ -2979,6 +2979,30 @@ def test_created_session_inherits_the_callers_workspace(tmp_path, monkeypatch):
     )
 
 
+def test_a_child_of_the_main_chat_does_not_inherit_its_agent(tmp_path, monkeypatch):
+    """The main chat's agent is the default agent plus session control, and a chat it
+    hands work to is an ordinary chat: inheriting ``kirocrew-main`` would give every
+    child the session verbs and their grants. The child starts on the unset agent a
+    new chat has, in the same workspace; naming the agent explicitly still works."""
+    from kiro_crew.agent_files import MAIN_CHAT_AGENT_NAME
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent = MAIN_CHAT_AGENT_NAME
+    _agent_resolves(monkeypatch, caller.workspace or "default")
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert not child.agent, "the main chat's agent must not be handed on"
+    assert child.workspace == caller.workspace
+
+    named = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), agent=MAIN_CHAT_AGENT_NAME)
+    )
+    assert state.get_slot(named["target"]).agent == MAIN_CHAT_AGENT_NAME
+
+
 @pytest.fixture
 def private_dispatch(tmp_path, monkeypatch):
 

@@ -210,6 +210,7 @@ def test_every_owned_spec_is_classified_for_the_picker():
         agent_files.LEDGER_CONDUCTOR_AGENT_FILENAME,
         agent_files.SECURITY_CONDUCTOR_AGENT_FILENAME,
         agent_files.WORKER_AGENT_FILENAME,
+        agent_files.MAIN_CHAT_AGENT_FILENAME,
         agent_files.KNOWLEDGE_AGENT_FILENAME,
         agent_files.RESEARCH_AGENT_FILENAME,
         agent_files.HEARTBEAT_AGENT_FILENAME,

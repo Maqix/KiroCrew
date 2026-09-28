@@ -32,6 +32,13 @@ class TestRepoRoot:
             source.repo_root()
 
 
+def _refuse(name):
+    def _call(*_a, **_k):  # pragma: no cover - must not be called
+        raise AssertionError(f"{name} must not be called")
+
+    return _call
+
+
 class TestBuildTarball:
     @pytest.fixture(autouse=True)
     def _fake_tracked(self, monkeypatch):
@@ -306,6 +313,30 @@ class TestBuildTarball:
             assert "edited, uncommitted" in data  # working-tree content, not HEAD
         finally:
             tarball.unlink()
+
+    def test_dirty_tree_with_new_untracked_source_files_is_refused(self, monkeypatch, tmp_path):
+        # Edited tracked files that import a never-added file would ship a tree
+        # that cannot build; refuse before anything is created, naming the files.
+        monkeypatch.setattr(source, "_tracked_tree_is_dirty", lambda root: True)
+        monkeypatch.setattr(
+            source,
+            "_untracked_build_files",
+            lambda root: ["website/src/components/setup/New.tsx", "src/kiro_crew/new.py"],
+        )
+        monkeypatch.setattr(source, "_tar_fallback", _refuse("_tar_fallback"))
+        with pytest.raises(aws.AWSError, match=r"2 new source file\(s\).*git add"):
+            source.build_source_tarball(tmp_path)
+
+    def test_untracked_files_outside_the_build_do_not_block(self, tmp_path):
+        import subprocess
+
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        (tmp_path / ".gitignore").write_text("secret.txt\n")
+        (tmp_path / "notes.txt").write_text("scratch")
+        (tmp_path / "secret.txt").write_text("token")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "new.py").write_text("x = 1")
+        assert source._untracked_build_files(tmp_path) == ["src/new.py"]
 
     def test_clean_tree_prefers_git_archive(self, monkeypatch, tmp_path):
         # The fast path (git archive) is still used when the tree is clean.

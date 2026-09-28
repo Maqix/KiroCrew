@@ -324,7 +324,9 @@ Creation copies two different kinds of state, and the split is deliberate.
 **Identity** — the child is created in the caller's workspace (the memory
 boundary; a child left in `default` would be both a boundary crossing and
 unaddressable by its own creator), inherits the caller's agent when none is
-named, takes that workspace's project directory as its cwd, and is attributed to
+named — except the main chat's `kirocrew-main` ([first-run](first-run.md)), whose
+children start on the unset agent a new chat has, so a hand-off does not pass
+session control on — takes that workspace's project directory as its cwd, and is attributed to
 the caller via `created_by` so the per-creator slot ceiling is countable. The
 caller's ACP session id is also frozen onto the child at this mint
 (`_created_by_sid`), from the live caller handle, so the child's `session/opened`
