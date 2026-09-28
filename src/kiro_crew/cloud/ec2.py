@@ -654,6 +654,7 @@ def build_deploy_argv(
         f"InstanceType={tier.instance_type}",
         f"Architecture={tier.arch}",
         f"VolumeSizeGb={tier.disk_gb}",
+        f"HomeProfile={tier.home_profile}",
         f"VpcId={vpc_id}",
         f"SubnetId={subnet_id}",
         f"AssociatePublicIp={associate_public_ip}",

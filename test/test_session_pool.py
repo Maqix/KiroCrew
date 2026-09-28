@@ -379,6 +379,76 @@ class TestConfigWiring:
         assert mgr._pool_size == 10
 
 
+class TestLazyBackground:
+    """session.lazy_background leaves the background session to its first use."""
+
+    def _manager(self, *, lazy: bool):
+        mgr, factory = _make_manager(pool_size=0)
+        mgr._cfg.session.lazy_background = lazy
+        mgr._ensure_background = AsyncMock()
+        return mgr, factory
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("blocking", [True, False])
+    async def test_by_default_it_starts_with_the_pool(self, blocking):
+        mgr, _ = self._manager(lazy=False)
+        await mgr.start_pool(blocking=blocking)
+        await asyncio.gather(*list(mgr._background_tasks))
+        mgr._ensure_background.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("blocking", [True, False])
+    async def test_lazy_start_leaves_it_for_later(self, blocking):
+        mgr, factory = self._manager(lazy=True)
+        await mgr.start_pool(blocking=blocking)
+        await asyncio.gather(*list(mgr._background_tasks))
+        mgr._ensure_background.assert_not_awaited()
+        factory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_its_first_use_starts_it_as_the_background_agent(self, monkeypatch):
+        from kiro_crew.session import BACKGROUND_KEY
+
+        mgr, _ = self._manager(lazy=True)
+        order: list[str] = []
+        mgr._ensure_background.side_effect = lambda: order.append("ensure")
+
+        async def _allocate(key, **_kw):
+            order.append(f"allocate {key}")
+            return MagicMock(), False, False
+
+        monkeypatch.setattr(
+            mgr, "_allocation_boundary", lambda: SimpleNamespace(get_or_create=_allocate)
+        )
+        await mgr.get_or_create(BACKGROUND_KEY)
+        await mgr.get_or_create("chat:1")
+        assert order == ["ensure", f"allocate {BACKGROUND_KEY}", "allocate chat:1"]
+
+    @pytest.mark.asyncio
+    async def test_without_it_get_or_create_does_not_start_it(self, monkeypatch):
+        from kiro_crew.session import BACKGROUND_KEY
+
+        mgr, _ = self._manager(lazy=False)
+        allocate = AsyncMock(return_value=(MagicMock(), False, False))
+        monkeypatch.setattr(
+            mgr, "_allocation_boundary", lambda: SimpleNamespace(get_or_create=allocate)
+        )
+        await mgr.get_or_create(BACKGROUND_KEY)
+        mgr._ensure_background.assert_not_awaited()
+        allocate.assert_awaited_once()
+
+    def test_the_config_default_is_off_and_it_loads(self):
+        import json
+
+        from kiro_crew.config import KiroCrewConfig, config_path
+
+        assert KiroCrewConfig().session.lazy_background is False
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"session": {"lazy_background": True}}), encoding="utf-8")
+        assert KiroCrewConfig.load().session.lazy_background is True
+
+
 # ---------------------------------------------------------------------------
 # get_or_create integration with pool
 # ---------------------------------------------------------------------------

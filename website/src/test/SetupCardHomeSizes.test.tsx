@@ -30,6 +30,14 @@ const STANDARD = {
   key: 'light', label: 'Standard', note: 'many_chats', instance_type: 't4g.xlarge', vcpu: 4, ram_gb: 16,
   monthly_usd: 101, free_plan_ok: false,
 }
+const LITE = {
+  key: 'lite', label: 'Lite', note: 'lite_tradeoffs', instance_type: 't4g.small', vcpu: 2, ram_gb: 2,
+  monthly_usd: 14, free_plan_ok: true,
+}
+const ECONOMY = {
+  key: 'economy', label: 'Economy', note: 'all_on', instance_type: 't4g.medium', vcpu: 2, ram_gb: 4,
+  monthly_usd: 26, free_plan_ok: false,
+}
 const PAYLOAD = {
   provider: { id: 'aws_ec2', label: 'Your AWS account' },
   simulated: false, region: 'eu-north-1', profile: 'default',
@@ -107,6 +115,41 @@ describe('SetupCard — home: choosing the size', () => {
     await waitFor(() => expect(gw.bodies).toEqual([{ decision: 'commit', hash: HASH, input: { size: 'starter' } }]))
   })
 
+  it('Lite says plainly what it gives up, and what the Free plan’s credit buys', async () => {
+    const card = home({
+      size_options: [{ ...LITE, credits_usd: 100, credit_weeks: 30 }, { ...STARTER, credits_usd: 100, credit_weeks: 6 }, STANDARD],
+      size_default: 'starter',
+      plan: { type: 'FREE', credits_usd: 100 },
+    })
+    const gw = serve(card)
+    await renderHome(card)
+    const lite = screen.getByTestId('setup-card-home-size-lite')
+    expect(lite).toHaveTextContent('Lite · about $14/month')
+    expect(lite).toHaveTextContent('t4g.small, 2 vCPU, 2GB of memory')
+    expect(lite).toHaveTextContent('Works on a new AWS account’s Free plan, paid from its credits (about 30 weeks of $100 left).')
+    expect(lite).toHaveTextContent(
+      'The smallest home, with trade-offs: memory uses keyword search only, there is no dictation, '
+      + 'the first reply after a quiet spell is slower, and it runs only a few things at once.',
+    )
+    expect(screen.queryByTestId('setup-card-home-size-lite-paid')).toBeNull()
+    await userEvent.click(radio('lite'))
+    await userEvent.click(screen.getByTestId('setup-card-primary'))
+    await waitFor(() => expect(gw.bodies).toEqual([{ decision: 'commit', hash: HASH, input: { size: 'lite' } }]))
+  })
+
+  it('Economy is everything on, for the paid plan', async () => {
+    const card = home({ size_options: [LITE, ECONOMY, SMALL, STANDARD], size_default: 'small', plan: { type: 'PAID' } })
+    serve(card)
+    await renderHome(card)
+    const economy = screen.getByTestId('setup-card-home-size-economy')
+    expect(economy).toHaveTextContent('Economy · about $26/month')
+    expect(economy).toHaveTextContent('Everything on. Enough for your main chat, another chat or two and scheduled jobs.')
+    expect(screen.getByTestId('setup-card-home-size-lite')).toHaveTextContent('The smallest home, with trade-offs')
+    const order = screen.getAllByTestId(/^setup-card-home-size-(lite|economy|small|light)$/).map(n => n.getAttribute('data-testid'))
+    expect(order).toEqual(['setup-card-home-size-lite', 'setup-card-home-size-economy', 'setup-card-home-size-small', 'setup-card-home-size-light'])
+    expect(radio('small')).toBeChecked()
+  })
+
   it('the owner’s pick is what Build posts', async () => {
     const gw = serve(FREE)
     await renderHome(FREE)
@@ -176,6 +219,19 @@ describe('SetupCard — home: choosing the size', () => {
     await renderHome(failed)
     expect(screen.getByTestId('setup-card-failed-error')).toHaveTextContent(
       'AWS stopped the build because this account reached its spend limit.',
+    )
+  })
+
+  it('a build the card lost track of says it was stopped and is being removed', async () => {
+    const failed = {
+      ...PAID, status: 'failed' as const,
+      outcome: { job_id: 'job-1', stopped: true },
+      error: { code: 'home_build_untracked', message: 'the home’s build could not be followed any more' },
+    }
+    serve(failed)
+    await renderHome(failed)
+    expect(screen.getByTestId('setup-card-failed-error')).toHaveTextContent(
+      'Kiro Crew lost track of this home’s build, so it stopped it; anything it had created in AWS is being removed. You can build again.',
     )
   })
 

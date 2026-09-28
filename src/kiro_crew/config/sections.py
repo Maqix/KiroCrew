@@ -1975,6 +1975,17 @@ class SessionConfig:
             "user think-time.",
         ),
     )
+    lazy_background: bool = field(
+        default=False,
+        metadata=_meta(
+            "Start Background Session on First Use",
+            "Start the shared background session (titles, summaries, memory "
+            "upkeep) the first time it is needed instead of when the gateway "
+            "starts. Saves that process's memory on a small machine; the first "
+            "background job after a start waits for its handshake.",
+            restart=True,
+        ),
+    )
     archive_retention_days: int = field(
         default=30,
         metadata=_meta(

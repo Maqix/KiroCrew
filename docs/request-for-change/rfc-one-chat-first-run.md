@@ -593,8 +593,8 @@ first run any longer. Five rules shape it:
    home card states the size options with what each runs, costs and needs, the
    region and an estimated monthly cost; the owner picks the size, and building
    needs their click. The Free plan's EC2 launches free-tier types only, so on
-   it only Starter builds, and a paid-plan size is refused with AWS's upgrade
-   page; the EC2 vCPU quota is read before the launch. A user
+   it only Lite and Starter build, and a paid-plan size is refused with AWS's
+   upgrade page; the EC2 vCPU quota is read before the launch. A user
    without an AWS account asks for a home and the card walks them through the
    signup: "Create an AWS account" opens AWS's own sign-up page in a new tab
    (never framed or proxied, so Kiro Crew collects nothing), and when this
@@ -657,11 +657,15 @@ first run any longer. Five rules shape it:
 Plain words, honest numbers: the non-technical path says "a home in the cloud"
 rather than naming instance types, but the cost card always names who bills the
 user and roughly how much. The sizes on the card come from measurement (Q8) and
-lead with the cheapest: on the paid plan Small (`t4g.large`, 8 GB, about
-$51/month), preselected, then Standard (`t4g.xlarge`, 16 GB, about $101/month);
-on a new account's Free plan Starter (`m7i-flex.large`, 8 GB, about $72/month,
-paid from its credits), the one size that plan runs, with Standard marked as
-needing the paid plan.
+lead with the cheapest. Both plans start with Lite (`t4g.small`, 2 GB, about
+$14/month), a slimmed home whose card line says what it gives up: memory search
+is keyword-only, there is no dictation, the first reply after a quiet spell is
+slower, and it runs a few things at once. On the paid plan Economy follows
+(`t4g.medium`, 4 GB, about $26/month, everything on), then Small (`t4g.large`,
+8 GB, about $51/month), preselected, then Standard (`t4g.xlarge`, 16 GB, about
+$101/month); on a new account's Free plan Starter follows (`m7i-flex.large`,
+8 GB, about $72/month, paid from its credits), preselected as the full size that
+plan runs, with Standard marked as needing the paid plan.
 
 A simulated launch engine walks the same progress steps without AWS, so the
 experience can be reviewed and tested before anyone spends money; it is labelled
@@ -1039,16 +1043,22 @@ with one-step promotion) belong beside it.
   `t4g.large` (arm64, 2 vCPU, 8 GB, about $49/month plus disk in us-east-1); on
   the Free plan with Starter, `m7i-flex.large` (x86_64, 2 vCPU, 8 GB, about
   $70–87/month by region), the smallest type that plan allows that fits;
-  Standard, `t4g.xlarge` (16 GB), is on both. No 2 GB size is offered yet: a
-  "Lite" `t4g.small` (Free-plan eligible, about $12/month) waits on a spike into a
-  slimmed home, and joins as data (a tier and its plan lists) if it fits.
+  Standard, `t4g.xlarge` (16 GB), is on both. *Follow-up spike:* a slimmed home
+  fits in less. With the dashboard shipped prebuilt (no on-box build), embeddings
+  off, the background session started on first use, no eager chat spawn and a
+  15-minute idle timeout, the idle home is about 0.55 GB and one chat turn about
+  1.7 GB. So Lite, `t4g.small` (2 GB, Free-plan eligible, about $14/month with
+  its disk), and Economy, `t4g.medium` (4 GB, everything on, about $26/month),
+  join as data: two tiers, their plan lists, and a `HomeProfile` the template
+  applies to the home's own config and unit.
 - **Q10.** Honest free-plan wording. A new account's Free plan (up to $200 in
   credits, no charge unless upgraded, closes after six months) covers only
   small instances such as `t4g.small` (~$18/month); today's smallest home tier
   is not eligible (~$101/month on the paid plan). "Free for six months" is true
-  only if Q8's measurement finds a 2 GB home workable. *Answer:* it does not, so
-  the card says Starter is paid from the Free plan's credits and names about how
-  many weeks the remaining credits cover, never "free".
+  only if Q8's measurement finds a 2 GB home workable. *Answer:* a full home is
+  not, so the card says Starter is paid from the Free plan's credits and names
+  about how many weeks the remaining credits cover, never "free". The slimmed
+  Lite home is, and its card line says the same of it: about 30 weeks of $100.
 - **Q9.** AWS account creation cannot be automated. How much of the signup can
   the Egg smooth (a direct link, a checklist, resuming after signup), and at
   what point does the managed provider (§10.7) replace it?

@@ -16,6 +16,10 @@
 #             global mise config.
 #
 # Env:
+#   KIROCREW_PREBUILT_FRONTEND=1
+#             Use the dashboard already in src/kiro_crew/static/dist (shipped
+#             prebuilt, e.g. to a cloud home) instead of building it: skips
+#             Node.js and the npm/vite build. Ignored when index.html is absent.
 #   KIROCREW_ALLOW_SOURCE_BUILDS=1
 #             Let pip compile a dependency that has no prebuilt wheel for this
 #             host (needs a C toolchain and -dev headers). By default the
@@ -54,6 +58,14 @@ NODE_VERSION="24"
 NODE_MIN_MAJOR=22
 PYTHON_VERSION="3.12"
 KIROCREW_PORT="${KIROCREW_PORT:-5476}"
+# A dashboard built elsewhere and shipped with the source (a cloud home's
+# tarball, see cloud/source.py) replaces the frontend build: no Node, no npm and
+# none of the build's memory. Opt-in, and only when the bundle is really there.
+PREBUILT_FRONTEND=0
+if [ "${KIROCREW_PREBUILT_FRONTEND:-0}" = "1" ] \
+    && [ -f "$KIROCREW_APP_DIR/src/kiro_crew/static/dist/index.html" ]; then
+    PREBUILT_FRONTEND=1
+fi
 ACP_NPM_PKG="@agentclientprotocol/claude-agent-acp"
 
 # ── Colors & Formatting ──
@@ -182,6 +194,9 @@ if [ "$USE_MISE" -eq 1 ]; then
     _py_ver=$("$_py" -c "import sys; v=sys.version_info; print(f'{v.major}.{v.minor}')")
     ok "Python $_py_ver ($_py) [mise]"
 
+    if [ "$PREBUILT_FRONTEND" = "1" ]; then
+        ok "Node.js not needed (prebuilt dashboard)"
+    else
     info "Installing Node.js $NODE_VERSION via mise…"
     mise install "node@$NODE_VERSION" -y 2>"$_mise_log" \
         || { cat "$_mise_log" >&2; die "Failed to install Node.js $NODE_VERSION via mise"; }
@@ -192,6 +207,7 @@ if [ "$USE_MISE" -eq 1 ]; then
         || die "Node binary not found at $_node_prefix/bin/node"
     export PATH="$_node_prefix/bin:$_py_prefix/bin:$PATH"
     ok "Node.js $(node --version) [mise]"
+    fi
 
     rm -f "$_mise_log"
 fi
@@ -308,7 +324,9 @@ else
 fi
 
 # ── Node.js ──
-if [ "$USE_MISE" -eq 0 ]; then
+if [ "$PREBUILT_FRONTEND" = "1" ]; then
+    ok "Node.js not needed: the dashboard ships prebuilt"
+elif [ "$USE_MISE" -eq 0 ]; then
 info "Checking Node.js…"
 if node_supported; then
     _node_ver=$(node --version 2>/dev/null || echo "v0")
@@ -418,7 +436,9 @@ cd "$KIROCREW_APP_DIR"
 # ── Frontend (npm + vite) ──
 # Vite emits to website/dist; we stage it into src/kiro_crew/static/dist
 # where setup.py copies it into the package at install time.
-if has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
+if [ "$PREBUILT_FRONTEND" = "1" ]; then
+    ok "Frontend: using the prebuilt dashboard in src/kiro_crew/static/dist"
+elif has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
     info "Building frontend (website/)…"
     _fe_log="$(mktemp)"
     (

@@ -654,6 +654,8 @@ HOME_DEFAULT_SIZE = "light"
 #: What a home card says about each size it can offer: a plain label, and a note
 #: code for what the size runs well (the dashboard words each code).
 HOME_SIZE_OFFERS: dict[str, dict[str, str]] = {
+    "lite": {"label": "Lite", "note": "lite_tradeoffs"},
+    "economy": {"label": "Economy", "note": "all_on"},
     "starter": {"label": "Starter", "note": "free_plan_credits"},
     "small": {"label": "Small", "note": "few_chats"},
     "light": {"label": "Standard", "note": "many_chats"},
@@ -664,8 +666,8 @@ HOME_SIZE_OFFERS: dict[str, dict[str, str]] = {
 #: gets the Free plan's list: a new account starts on it, and Starter builds on
 #: every plan. Adding a size is a tier in ``cloud/sizes.py`` plus an entry here.
 HOME_PLAN_SIZES: dict[str, tuple[tuple[str, ...], str]] = {
-    "FREE": (("starter", "light"), "starter"),
-    "PAID": (("small", "light", "starter"), "small"),
+    "FREE": (("lite", "starter", "light"), "starter"),
+    "PAID": (("lite", "economy", "small", "light", "starter"), "small"),
 }
 _HOME_PLAN_NOT_KNOWN = "FREE"
 _WEEKS_PER_MONTH = 52 / 12

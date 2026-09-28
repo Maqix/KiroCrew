@@ -3006,6 +3006,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             POOL_TTL_SECS_MAX,
         ),
         eager_spawn=bool(session_data.get("eager_spawn", True)),
+        lazy_background=bool(session_data.get("lazy_background", False)),
         archive_retention_days=_archive_retention_days(session_data),
         watchdog_rss_max_mb=_safe_int(
             session_data.get("watchdog_rss_max_mb", _sections.DEFAULT_WATCHDOG_RSS_MAX_MB),

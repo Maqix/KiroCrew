@@ -12,7 +12,9 @@ equivalent and matches how this repo already guards its i18n catalogs: the dupli
 stays, drifting becomes unmergeable.
 
 Only the *facts* are compared. The copy (tier names, the sub-agent headline) is
-deliberately frontend-owned, because it is translated.
+deliberately frontend-owned, because it is translated. The tiers only the first-run
+home card offers (``sizes.HOME_CARD_ONLY_TIER_KEYS``) are not in the panel: that card
+renders their facts from its payload, so there is no second copy to drift.
 """
 
 from __future__ import annotations
@@ -62,18 +64,25 @@ def _panel_tiers() -> dict[str, dict[str, object]]:
     return found
 
 
+_PANEL_TIER_KEYS = sorted(set(sizes.TIERS_BY_KEY) - set(sizes.HOME_CARD_ONLY_TIER_KEYS))
+
+
 def test_the_panel_tables_were_parsed() -> None:
     """Guard the guard: a shape change that defeats the regex must not pass silently."""
     parsed = _panel_tiers()
     assert parsed, f"parsed no size rows from {PANEL.name} — the literal shape changed"
     # Both lanes are present, so a dropped table cannot look like agreement.
-    assert len(parsed) == len(sizes.TIERS_BY_KEY), (
+    assert sorted(parsed) == _PANEL_TIER_KEYS, (
         f"{PANEL.name} declares {sorted(parsed)}; sizes.py declares "
-        f"{sorted(sizes.TIERS_BY_KEY)} — one side added or removed a tier"
+        f"{_PANEL_TIER_KEYS} for it — one side added or removed a tier"
     )
 
 
-@pytest.mark.parametrize("key", sorted(sizes.TIERS_BY_KEY))
+def test_home_card_only_tiers_are_real_tiers() -> None:
+    assert set(sizes.HOME_CARD_ONLY_TIER_KEYS) <= set(sizes.TIERS_BY_KEY)
+
+
+@pytest.mark.parametrize("key", _PANEL_TIER_KEYS)
 def test_panel_tier_matches_sizes_py(key: str) -> None:
     parsed = _panel_tiers()
     assert key in parsed, f"{key} is launchable but has no card in {PANEL.name}"

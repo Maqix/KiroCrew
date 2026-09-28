@@ -1,13 +1,25 @@
 """Instance size tiers for the cloud launcher (constants — no magic numbers).
 
 Measured with a real kiro-cli: an idle gateway is about 1.3 GB, each
-open chat adds about 0.5 GB and stays alive after its last turn, three chats plus
-a sub-agent peak at 3.7 GB, and the on-box dashboard build peaks at 2.6 GB. So
-8 GB carries the main chat, a few other chats and scheduled jobs, and 2 GB does
-not carry the build: nothing below 8 GB is offered.
+open chat adds about 0.4-0.5 GB and stays alive after its last turn, three chats
+plus a sub-agent peak at 3.7 GB, and the on-box dashboard build peaks at 2.6 GB.
+So 8 GB carries the main chat, a few other chats and scheduled jobs.
 
-**Small** (``t4g.large``, arm64, 2 vCPU, 8 GB) is the cheapest tier that fits, on
-the paid plan. **Starter** is the one tier a new AWS account's Free plan allows:
+Below 8 GB a tier leans on two things. The launcher ships the dashboard it
+built (``cloud/source.py``), so the home runs no build; and the tier's
+``home_profile`` slims what the home runs, set by the template in the home's
+own config and unit:
+
+* **Lite** (``t4g.small``, 2 GB, ``PROFILE_LITE``) turns off embeddings (idle
+  falls to about 0.55 GB; memory search is keyword-only) and local
+  speech-to-text, starts the background session on first use, spawns no chat
+  before its first message, and ends a chat idle for 15 minutes. About three
+  things at once. Free-plan eligible.
+* **Economy** (``t4g.medium``, 4 GB, ``PROFILE_ECONOMY``) keeps everything on and
+  ends a chat idle for 30 minutes. About six things at once. Paid plan.
+
+**Small** (``t4g.large``, arm64, 2 vCPU, 8 GB) is the cheapest full tier, on
+the paid plan. **Starter** is the full tier a new AWS account's Free plan allows:
 its EC2 runs free-tier types only, and ``m7i-flex.large`` (x86_64, 2 vCPU, 8 GB)
 is the smallest of those that fits (``free_plan_ok``). Which tiers a home card
 offers on which plan is data in ``setup_cards.HOME_PLAN_SIZES``.
@@ -40,6 +52,11 @@ from dataclasses import dataclass
 ARCH_ARM64 = "arm64"
 ARCH_X86_64 = "x86_64"
 
+# The template's HomeProfile values: what a home of the tier runs.
+PROFILE_STANDARD = "standard"
+PROFILE_LITE = "lite"
+PROFILE_ECONOMY = "economy"
+
 
 @dataclass(frozen=True)
 class SizeTier:
@@ -56,6 +73,9 @@ class SizeTier:
     recommended: bool = False
     #: Launchable on a new AWS account's Free plan, whose EC2 allows free-tier types only.
     free_plan_ok: bool = False
+    #: The template's HomeProfile: PROFILE_STANDARD, or a slimmed PROFILE_LITE /
+    #: PROFILE_ECONOMY for a tier below 8 GB.
+    home_profile: str = PROFILE_STANDARD
 
     def summary(self) -> str:
         """One-line human summary for menus and confirmations."""
@@ -72,6 +92,31 @@ class SizeTier:
 # — the ladder was raised (8 GB retired) but the keys did not change, so existing
 # --size values and saved configs keep resolving.
 _TIERS: tuple[SizeTier, ...] = (
+    # The two slimmed tiers, on burstable Graviton. Lite's type is on the Free
+    # plan's list; Economy's is not.
+    SizeTier(
+        key="lite",
+        label="Lite",
+        instance_type="t4g.small",
+        arch=ARCH_ARM64,
+        vcpu=2,
+        ram_gb=2,
+        disk_gb=20,
+        approx_usd_per_hr=0.0168,
+        free_plan_ok=True,
+        home_profile=PROFILE_LITE,
+    ),
+    SizeTier(
+        key="economy",
+        label="Economy",
+        instance_type="t4g.medium",
+        arch=ARCH_ARM64,
+        vcpu=2,
+        ram_gb=4,
+        disk_gb=20,
+        approx_usd_per_hr=0.0336,
+        home_profile=PROFILE_ECONOMY,
+    ),
     # The Free plan's tier: x86_64 (the template's Architecture=x86_64 AMI path),
     # priced at us-east-1 / us-east-2 on-demand; other regions run up to ~$87/mo.
     SizeTier(
@@ -163,6 +208,11 @@ _TIERS: tuple[SizeTier, ...] = (
 TIERS_BY_KEY: dict[str, SizeTier] = {t.key: t for t in _TIERS}
 
 DEFAULT_TIER_KEY = "balanced"
+
+# The tiers only the first-run home card offers (``setup_cards.HOME_PLAN_SIZES``).
+# That card renders each tier's facts from its payload, so the Settings launcher,
+# which keeps its own copy of the other tiers' shapes, does not list them.
+HOME_CARD_ONLY_TIER_KEYS = ("lite", "economy", "small", "starter")
 
 # The tiers offered in the interactive picker, in display order (the x86 lane is
 # reachable via --size but kept out of the default 3-choice menu for simplicity).

@@ -509,7 +509,7 @@ class TestTheCardShowsWhatWasIssued:
 
 
 class TestAnUntrackedBuild:
-    """A build the card can no longer follow is stopped, not left running unseen."""
+    """A build the card cannot follow is stopped, not left running unseen."""
 
     @pytest.fixture(autouse=True)
     def _fast_polls(self, monkeypatch):

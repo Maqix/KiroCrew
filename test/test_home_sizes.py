@@ -156,8 +156,9 @@ class TestSizeOptions:
     def test_a_free_plan_defaults_to_starter_with_its_credit(self, monkeypatch):
         facts = ("eu-north-1", {"type": "FREE", "credits_usd": 187.5})
         payload, private = _payload(monkeypatch, reachable=True, facts=facts)
-        assert [o["key"] for o in payload["size_options"]] == ["starter", "light"]
-        starter, standard = payload["size_options"]
+        # Cheapest first: Lite, Starter (both Free-plan types), then Standard.
+        assert [o["key"] for o in payload["size_options"]] == ["lite", "starter", "light"]
+        _lite, starter, standard = payload["size_options"]
         assert (starter["instance_type"], starter["vcpu"], starter["ram_gb"]) == (
             "m7i-flex.large",
             2,
@@ -175,13 +176,13 @@ class TestSizeOptions:
         assert payload["region"] == "eu-north-1"
         assert private["settings"]["region"] == "eu-north-1"
 
-    def test_a_paid_plan_leads_with_small(self, monkeypatch):
+    def test_a_paid_plan_preselects_small(self, monkeypatch):
         payload, _ = _payload(monkeypatch, reachable=True, facts=("", {"type": "PAID"}))
         options = payload["size_options"]
-        # Cheapest first: Small, then Standard. Starter costs more than Small, so a
-        # paid account is not offered it.
-        assert [o["key"] for o in options] == ["small", "light"]
-        small = options[0]
+        # Cheapest first: Lite, Economy, Small, then Standard. Starter costs more
+        # than Small, so a paid account is not offered it; Lite costs less, so it is.
+        assert [o["key"] for o in options] == ["lite", "economy", "small", "light"]
+        small = options[2]
         assert (small["label"], small["instance_type"], small["vcpu"], small["ram_gb"]) == (
             "Small",
             "t4g.large",
@@ -189,7 +190,8 @@ class TestSizeOptions:
             8,
         )
         assert small["note"] == "few_chats" and small["free_plan_ok"] is False
-        assert small["monthly_usd"] < options[1]["monthly_usd"]
+        assert small["monthly_usd"] < options[3]["monthly_usd"]
+        assert [o["monthly_usd"] for o in options] == sorted(o["monthly_usd"] for o in options)
         assert payload["size_default"] == "small"
         assert payload["region"] == "us-east-1"
 
@@ -209,8 +211,26 @@ class TestSizeOptions:
         )
         monkeypatch.setitem(sizes.TIERS_BY_KEY, "starter", cheap)
         options, default = sc.home_size_options({"type": "PAID"})
-        assert [o["key"] for o in options] == ["starter", "small", "light"]
+        assert [o["key"] for o in options] == ["lite", "economy", "starter", "small", "light"]
         assert default == "small"
+
+    def test_lite_says_what_it_gives_up_and_what_the_credit_buys(self):
+        options, _ = sc.home_size_options({"type": "FREE", "credits_usd": 100})
+        lite = options[0]
+        assert (lite["key"], lite["instance_type"], lite["ram_gb"]) == ("lite", "t4g.small", 2)
+        assert lite["note"] == "lite_tradeoffs" and lite["free_plan_ok"] is True
+        # About $14 a month with its disk, so $100 of credit lasts about 30 weeks.
+        assert lite["monthly_usd"] == sc.monthly_estimate_usd("lite") == 14
+        assert lite["credit_weeks"] == 30
+
+    def test_economy_is_paid_plan_only(self):
+        free, _ = sc.home_size_options({"type": "FREE"})
+        paid, _ = sc.home_size_options({"type": "PAID"})
+        assert "economy" not in [o["key"] for o in free]
+        economy = next(o for o in paid if o["key"] == "economy")
+        assert (economy["instance_type"], economy["ram_gb"]) == ("t4g.medium", 4)
+        assert economy["note"] == "all_on" and economy["free_plan_ok"] is False
+        assert economy["monthly_usd"] == 26
 
     def test_the_offers_are_data(self):
         # Every offered size is a tier with a label and a note; each plan's default
@@ -231,7 +251,7 @@ class TestSizeOptions:
         monkeypatch.setattr(local_signin, "kiro_signs_in_with_builder_id", lambda: False)
         payload, _ = setup_flow._home_payload(sc.build_home({"region": "us-east-1"}))
         # A plan not known yet gets the Free plan's list: a new account starts on it.
-        assert [o["key"] for o in payload["size_options"]] == ["starter", "light"]
+        assert [o["key"] for o in payload["size_options"]] == ["lite", "starter", "light"]
         assert payload["size_default"] == "starter" and "plan" not in payload
 
 

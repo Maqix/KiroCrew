@@ -211,7 +211,7 @@ class TestKickoff:
             raise RuntimeError("no runtime")
 
         monkeypatch.setattr(setup_flow, "_dispatch_envelope_turn", _boom)
-        monkeypatch.setattr(setup_flow, "_kickoff_facts", lambda: [])
+        monkeypatch.setattr(setup_flow, "_kickoff_facts", lambda slot_key="": [])
         await setup_flow.start_first_run_turn(state, slot)
         assert _notices(slot) == [{"kind": SETUP_STALLED_KIND, "reason": "kickoff_failed"}]
 
@@ -286,7 +286,7 @@ class TestRetry:
             calls.append((slot.key, inject_kind))
 
         monkeypatch.setattr(setup_flow, "_dispatch_envelope_turn", _fake)
-        monkeypatch.setattr(setup_flow, "_kickoff_facts", lambda: [])
+        monkeypatch.setattr(setup_flow, "_kickoff_facts", lambda slot_key="": [])
         return calls
 
     @pytest.mark.asyncio

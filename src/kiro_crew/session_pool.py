@@ -258,11 +258,15 @@ class WarmSessionPool:
 
         self._owner._session_map.prune()
         self._pool_started = True
+        # session.lazy_background leaves the background session to its first
+        # use (SessionManager.get_or_create), for a host with little memory.
+        lazy_background = getattr(self._owner._cfg.session, "lazy_background", False) is True
 
         if not blocking:
 
             async def _start_bg_and_pool() -> None:
-                await self._owner._ensure_background()
+                if not lazy_background:
+                    await self._owner._ensure_background()
                 await self._owner._fill_warm_pool()
                 if self._pool_size:
                     self._pool_health_task = asyncio.create_task(self._owner._pool_health_loop())
@@ -275,8 +279,11 @@ class WarmSessionPool:
             self._deps.logger.info("Background session starting (non-blocking)")
             return
 
-        await self._owner._ensure_background()
-        self._deps.logger.info("Background session ready")
+        if lazy_background:
+            self._deps.logger.info("Background session starts on first use")
+        else:
+            await self._owner._ensure_background()
+            self._deps.logger.info("Background session ready")
 
         if self._pool_size:
             task = asyncio.create_task(self._owner._fill_warm_pool())

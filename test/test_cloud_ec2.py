@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
+import sys
+import tarfile
 
 import pytest
 
@@ -381,9 +385,11 @@ class TestTemplate:
 
     def test_bootstrap_installs_voice_extra_before_gateway_boot(self):
         # Remote instances need the Transcribe SDK in their venv before the
-        # gateway imports boto3. Keep both the first attempt and retry aligned.
+        # gateway imports boto3. Keep both the first attempt and retry aligned;
+        # the arguments come from the home profile (see TestHomeProfile).
         text = ec2.load_template()
-        assert text.count("bash install.sh --voice") == 2
+        assert text.count("bash install.sh $INSTALL_ARGS") == 2
+        assert "INSTALL_ARGS=--voice;" in text
 
     def test_instance_enforces_imdsv2(self):
         text = ec2.load_template()
@@ -535,6 +541,7 @@ class TestUserDataSize:
         "AWS::AccountId": "1" * 12,
         "AWS::Region": "ap-southeast-99",
         "AWS::StackName": "s" * 128,
+        "HomeProfile": "standard",
     }
 
     def _raw_userdata(self) -> str:
@@ -590,6 +597,127 @@ class TestUserDataSize:
         )
 
 
+def _userdata_snippet(first: str, last: str) -> str:
+    """The UserData lines from the one starting with *first* to the next starting with *last*."""
+    lines = [line.strip() for line in ec2.load_template().splitlines()]
+    start = next(i for i, line in enumerate(lines) if line.startswith(first))
+    end = next(i for i in range(start, len(lines)) if lines[i].startswith(last))
+    return "\n".join(lines[start : end + 1])
+
+
+_POSIX_SHELL = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="runs a UserData snippet in bash",
+)
+
+
+def _bash(script: str) -> str:
+    done = subprocess.run(
+        ["bash", "-c", script], capture_output=True, encoding="utf-8", timeout=30, check=True
+    )
+    return done.stdout
+
+
+class TestPrebuiltDashboard:
+    """A source tarball that carries the built dashboard skips Node and the build."""
+
+    def test_the_tarball_is_fetched_and_listed_before_the_node_step(self):
+        text = ec2.load_template()
+        fetch = text.index('aws s3 cp "s3://${SourceBucket}/${SourceKey}" "$SRC_TGZ"')
+        listed = text.index('tar -tzf "$SRC_TGZ" | grep -qx')
+        gate = text.index('if [ "$PREBUILT" = 1 ]; then')
+        node = text.index('echo "--- installing Node.js ---"')
+        kcfetch = text.index("cat > /tmp/kcfetch.sh <<KCFETCH")
+        assert fetch < listed < gate < node < kcfetch
+        # The fetch script reuses that download instead of fetching again.
+        assert text.count("aws s3 cp") == 1
+        assert 'tar -xzf "$SRC_TGZ" -C kirocrew' in text
+
+    def test_install_sh_is_told_and_the_dashboard_is_still_verified(self):
+        text = ec2.load_template()
+        assert "KIROCREW_PREBUILT_FRONTEND=$PREBUILT" in text
+        # Prebuilt or built, a home without static/dist/index.html still fails.
+        assert 'DIST_INDEX="$RUN_HOME/kirocrew/src/kiro_crew/static/dist/index.html"' in text
+        assert 'if [ ! -f "$DIST_INDEX" ]; then' in text
+        assert text.index("KIROCREW_PREBUILT_FRONTEND") < text.index("DIST_INDEX=")
+
+    @_POSIX_SHELL
+    @pytest.mark.parametrize("with_dashboard", [True, False])
+    def test_the_listing_finds_what_source_py_ships(self, tmp_path, with_dashboard):
+        from kiro_crew.cloud import source
+
+        tree = tmp_path / "tree"
+        (tree / "src" / "kiro_crew").mkdir(parents=True)
+        (tree / "src" / "kiro_crew" / "__init__.py").write_text("", encoding="utf-8")
+        archive = tmp_path / "base.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(tree / "src" / "kiro_crew" / "__init__.py", arcname="src/kiro_crew/__init__.py")
+        if with_dashboard:
+            dist = tree / source.PREBUILT_DASHBOARD
+            (dist / "assets").mkdir(parents=True)
+            (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+            (dist / "assets" / "app.js").write_text("", encoding="utf-8")
+            archive = source._with_prebuilt_dashboard(archive, tree, dist)
+        listing = _userdata_snippet("tar -tzf", "tar -tzf")
+        out = _bash(f'SRC_TGZ="{archive}"; PREBUILT=0\n{listing}\necho "$PREBUILT"')
+        assert out.strip() == ("1" if with_dashboard else "0")
+
+
+class TestHomeProfile:
+    """What a slimmed size tier changes on its home, set from HomeProfile."""
+
+    def test_the_parameter_is_a_closed_set(self):
+        text = ec2.load_template()
+        block = re.search(r"  HomeProfile:\n(?:    .+\n|      .+\n)+", text)
+        assert block, "HomeProfile parameter missing"
+        assert "AllowedValues: [standard, lite, economy]" in block.group(0)
+        assert "Default: standard" in block.group(0)
+
+    def _profile(self, profile: str) -> tuple[str, str, str]:
+        case = _userdata_snippet("INSTALL_ARGS=--voice;", "esac").replace("${HomeProfile}", profile)
+        out = _bash(case + '\nprintf "%s|%s|%s" "$INSTALL_ARGS" "$KC_SET" "$UNIT_ENV"')
+        install_args, kc_set, unit_env = out.split("|")
+        return install_args, kc_set, unit_env
+
+    @_POSIX_SHELL
+    def test_standard_changes_nothing(self):
+        assert self._profile("standard") == ("--voice", "", "")
+
+    @_POSIX_SHELL
+    def test_lite_slims_the_home(self):
+        install_args, kc_set, unit_env = self._profile("lite")
+        assert install_args == ""  # no voice extra: no local speech-to-text
+        assert unit_env == "Environment=KIROCREW_SKIP_MODEL_DOWNLOAD=1"
+        assert kc_set.split() == [
+            "session.eager_spawn=false",
+            "session.lazy_background=true",
+            "session.timeout_secs=900",
+        ]
+
+    @_POSIX_SHELL
+    def test_economy_only_shortens_the_idle_timeout(self):
+        assert self._profile("economy") == ("--voice", "session.timeout_secs=1800", "")
+
+    def test_every_setting_is_a_real_config_key(self):
+        from kiro_crew.config import KiroCrewConfig
+
+        text = ec2.load_template()
+        d = KiroCrewConfig().to_dict()
+        for key in re.findall(r"session\.[a-z_]+(?==)", text):
+            section, field = key.split(".")
+            assert field in d[section], key
+
+    def test_the_settings_and_the_unit_line_are_applied(self):
+        text = ec2.load_template()
+        apply = text.index("for kv in $KC_SET; do")
+        assert "config set $(echo \"$kv\" | tr = ' ')" in text
+        # Written after the install and before the gateway first starts.
+        assert text.index("kirocrew setup --agent-only") < apply
+        assert apply < text.index("cat > /etc/systemd/system/kirocrew.service <<UNIT")
+        unit = text[text.index("[Service]\n          Type=simple") :]
+        assert "Environment=KIROCREW_PORT=${DashboardPort}\n          $UNIT_ENV\n" in unit
+
+
 _BOUNDARY_ARN = "arn:aws:iam::123456789012:policy/kirocrew-ec2-boundary"
 
 
@@ -611,11 +739,25 @@ class TestBuildDeployArgv:
         assert "VpcId=vpc-1" in argv
         assert "SubnetId=subnet-1" in argv
         assert "StackTag=t1" in argv
+        assert "HomeProfile=standard" in argv
         # the pre-created shared boundary ARN is passed to the template param
         assert f"PermissionsBoundaryArn={_BOUNDARY_ARN}" in argv
         # discovery tags applied to the stack
         assert "kirocrew:managed=true" in argv
         assert "kirocrew:instance=t1" in argv
+
+    @pytest.mark.parametrize("key", ["lite", "economy"])
+    def test_a_slimmed_tier_passes_its_home_profile(self, key):
+        tier = sizes.get_tier(key)
+        argv = ec2.build_deploy_argv(
+            tag="t1",
+            tier=tier,
+            vpc_id="v",
+            subnet_id="s",
+            permissions_boundary_arn=_BOUNDARY_ARN,
+        )
+        assert f"HomeProfile={key}" in argv
+        assert f"InstanceType={tier.instance_type}" in argv
 
     def test_source_params_included_when_set(self):
         tier = sizes.get_tier("balanced")

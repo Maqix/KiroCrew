@@ -280,3 +280,11 @@
 {"timestamp":"2026-09-28T20:05:41.384088693Z","action":"edit","task_id":100,"detail":"PN.16 Home size options the owner chooses on the card (Free vs Paid plan)"}
 {"timestamp":"2026-09-28T20:16:41.418020233Z","action":"edit","task_id":98,"detail":"PN.15 A failed home card must stop the build it started"}
 {"timestamp":"2026-09-28T20:16:41.418223019Z","action":"claim","task_id":98,"detail":"lead"}
+{"timestamp":"2026-09-28T21:10:06.579329467Z","action":"edit","task_id":102,"detail":"PN.17 Skip the on-box dashboard build (prebuilt dashboard in the home)"}
+{"timestamp":"2026-09-28T21:10:06.579515875Z","action":"claim","task_id":102,"detail":"aws-signin-card"}
+{"timestamp":"2026-09-28T21:10:06.645776466Z","action":"edit","task_id":103,"detail":"PN.18 Lite (2 GB, ~$12) and Economy (4 GB, ~$25) homes"}
+{"timestamp":"2026-09-28T21:10:06.64605451Z","action":"claim","task_id":103,"detail":"aws-signin-card"}
+{"timestamp":"2026-09-28T21:10:23.70377561Z","action":"edit","task_id":102,"detail":"PN.17 Skip the on-box dashboard build (prebuilt dashboard in the home)"}
+{"timestamp":"2026-09-28T21:10:23.704047867Z","action":"release","task_id":102,"detail":"aws-signin-card"}
+{"timestamp":"2026-09-28T21:10:23.704574507Z","action":"edit","task_id":103,"detail":"PN.18 Lite (2 GB, ~$12) and Economy (4 GB, ~$25) homes"}
+{"timestamp":"2026-09-28T21:10:23.704729678Z","action":"release","task_id":103,"detail":"aws-signin-card"}

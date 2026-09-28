@@ -274,7 +274,15 @@ persistence alone cannot claim application.
 `BACKGROUND_KEY = "_bg"` is a persistent shared session for lightweight
 background work. It is:
 
-- **Created on startup** by `start_pool()` alongside the warm pool
+- **Created on startup** by `start_pool()` alongside the warm pool, unless
+  `session.lazy_background` is on (default off; `restart=True`, since only
+  `start_pool` reads it at boot). Then `start_pool` skips it and
+  `SessionManager.get_or_create(BACKGROUND_KEY)` starts it first, through
+  `_ensure_background`, so it is still created as `BACKGROUND_AGENT` rather than
+  as a caller's default agent. The provider-backed path already calls
+  `_ensure_background` itself. A small cloud home (cloud.md "Slimmed homes")
+  turns it on to keep the process's ~0.25 GB until something needs it
+  (`test_session_pool.py::TestLazyBackground`)
 - **Never expired** by idle cleanup (`_expire_idle` skips it)
 - **Serialized** by the per-session semaphore (one background task at a time)
   — applies to the **non-kiro** `_bg` path only; see "Multiplexed _bg runtime"
@@ -2983,7 +2991,8 @@ dashboard-turn-loop refactor.
 ```
 start_pool()
   ├── _spawn_warm() × pool_size   → warm pool queue (instant assignment)
-  └── _ensure_background()        → BACKGROUND_KEY session (persistent)
+  └── _ensure_background()        → BACKGROUND_KEY session (persistent);
+                                     on first use instead when session.lazy_background
 ```
 
 ## Removing a session from the registry: record the end

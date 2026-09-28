@@ -385,25 +385,119 @@ def _tar_fallback(root: Path) -> Path:
     return Path(out.name)
 
 
+#: Where the checkout's built dashboard is staged (install.sh copies website/dist
+#: here). It is gitignored, so neither packaging path ships it by itself.
+PREBUILT_DASHBOARD = Path("src") / "kiro_crew" / "static" / "dist"
+#: The frontend sources a built dashboard must be no older than to be shipped.
+_DASHBOARD_SOURCES = (Path("website") / "src", Path("website") / "index.html")
+
+
+def _newest_mtime(path: Path) -> Optional[float]:
+    """The newest modification time of *path* or any file under it, if any."""
+    if path.is_file():
+        return path.stat().st_mtime
+    newest: Optional[float] = None
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_DIRS]
+        for name in filenames:
+            try:
+                mtime = (Path(dirpath) / name).stat().st_mtime
+            except OSError:
+                continue
+            newest = mtime if newest is None or mtime > newest else newest
+    return newest
+
+
+def prebuilt_dashboard(root: Path) -> Optional[Path]:
+    """The checkout's built dashboard when it is current, else ``None``.
+
+    Current means ``index.html`` is present and no older than any frontend
+    source file: a dashboard built before the last edit would ship a stale UI,
+    so then the home builds it itself, as it always did.
+    """
+    dist = root / PREBUILT_DASHBOARD
+    index = dist / "index.html"
+    if not index.is_file() or index.is_symlink():
+        return None
+    built = index.stat().st_mtime
+    for rel in _DASHBOARD_SOURCES:
+        newest = _newest_mtime(root / rel)
+        if newest is not None and newest > built:
+            logger.info("the built dashboard is older than %s; the home will build it", rel)
+            return None
+    return dist
+
+
+def _with_prebuilt_dashboard(archive: Path, root: Path, dist: Path) -> Path:
+    """Rewrite *archive* with the built dashboard's files added under their repo path.
+
+    Regular files only (a symlink is never followed out of the tree), and the
+    credential-name filters still apply. The home then skips Node and the build.
+    """
+    out = tempfile.NamedTemporaryFile(  # noqa: SIM115 - handed to caller
+        prefix="kirocrew-src-", suffix=".tar.gz", delete=False
+    )
+    out.close()
+    prefix = PREBUILT_DASHBOARD.as_posix() + "/"
+    try:
+        with (
+            tarfile.open(archive, "r:gz") as src,
+            tarfile.open(out.name, "w:gz", compresslevel=6) as dst,
+        ):
+            for member in src:
+                if member.name.startswith(prefix):
+                    continue
+                dst.addfile(member, src.extractfile(member) if member.isreg() else None)
+            for path in sorted(dist.rglob("*")):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                rel = path.relative_to(root).as_posix()
+                base = path.name
+                if (
+                    rel.endswith(_EXCLUDE_SUFFIXES)
+                    or base in _EXCLUDE_NAMES
+                    or base == _EXCLUDE_ENV_NAME
+                    or base.startswith(_EXCLUDE_ENV_PREFIX)
+                ):
+                    continue
+                info = dst.gettarinfo(str(path), arcname=rel)
+                with path.open("rb") as fh:
+                    dst.addfile(info, fh)
+    except BaseException:
+        Path(out.name).unlink(missing_ok=True)
+        raise
+    archive.unlink(missing_ok=True)
+    return Path(out.name)
+
+
 def build_source_tarball(root: Optional[Path] = None) -> Path:
     """Package the local source tree into a gzip tarball; return its path.
 
     Uses ``git archive HEAD`` (fast) for a clean checkout, but if the tracked
     working tree is DIRTY (uncommitted edits to tracked files) it uses the
     ``git ls-files`` tar path instead — otherwise the launch would silently ship
-    stale last-commit code. Both paths ship only tracked files.
+    stale last-commit code. Both paths ship only tracked files, plus the built
+    dashboard when it is current (:func:`prebuilt_dashboard`), so the home does
+    not need Node or the build's memory.
     """
     root = root or repo_root()
     if _tracked_tree_is_dirty(root):
         _refuse_half_a_working_tree(root)
         logger.info("working tree has uncommitted tracked changes; packaging the working tree")
-        return _tar_fallback(root)
-    archive = _use_git_archive(root)
-    if archive is not None:
-        logger.info("packaged source via git archive: %s", archive)
+        archive = _tar_fallback(root)
+    else:
+        found = _use_git_archive(root)
+        if found is not None:
+            logger.info("packaged source via git archive: %s", found)
+            archive = found
+        else:
+            logger.info("git archive unavailable; using tracked-file tarfile fallback")
+            archive = _tar_fallback(root)
+    dist = prebuilt_dashboard(root)
+    if dist is None:
         return archive
-    logger.info("git archive unavailable; using tracked-file tarfile fallback")
-    return _tar_fallback(root)
+    logger.info("shipping the built dashboard (%s); the home skips its build", PREBUILT_DASHBOARD)
+    return _with_prebuilt_dashboard(archive, root, dist)
 
 
 def _account_id(profile: str, region: str) -> str:

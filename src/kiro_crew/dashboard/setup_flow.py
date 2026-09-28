@@ -1318,7 +1318,7 @@ async def _watch_home(
 
 
 async def _stop_untracked_build(state: "DashboardState", card_id: str, job_id: str) -> None:
-    """The card can no longer follow its build: stop the build, and say so.
+    """The card cannot follow its build: stop the build, and say so.
 
     A build the owner cannot see is a build nobody would stop, and it creates
     billed AWS resources. So the build is cancelled the way the launch's own

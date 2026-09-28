@@ -1456,6 +1456,7 @@
         "pool_agent": "",
         "pool_ttl_secs": 1800,
         "eager_spawn": true,
+        "lazy_background": false,
         "archive_retention_days": 30,
         "watchdog_rss_max_mb": 1536
       }
@@ -1571,6 +1572,21 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "session.lazy_background",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Start Background Session on First Use",
+      "help": "Start the shared background session (titles, summaries, memory upkeep) the first time it is needed instead of when the gateway starts. Saves that process's memory on a small machine; the first background job after a start waits for its handshake.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
     },
     {
       "path": "session.archive_retention_days",

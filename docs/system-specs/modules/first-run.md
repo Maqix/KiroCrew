@@ -227,18 +227,24 @@ The sign-in is audited as `setup_card.aws_signin`, with its outcome word only.
 The card offers sizes and the owner picks one (`setup_cards.home_size_options`,
 the tiers in `cloud/sizes.py`), measured with a real kiro-cli: the idle gateway is
 1.3 GB, each open chat adds about 0.5 GB and stays alive, three chats plus a
-sub-agent peak at 3.7 GB, and the on-box dashboard build peaks at 2.6 GB.
+sub-agent peak at 3.7 GB, and the on-box dashboard build peaks at 2.6 GB. The
+two tiers below 8 GB run a slimmed home instead (the tier's `home_profile`; see
+cloud.md "Slimmed homes"), and count on the launcher shipping the dashboard it
+built (cloud.md "The prebuilt dashboard").
 
 | Option | Tier | Shape | About | Offered on |
 |---|---|---|---|---|
+| Lite | `lite` | `t4g.small`, arm64, 2 vCPU, 2 GB | $14/month | both (`free_plan_ok`); it gives up meaning-based memory search (keyword only), dictation (no local speech-to-text), a warm first reply after a quiet spell, and runs a few things at once, which its card line says |
+| Economy | `economy` | `t4g.medium`, arm64, 2 vCPU, 4 GB | $26/month | the paid plan; everything on, idle chats end after 30 minutes |
 | Small | `small` | `t4g.large`, arm64, 2 vCPU, 8 GB | $51/month | the paid plan (its default) |
 | Starter | `starter` | `m7i-flex.large`, x86_64, 2 vCPU, 8 GB | $72/month | the Free plan (its default; `free_plan_ok`: the Free plan's EC2 launches free-tier types only), and the paid plan only when it is no dearer than Small |
 | Standard | `light` | `t4g.xlarge`, arm64, 4 vCPU, 16 GB | $101/month | both; on the Free plan it is marked as needing the paid plan |
 
 Which sizes each plan gets, and its default, is data: `setup_cards.HOME_PLAN_SIZES`
 (per plan: the sizes and the preselected one) and `HOME_SIZE_OFFERS` (per size: a
-plain label and a note code the dashboard words: `free_plan_credits`,
-`few_chats`, `many_chats`). A size is a tier in `cloud/sizes.py` plus those
+plain label and a note code the dashboard words: `lite_tradeoffs`, `all_on`,
+`free_plan_credits`, `few_chats`, `many_chats`; `lite_tradeoffs` and
+`free_plan_credits` also name the credit's weeks when they are known). A size is a tier in `cloud/sizes.py` plus those
 entries. A plan not known yet (not signed in, or an unreadable plan) gets the
 Free plan's list, since a new account starts on it and Starter builds on every
 plan. The options are sorted cheapest first, and each carries `key`, `label`,

@@ -1039,6 +1039,8 @@ export const AWS_PLAN_UPGRADE_URL = 'https://docs.aws.amazon.com/awsaccountbilli
 export const AWS_VCPU_QUOTA_URL = 'https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A'
 
 const HOME_SIZE_LABEL_KEY: Record<string, string> = {
+  lite: 'components.setupCard.home_size_lite',
+  economy: 'components.setupCard.home_size_economy',
   starter: 'components.setupCard.home_size_starter',
   small: 'components.setupCard.home_size_small',
   light: 'components.setupCard.home_size_standard',
@@ -1071,6 +1073,15 @@ function HomeSizeOptions({ name, options, selected, onPick, planType, signedIn, 
         })
         : t('components.setupCard.home_size_starter_note')
     }
+    if (opt.note === 'lite_tradeoffs') {
+      return opt.credit_weeks !== null && opt.credits_usd !== null
+        ? t('components.setupCard.home_size_lite_note_credits', {
+          time: fmtUnit(opt.credit_weeks, 'week', { unitDisplay: 'long' }),
+          credits: fmtCurrency(opt.credits_usd, 'USD', { maximumFractionDigits: 0 }),
+        })
+        : t('components.setupCard.home_size_lite_note')
+    }
+    if (opt.note === 'all_on') return t('components.setupCard.home_size_economy_note')
     if (opt.note === 'few_chats') return t('components.setupCard.home_size_note_few_chats')
     if (opt.note === 'many_chats') return t('components.setupCard.home_size_standard_note')
     return ''

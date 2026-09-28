@@ -347,6 +347,134 @@ class TestBuildTarball:
         assert source.build_source_tarball(tmp_path) == sentinel
 
 
+def _dashboard_tree(root: Path, *, built_at: float, edited_at: float) -> Path:
+    """A checkout with frontend sources edited at *edited_at* and a dashboard built at *built_at*."""
+    import os
+
+    src = root / "website" / "src"
+    src.mkdir(parents=True)
+    (src / "App.tsx").write_text("export {}\n")
+    (root / "website" / "index.html").write_text("<div id=root></div>\n")
+    for path in (src / "App.tsx", root / "website" / "index.html"):
+        os.utime(path, (edited_at, edited_at))
+    dist = root / source.PREBUILT_DASHBOARD
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html>built</html>\n")
+    (dist / "assets" / "app.js").write_text("console.log(1)\n")
+    for path in (dist / "index.html", dist / "assets" / "app.js"):
+        os.utime(path, (built_at, built_at))
+    (root / "app.py").write_text("x = 1\n")
+    return dist
+
+
+def _base_archive(root: Path, names: list[str]) -> Path:
+    out = root / "base.tar.gz"
+    with tarfile.open(out, "w:gz") as tar:
+        for name in names:
+            tar.add(root / name, arcname=name)
+    return out
+
+
+class TestPrebuiltDashboard:
+    @pytest.fixture(autouse=True)
+    def _clean_tree(self, monkeypatch):
+        monkeypatch.setattr(source, "_tracked_tree_is_dirty", lambda root: False)
+
+    def _names(self, tarball: Path) -> list[str]:
+        with tarfile.open(tarball) as tf:
+            return tf.getnames()
+
+    def test_a_current_dashboard_ships_with_the_source(self, monkeypatch, tmp_path):
+        _dashboard_tree(tmp_path, built_at=2_000_000, edited_at=1_000_000)
+        base = _base_archive(tmp_path, ["app.py", "website/src/App.tsx"])
+        monkeypatch.setattr(source, "_use_git_archive", lambda root: base)
+        tarball = source.build_source_tarball(tmp_path)
+        try:
+            names = self._names(tarball)
+            assert "app.py" in names and "website/src/App.tsx" in names
+            assert "src/kiro_crew/static/dist/index.html" in names
+            assert "src/kiro_crew/static/dist/assets/app.js" in names
+            with tarfile.open(tarball) as tf:
+                assert tf.extractfile("src/kiro_crew/static/dist/index.html").read() == (
+                    b"<html>built</html>\n"
+                )
+        finally:
+            tarball.unlink()
+        assert not base.exists(), "the archive without the dashboard is replaced, not kept"
+
+    def test_a_dashboard_older_than_its_sources_stays_home(self, monkeypatch, tmp_path):
+        _dashboard_tree(tmp_path, built_at=1_000_000, edited_at=2_000_000)
+        base = _base_archive(tmp_path, ["app.py"])
+        monkeypatch.setattr(source, "_use_git_archive", lambda root: base)
+        assert source.prebuilt_dashboard(tmp_path) is None
+        tarball = source.build_source_tarball(tmp_path)
+        assert tarball == base
+        assert not any("static/dist" in n for n in self._names(tarball))
+
+    def test_no_dashboard_ships_nothing_extra(self, monkeypatch, tmp_path):
+        (tmp_path / "app.py").write_text("x = 1\n")
+        base = _base_archive(tmp_path, ["app.py"])
+        monkeypatch.setattr(source, "_use_git_archive", lambda root: base)
+        assert source.prebuilt_dashboard(tmp_path) is None
+        assert source.build_source_tarball(tmp_path) == base
+
+    def test_the_dirty_tree_path_ships_it_too(self, monkeypatch, tmp_path):
+        _dashboard_tree(tmp_path, built_at=2_000_000, edited_at=1_000_000)
+        monkeypatch.setattr(source, "_tracked_tree_is_dirty", lambda root: True)
+        monkeypatch.setattr(source, "_untracked_build_files", lambda root: [])
+        monkeypatch.setattr(source, "_git_tracked_files", lambda root: ["app.py"])
+        tarball = source.build_source_tarball(tmp_path)
+        try:
+            assert "src/kiro_crew/static/dist/index.html" in self._names(tarball)
+        finally:
+            tarball.unlink()
+
+    def test_symlinks_and_credential_names_are_left_out(self, monkeypatch, tmp_path):
+        dist = _dashboard_tree(tmp_path, built_at=2_000_000, edited_at=1_000_000)
+        outside = tmp_path / "outside-secret.txt"
+        outside.write_text("secret")
+        (dist / "link.txt").symlink_to(outside)
+        (dist / ".env").write_text("TOKEN=x")
+        (dist / "id_rsa").write_text("key")
+        base = _base_archive(tmp_path, ["app.py"])
+        monkeypatch.setattr(source, "_use_git_archive", lambda root: base)
+        tarball = source.build_source_tarball(tmp_path)
+        try:
+            names = self._names(tarball)
+            assert "src/kiro_crew/static/dist/index.html" in names
+            for left_out in ("link.txt", ".env", "id_rsa"):
+                assert not any(n.endswith(left_out) for n in names), left_out
+        finally:
+            tarball.unlink()
+
+    def test_a_symlinked_index_is_not_a_built_dashboard(self, tmp_path):
+        dist = _dashboard_tree(tmp_path, built_at=2_000_000, edited_at=1_000_000)
+        real = tmp_path / "elsewhere.html"
+        real.write_text("<html></html>")
+        (dist / "index.html").unlink()
+        (dist / "index.html").symlink_to(real)
+        assert source.prebuilt_dashboard(tmp_path) is None
+
+    def test_an_archived_copy_under_the_prefix_is_replaced_not_duplicated(
+        self, monkeypatch, tmp_path
+    ):
+        dist = _dashboard_tree(tmp_path, built_at=2_000_000, edited_at=1_000_000)
+        stale = tmp_path / "stale.html"
+        stale.write_text("<html>stale</html>")
+        base = tmp_path / "base.tar.gz"
+        with tarfile.open(base, "w:gz") as tar:
+            tar.add(tmp_path / "app.py", arcname="app.py")
+            tar.add(stale, arcname="src/kiro_crew/static/dist/index.html")
+        tarball = source._with_prebuilt_dashboard(base, tmp_path, dist)
+        try:
+            names = self._names(tarball)
+            assert names.count("src/kiro_crew/static/dist/index.html") == 1
+            with tarfile.open(tarball) as tf:
+                assert b"built" in tf.extractfile("src/kiro_crew/static/dist/index.html").read()
+        finally:
+            tarball.unlink()
+
+
 class TestBucketNaming:
     def test_bucket_name(self, monkeypatch):
         monkeypatch.setattr(source, "_account_id", lambda *a: "814959995281")

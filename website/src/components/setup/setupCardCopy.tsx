@@ -52,6 +52,8 @@ const ERROR_KEY = {
   home_size_needs_paid_plan: 'components.setupCard.error_home_size_needs_paid_plan',
   home_vcpu_quota_low: 'components.setupCard.error_home_vcpu_quota_low',
   home_spend_limit: 'components.setupCard.error_home_spend_limit',
+  // A build the home card lost track of was stopped (setup_flow._stop_untracked_build).
+  home_build_untracked: 'components.setupCard.error_home_build_untracked',
   // The live move-in's refusals (dashboard/setup_move_in.py). Each leaves the
   // card pending; the failed step's own detail on the card keeps the server's
   // specifics (the tunnel error, the home's refusal code).

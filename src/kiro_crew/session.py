@@ -2445,6 +2445,10 @@ class SessionManager:
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
         """Claim or allocate a session and return its held lease."""
+        if key == BACKGROUND_KEY and getattr(self._cfg.session, "lazy_background", False) is True:
+            # start_pool left it to its first use; start it as the background
+            # agent, as start_pool would have, not as a caller's default agent.
+            await self._ensure_background()
         return await self._allocation_boundary().get_or_create(
             key,
             agent=agent,

@@ -25,6 +25,15 @@ Parameters:
     MinValue: 20
     MaxValue: 1000
     Description: gp3 root volume size in GiB.
+  HomeProfile:
+    Type: String
+    Default: standard
+    AllowedValues: [standard, lite, economy]
+    Description: >-
+      What the size tier runs (sizes.SizeTier.home_profile). lite (2 GB) turns
+      off embeddings, local speech-to-text, the eager chat spawn and the boot
+      background session, and ends idle chats after 15 minutes; economy (4 GB)
+      ends them after 30. standard changes nothing.
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: VPC to launch into (the wizard passes the default VPC).
@@ -378,6 +387,28 @@ Resources:
       #   mid-transaction ("No such file: .../libbrotli-...rpm"), hence the
       #   clean-cache-and-retry on the first nodejs install failure.
       #   --allowerasing lets NodeSource's nodejs replace an AppStream node 18.
+      #   The script itself tries AppStream first, then a pinned official
+      #   nodejs.org tarball whose SHA-256 is checked before it is extracted
+      #   as root, avoiding dnf/NodeSource because AL2023's modular filtering
+      #   kept reinstalling the distro node 18; /usr/local/bin precedes
+      #   /usr/bin so the tarball shadows it.
+      # "Prebuilt dashboard": the launcher ships the dashboard it built
+      #   (src/kiro_crew/static/dist, only when it is newer than website/src;
+      #   cloud/source.py). Root downloads the S3 tarball BEFORE the Node step
+      #   and lists it: when it carries static/dist/index.html, Node is not
+      #   installed and install.sh runs with KIROCREW_PREBUILT_FRONTEND=1, so
+      #   neither npm ci nor the vite build (the ~2.6 GB first-boot peak and
+      #   most of its time) runs. That is what lets a 2 GB or 4 GB home build.
+      #   A cloned source never carries it and builds as before. The
+      #   "Dashboard build verification" below applies either way.
+      # "Home profile": HomeProfile comes from the size tier and slims what a
+      #   small home runs, through its own config and unit: lite installs
+      #   without the voice extra (no local speech-to-text), sets
+      #   KIROCREW_SKIP_MODEL_DOWNLOAD=1 in the unit (no embedding runtime or
+      #   model, so memory search is keyword-only), and writes
+      #   session.eager_spawn=false, session.lazy_background=true and
+      #   session.timeout_secs=900; economy writes session.timeout_secs=1800.
+      #   They are ordinary config keys, so the owner can change them later.
       # "kiro-cli": AL2023 ships glibc 2.34; the standard kiro-cli build needs
       #   glibc 2.39+, so the musl build is REQUIRED (validated on AL2023).
       #   The install step tolerates a nonzero exit (two installer invocations
@@ -394,7 +425,10 @@ Resources:
       #   emptied SourceBucket and took the git-clone branch. The `--` before
       #   the clone URL ends option parsing: defense-in-depth so a repo/ref
       #   value can't be interpreted as a git flag (both are AllowedPattern-
-      #   validated already; the separator costs nothing).
+      #   validated already; the separator costs nothing). sudo resets PATH to
+      #   secure_path, which can resolve `node` to the distro node 18 in
+      #   /usr/bin over the Node 22 tarball in /usr/local/bin, so the fetch
+      #   script prepends /usr/local/bin for the vite build.
       #   KIROCREW_REQUIRE_FRONTEND=1 makes install.sh exit non-zero on a
       #   failed frontend build (non-fatal by default, for local CLI users) --
       #   which is what lets the retry actually re-run it. install.sh is
@@ -437,16 +471,13 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          # Kiro Crew EC2 bootstrap (cloud-init, first boot, root). EC2 caps
-          # decoded UserData at 16384 bytes AFTER !Sub expansion, so this
-          # script carries only what the instance needs: the rationale for
-          # every non-obvious choice lives in the template comments right
-          # above UserData, keyed by the section names quoted below.
+          # Kiro Crew EC2 bootstrap (cloud-init, first boot, root). The why of
+          # each "quoted" section is in the rationale block above UserData.
           # No pipefail + plain-file logging: see "Logging" above.
           set -u
 
-          # cloud-init runs UserData once. Persist the already-rendered script and
-          # hand off immediately so a managed patch reboot can resume it on boot.
+          # cloud-init runs UserData once; persist it so a patch reboot resumes
+          # it: see "Reboot resume" above.
           BOOTSTRAP_SCRIPT=/usr/local/sbin/kirocrew-bootstrap
           BOOTSTRAP_STATE=/var/lib/kirocrew-bootstrap
           INSTALL_DONE=$BOOTSTRAP_STATE/install-complete
@@ -512,6 +543,13 @@ Resources:
           # Per-user tools: install as non-root; the systemd unit runs as it.
           RUN_USER=ec2-user
           RUN_HOME=/home/$RUN_USER
+          # What this size runs: see "Home profile" above.
+          INSTALL_ARGS=--voice; KC_SET=; UNIT_ENV=
+          case "${HomeProfile}" in
+            lite) INSTALL_ARGS=; UNIT_ENV=Environment=KIROCREW_SKIP_MODEL_DOWNLOAD=1
+              KC_SET="session.eager_spawn=false session.lazy_background=true session.timeout_secs=900" ;;
+            economy) KC_SET=session.timeout_secs=1800 ;;
+          esac
 
           # Insurance against a first-boot memory spike: see "Swap" above.
           echo "--- provisioning swap (headroom for the vite build) ---"
@@ -537,12 +575,22 @@ Resources:
             || echo "python3.12 unavailable from dnf; install.sh will provision one"
           dnf install -y ripgrep || echo "ripgrep unavailable (optional), continuing"
 
+          SRC_TGZ=/tmp/kirocrew-src.tar.gz
+          PREBUILT=0
+          rm -f "$SRC_TGZ"
+          if [ -n "${SourceBucket}" ]; then
+            echo "downloading source from s3://${SourceBucket}/${SourceKey}"
+            aws s3 cp "s3://${SourceBucket}/${SourceKey}" "$SRC_TGZ" || fail "source download from S3 failed"
+            chmod 644 "$SRC_TGZ"
+            # Carries the built dashboard? Then no Node: see "Prebuilt dashboard".
+            tar -tzf "$SRC_TGZ" | grep -qx 'src/kiro_crew/static/dist/index.html' && PREBUILT=1
+          fi
+
+          if [ "$PREBUILT" = 1 ]; then
+            echo "--- Node.js not needed: the source ships the built dashboard ---"
+          else
           echo "--- installing Node.js ---"
-          # The frontend build (vite 8 + rolldown) needs Node >=22; AL2023 ships
-          # node 18 (build dies with node:util/styleText). Try AppStream first, then
-          # fall back to a pinned official nodejs.org tarball -- we AVOID
-          # dnf/NodeSource because AL2023's modular filtering kept reinstalling the
-          # distro node 18. /usr/local/bin precedes /usr/bin so the tarball shadows it.
+          # Node >= 22, AppStream or a pinned nodejs.org tarball: see "Node.js".
           NODE_MAJOR_MIN=22
           command -v node >/dev/null 2>&1 || dnf install -y nodejs npm || true
           NODE_MAJOR=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p' | head -1)
@@ -572,6 +620,7 @@ Resources:
           [ "$NODE_MAJOR" -ge "$NODE_MAJOR_MIN" ] || fail "Node.js too old (major $NODE_MAJOR, need >=$NODE_MAJOR_MIN)"
           echo "node: $(command -v node) $(node --version 2>/dev/null || echo missing)"
           echo "npm:  $(command -v npm) $(npm --version 2>/dev/null || echo missing)"
+          fi
 
           echo "--- installing kiro-cli ---"
           # AL2023 glibc 2.34 is too old for the standard build: musl required.
@@ -596,16 +645,12 @@ Resources:
           cat > /tmp/kcfetch.sh <<KCFETCH
           #!/bin/bash
           set -e
-          # sudo resets PATH to secure_path, which can resolve `node` to the distro
-          # node 18 in /usr/bin over the Node 22 tarball in /usr/local/bin -- so the
-          # vite build would still fail. Prepend /usr/local/bin so the build sees 22.
+          # Node 22 over sudo's secure_path node 18: see "Source fetch" above.
           export PATH="/usr/local/bin:\$PATH"
           cd "$RUN_HOME"
           rm -rf kirocrew && mkdir kirocrew
-          if [ -n "${SourceBucket}" ]; then
-            echo "downloading source from s3://${SourceBucket}/${SourceKey}"
-            aws s3 cp "s3://${SourceBucket}/${SourceKey}" /tmp/kirocrew-src.tar.gz
-            tar -xzf /tmp/kirocrew-src.tar.gz -C kirocrew
+          if [ -f "$SRC_TGZ" ]; then
+            tar -xzf "$SRC_TGZ" -C kirocrew
           else
             echo "cloning ${KirocrewRepo}@${KirocrewRef}"
             rm -rf kirocrew
@@ -614,13 +659,13 @@ Resources:
           fi
           cd kirocrew
           # Make a failed frontend build fatal so the retry below re-runs it.
-          export KIROCREW_REQUIRE_FRONTEND=1
+          export KIROCREW_REQUIRE_FRONTEND=1 KIROCREW_PREBUILT_FRONTEND=$PREBUILT
           # One retry: first-boot contention can signal-kill the first build;
           # the warm re-run reliably succeeds (see "Source fetch" above).
-          if ! bash install.sh --voice; then
+          if ! bash install.sh $INSTALL_ARGS; then
             echo "install.sh failed on first attempt - settling then retrying once"
             sleep 20
-            bash install.sh --voice
+            bash install.sh $INSTALL_ARGS
           fi
           KCFETCH
           chmod +x /tmp/kcfetch.sh
@@ -628,11 +673,9 @@ Resources:
           sudo -u $RUN_USER bash /tmp/kcfetch.sh || fail "kirocrew source fetch or install failed"
 
           echo "--- verifying the dashboard SPA was actually built ---"
-          # A missing SPA means a green stack serving a dead dashboard, so it
-          # is FATAL, with the real build error grepped from the setup log
-          # into the failure reason: see "Dashboard build verification" above.
-          # NB: plain "$var" only in this whole script; any dollar-brace token,
-          # even in a comment, is parsed by !Sub and breaks change-set creation.
+          # A missing SPA is FATAL, with the build error from the log in the
+          # reason: see "Dashboard build verification". Plain "$var" only in
+          # this script: see "Editing hazard" above.
           DIST_INDEX="$RUN_HOME/kirocrew/src/kiro_crew/static/dist/index.html"
           if [ ! -f "$DIST_INDEX" ]; then
             fe_err="$(grep -aiE 'npm error|npm ERR|error TS[0-9]|vite|Killed|Cannot find module|ENOSPC|no space left|out of memory|FATAL ERROR|Skipping frontend build' "$LOG" 2>/dev/null | tr -d '\r"\\' | tail -n 12 | tr '\n' '|' | tail -c 500)"
@@ -650,6 +693,9 @@ Resources:
 
           # System-level unit so the gateway survives reboots and runs as ec2-user.
           KIROCREW_BIN=$(sudo -u $RUN_USER bash -lc 'command -v kirocrew || echo $HOME/.local/bin/kirocrew')
+          for kv in $KC_SET; do
+            sudo -u $RUN_USER bash -lc "$KIROCREW_BIN config set $(echo "$kv" | tr = ' ')" || fail "could not set $kv"
+          done
           cat > /etc/systemd/system/kirocrew.service <<UNIT
           [Unit]
           Description=KiroCrew AI Agent Gateway
@@ -667,6 +713,7 @@ Resources:
           Environment=PATH=$RUN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
           # The registry records this port as the instance's remote_port.
           Environment=KIROCREW_PORT=${DashboardPort}
+          $UNIT_ENV
 
           [Install]
           WantedBy=multi-user.target
