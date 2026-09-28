@@ -18,6 +18,8 @@
 #
 # Options (after `| bash -s --` when piped):
 #   --no-start      stop after step 6
+#   --with-extras   also install the optional tools (git-lfs, ffmpeg, the extra
+#                   agent adapter); from a checkout they are installed by default
 #   --branch NAME   the branch step 0 fetches (default: the one this file ships on)
 #   --demo [...]    a throwaway demo instead (scripts/demo-first-run.sh; see its --help)
 
@@ -35,11 +37,14 @@ else
 fi
 
 _kc_start=1
+_kc_extras=1
 _kc_branch="${KIROCREW_BRANCH:-feat/one-chat-first-run}" # the branch this file ships on
 _kc_demo=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --no-start) _kc_start=0 ;;
+        --with-extras) _kc_extras=1 ;;
+        --quick) _kc_extras=0 ;;
         --branch) _kc_branch="$2"; shift ;;
         --branch=*) _kc_branch="${1#*=}" ;;
         --demo) shift; _kc_demo=1; break ;;
@@ -105,8 +110,11 @@ if [ -z "$_kirocrew_dir" ] || [ ! -d "$_kirocrew_dir/src/kiro_crew" ] \
     fi
     echo "  Code at commit $(git -C "$_kc_src" rev-parse --short HEAD); continuing with its setup.sh"
     echo ""
-    _kc_args=""
-    [ "$_kc_start" = 0 ] && _kc_args="--no-start"
+    # From GitHub the optional tools are skipped: the first run needs none of
+    # them, and each can be installed later (or with --with-extras).
+    _kc_args="--quick"
+    case " $* " in *" --with-extras "*) _kc_args="" ;; esac
+    [ "$_kc_start" = 0 ] && _kc_args="$_kc_args --no-start"
     if [ -n "$_kc_demo" ]; then
         exec bash "$_kc_src/setup.sh" --demo "$@"
     fi
@@ -219,8 +227,13 @@ else
     echo "  ⚠️  node not found — run: bash ensure-node.sh"
 fi
 
+if [ "$_kc_extras" = 0 ]; then
+    echo "  ⏭  Optional tools skipped (git-lfs; ffmpeg, for voice). Later: bash setup.sh --with-extras"
+fi
 # Git LFS: optional, used if any LFS-tracked assets are added
-if ! git lfs version >/dev/null 2>&1; then
+if [ "$_kc_extras" = 0 ]; then
+    :
+elif ! git lfs version >/dev/null 2>&1; then
     if [ "$(uname)" = "Darwin" ] && _check brew; then
         echo "  → Installing git-lfs..."
         brew install git-lfs >/dev/null 2>&1 || true
@@ -243,7 +256,7 @@ else
 fi
 
 # ffmpeg: needed for voice input (whisper) and MP3 stitching
-if ! _check ffmpeg; then
+if [ "$_kc_extras" = 1 ] && ! _check ffmpeg; then
     if [ "$(uname)" = "Darwin" ] && _check brew; then
         echo "  → Installing ffmpeg..."
         brew install ffmpeg >/dev/null 2>&1 || true
@@ -260,6 +273,8 @@ echo ""
 echo "── Step 3: Agent Backends ──"
 if _check claude-agent-acp; then
     echo "  ✅ claude-agent-acp ($(which claude-agent-acp))"
+elif [ "$_kc_extras" = 0 ]; then
+    echo "  ⏭  The optional Claude agent adapter is skipped. Later: npm i -g $ACP_NPM_PKG"
 elif _check npm; then
     echo "  → Installing $ACP_NPM_PKG via npm..."
     if npm install -g "$ACP_NPM_PKG" >/dev/null 2>&1; then
@@ -410,6 +425,17 @@ echo ""
 if [ "$_kc_start" = 1 ]; then
     # ── 7. Start: the gateway, and the first-run chat in the browser ──
     echo "── Step 7: Start ──"
+    if [ -n "${KIROCREW_HOME:-}" ]; then
+        echo "  ⚠️  KIROCREW_HOME is set, so the crew lives in $KIROCREW_HOME"
+        echo "     (unset KIROCREW_HOME to use your normal crew in ~/.kiro/crew)"
+    else
+        echo "→ Your crew lives in $HOME/.kiro/crew"
+    fi
+    # A gateway already running would be reused as it is, on the code it started
+    # with; stop it so the chat runs this build (a service restarts it itself).
+    if kirocrew stop >/dev/null 2>&1; then
+        echo "→ Restarted your running Kiro Crew so it runs this build"
+    fi
     echo "→ Starting Kiro Crew; your browser opens on the chat, where setup continues."
     # Under `curl | bash` stdin is this script; give kirocrew the terminal, so
     # kiro-cli's own sign-in can run there when it is needed.
