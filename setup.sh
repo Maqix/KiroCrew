@@ -362,8 +362,15 @@ if [ ! -d "$_venv" ] || [ ! -x "$_venv/bin/python" ] \
 fi
 echo "→ Installing kirocrew (pip)..."
 "$_venv/bin/pip" install --upgrade pip setuptools wheel -q 2>/dev/null || true
+# --prefer-binary, as `make backend` does: on an old-glibc host (Amazon Linux 2)
+# the newest release of a compiled dependency may ship only a manylinux_2_28
+# wheel and an sdist, and pip would try to compile the sdist; this takes an
+# older prebuilt wheel instead, and changes nothing where wheels exist (macOS).
 if _kc_spin "Backend install (pip)" "${TMPDIR:-/tmp}/kirocrew-setup-backend.log" \
-    env KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$_kirocrew_dir" -q; then
+    env KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install --prefer-binary -e "$_kirocrew_dir" -q; then
+    # macOS: re-sign the wheels' native libraries ad hoc, as `make backend`
+    # does, so the kernel's code-signing checks do not kill the interpreter.
+    bash "$_kirocrew_dir/packaging/resign-macos-libs.sh" "$_venv/bin/python" >/dev/null 2>&1 || true
     echo "  ✅ Build succeeded"
     # Record install method for tooling that branches on it
     echo "pip" > "$_kirocrew_dir/.install-method"
