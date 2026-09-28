@@ -5772,6 +5772,19 @@ class DashboardState:
         # dashboard init and read by POST /api/slack/reconnect. None on the
         # API-only server and in tests, where the handler answers 503.
         self._slack_reconnect: Any = None  # async () -> dict
+        # The orchestrator's settled-client read (``_settled_slack_client``),
+        # wired at dashboard init: the live Slack client once its publication
+        # is settled -- boot's bind and connect, or a Reconnect in flight --
+        # rather than the ``slack_client`` mirror as it stands, which reads None
+        # for the whole window in which the client is merely withheld. A turn
+        # that snapshotted the mirror there would post no echo, tool stream or
+        # reply to Slack for its whole life. None on the API-only server and in
+        # tests, where ``settled_slack_client`` answers the mirror.
+        self._slack_client_settle: Any = None  # async () -> client | None
+        # Its synchronous companion: whether that publication is withheld RIGHT
+        # NOW, so a turn can tell a wait it would take from a client it can
+        # simply read. Same wiring; None reads as never withheld.
+        self._slack_client_withheld: Any = None  # () -> bool
         # Secretary subsystem removed; kept as permanent None for apps/routes.py
         # builtin-service restart lookup (getattr-based, no-op when None).
         self._secretary_restart: Any = None  # restart callback (always None — service removed)
@@ -7446,37 +7459,132 @@ class DashboardState:
         """Resolve an exact key or the newest timestamped bare ``chat-N`` key."""
         return _registry_for(self).resolve_slot(self, name, _CHAT_N_RE.fullmatch)
 
-    def link_slack(self, slot_name: str, thread_ts: str, channel_id: str) -> None:
-        """Update a slot's Slack link state and persist to SessionStore."""
+    async def settled_slack_client(self) -> Any:
+        """The Slack client a dashboard turn mirrors through, once its publication is settled.
+
+        Waits (bounded, see ``GatewayOrchestrator._settled_slack_client``) while
+        boot or a Reconnect has the client withheld, then answers the client as
+        it stands; without a wired orchestrator, the ``slack_client`` mirror.
+        """
+        if self._slack_client_settle is None:
+            return self.slack_client
+        return await self._slack_client_settle()
+
+    def slack_client_withheld(self) -> bool:
+        """Whether boot or a Reconnect is withholding the Slack client right now.
+
+        The synchronous half of :meth:`settled_slack_client`: True exactly while
+        that read would suspend. A turn reads this first, so one that has
+        nothing to post through Slack -- an unlinked session -- never takes the
+        wait, and one that does can re-read its destination once the wait
+        ends. Without a wired orchestrator, never withheld.
+        """
+        if self._slack_client_withheld is None:
+            return False
+        return bool(self._slack_client_withheld())
+
+    def forget_slack_links(self) -> list[str]:
+        """Drop every slot's in-memory Slack link and the thread reverse index.
+
+        The dashboard-side counterpart of ``SessionManager.clear_all_slack_links``,
+        called by the gateway once a Slack WORKSPACE SWITCH is durable (the
+        persisted rows are swept and the new identity recorded). The rows named
+        channels in the former workspace; a slot still carrying one would show as
+        linked, and ``get_linked_slot`` would keep resolving the former thread to
+        it, after the map that is the source of truth says otherwise. Nothing is
+        persisted here -- the map already was -- and no thread is notified: the
+        former workspace is not reachable through the new client. Returns the
+        names of the slots that were linked, for the caller's log line.
+        """
+        forgotten: list[str] = []
+        for name, slot in self._slots.items():
+            if slot._slack_linked or slot._slack_thread_ts or slot._slack_channel:
+                forgotten.append(name)
+            slot._slack_linked = False
+            slot._slack_thread_ts = ""
+            slot._slack_channel = ""
+        self._slack_to_slot.clear()
+        if forgotten:
+            self.push_slots_update()
+        return forgotten
+
+    def snapshot_slack_link_state(self) -> list[tuple[str, bool, str, str]]:
+        """Copy every slot's in-memory Slack link fields, for :meth:`restore_slack_link_state`.
+
+        Taken by the gateway right before :meth:`forget_slack_links` when a
+        workspace switch sweeps the persisted links, so a switch undone before
+        it is durable (the socket never connected) can put the dashboard's
+        copies back beside the map's rows. Rows: ``(slot name, linked flag,
+        thread_ts, channel)`` for the slots that carry any of the three.
+        """
+        return [
+            (name, slot._slack_linked, slot._slack_thread_ts, slot._slack_channel)
+            for name, slot in self._slots.items()
+            if slot._slack_linked or slot._slack_thread_ts or slot._slack_channel
+        ]
+
+    def restore_slack_link_state(self, rows: list[tuple[str, bool, str, str]]) -> list[str]:
+        """Put a :meth:`snapshot_slack_link_state` copy back: the slot fields and
+        the thread reverse index, for the slots that still exist. Nothing is
+        persisted -- the map's own restore is the source of truth and runs
+        beside this -- and the slots are pushed once. Returns the slot names
+        restored."""
+        restored: list[str] = []
+        for name, linked, thread_ts, channel in rows:
+            slot = self._slots.get(name)
+            if slot is None:
+                continue
+            slot._slack_linked = linked
+            slot._slack_thread_ts = thread_ts
+            slot._slack_channel = channel
+            if thread_ts:
+                self._slack_to_slot[thread_ts] = name
+            restored.append(name)
+        if restored:
+            self.push_slots_update()
+        return restored
+
+    def link_slack(self, slot_name: str, thread_ts: str, channel_id: str) -> bool:
+        """Update a slot's Slack link state and persist to SessionStore.
+
+        Returns whether the link was PERSISTED. False is a refusal from the
+        session map (a workspace switch in flight, ``freeze_slack_links``), on
+        which nothing here changed either: no slot field, no reverse-index
+        entry, no push -- a refusal is not a commit, and a slot redrawn as
+        linked over a map that holds no link would be a report the user acts
+        on that a restart contradicts. The caller answers the refusal.
+        """
         slot = self._slots.get(slot_name)
         if not slot:
-            return
-        # A thread handoff is ONE action with TWO persisted writes: the previous
-        # owner's link is cleared and this slot's is claimed. Each write rewrites
-        # the whole session map, so as two separate writes they are separately
-        # interruptible — a failure or a concurrent writer in between leaves the
-        # thread with no owner (the clear landed, the claim did not) or with two
-        # (the reverse). Batching makes the pair one critical section and one
-        # write, matching the same guarantee ``SessionMap.set_slack_link``
-        # already gives its own eviction-and-claim.
+            return False
         with self.sessions.batched_save() if self.sessions else contextlib.nullcontext():
-            self._link_slack_persisted(slot, slot_name, thread_ts, channel_id)
-        self.push_slots_update()
+            linked = self._link_slack_persisted(slot, slot_name, thread_ts, channel_id)
+        if linked:
+            self.push_slots_update()
+        return linked
 
     def _link_slack_persisted(
         self, slot: Any, slot_name: str, thread_ts: str, channel_id: str
-    ) -> None:
-        """The link handoff itself: in-memory indexes plus both persisted writes.
+    ) -> bool:
+        """The link handoff itself: the persisted write FIRST, then the in-memory copies.
 
         Split out only so :meth:`link_slack` can wrap the whole sequence in one
         ``batched_save``; the dashboard push stays OUTSIDE that block because it
-        is not a map mutation.
+        is not a map mutation. The map write comes before every in-memory
+        mutation because it can be refused (see :meth:`link_slack`), and a
+        refusal must leave the dashboard exactly as it was.
         """
+        from kiro_crew.dashboard.chat_utils import _history_key_for, effective_session_key
+
+        if self.sessions and not self.sessions.set_slack_link(
+            effective_session_key(slot), thread_ts, channel_id
+        ):
+            return False
         # Remove stale mapping if slot was previously linked to a different thread
         old_ts = slot._slack_thread_ts
         if old_ts and old_ts != thread_ts:
             self._slack_to_slot.pop(old_ts, None)
-        # Clear persisted link of old slot if this thread was previously owned by another slot
+        # Release the thread from the other slot that holds it, if any
         old_owner = self._slack_to_slot.get(thread_ts)
         if old_owner and old_owner != slot_name:
             old_slot = self._slots.get(old_owner)
@@ -7485,13 +7593,10 @@ class DashboardState:
                 old_slot._slack_thread_ts = ""
                 old_slot._slack_channel = ""
             if self.sessions:
-                from kiro_crew.dashboard.chat_utils import (
-                    _history_key_for,
-                    effective_session_key,
-                )
-
                 # The previous owner's slot may already be gone; fall back to
-                # deriving its key from the name in that case.
+                # deriving its key from the name in that case. A CLEAR (the
+                # empty sentinel) is never refused by the freeze, and the new
+                # claim above already evicted this rival from the map.
                 old_key = (
                     effective_session_key(old_slot) if old_slot else _history_key_for(old_owner)
                 )
@@ -7500,11 +7605,7 @@ class DashboardState:
         slot._slack_channel = channel_id
         slot._slack_thread_ts = thread_ts
         self._slack_to_slot[thread_ts] = slot_name
-        # Persist so link survives gateway restarts
-        if self.sessions:
-            from kiro_crew.dashboard.chat_utils import effective_session_key
-
-            self.sessions.set_slack_link(effective_session_key(slot), thread_ts, channel_id)
+        return True
 
     def get_or_create_slot(
         self,
