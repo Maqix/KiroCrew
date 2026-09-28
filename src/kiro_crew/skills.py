@@ -619,6 +619,26 @@ def _within_any(candidate: str, roots: tuple[str, ...]) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=1)
+def _packaged_skill_names() -> frozenset[str]:
+    """Keys of the skills this package ships, walked once per process.
+
+    Two packaged trees install into the skills dir: ``builtin_skills/`` (the
+    builtin sync) and the deploy layer's own ``deploy/skills/`` copies. Both are
+    immutable while the process runs, so the one walk is the whole cost; the
+    startup index asks this per row to tell a shipped skill from one the user
+    wrote.
+    """
+    from kiro_crew.deploy import _SKILLS_DIR as deploy_skills_dir
+
+    return frozenset(
+        name
+        for root in (_BUILTIN_SKILLS_DIR, deploy_skills_dir)
+        if root.is_dir()
+        for name, _ in _iter_skill_files(root)
+    )
+
+
 #: Basename every skill's body lives under. Used as a cheap pre-filter before
 #: any filesystem work when deciding whether a tool call touched a skill.
 _SKILL_FILE = "SKILL.md"
@@ -7462,10 +7482,13 @@ class SkillsLoader:
                 "Read returned instructions before use; $skillname loads an explicit skill.\n"
             )
             # Equal usage ranks fall back to key order so the eight names shown
-            # do not depend on directory iteration order.
+            # do not depend on directory iteration order. The user's own skills
+            # take the slots first: rank alone hands all eight to shipped skills
+            # on an install with no usage history.
             by_key = sorted(on_demand, key=lambda s: s["key"])
             named: set[str] = set()
-            for skill in sorted(by_key, key=self._rank_key, reverse=True)[:8]:
+            ranked_rows = self._user_first(sorted(by_key, key=self._rank_key, reverse=True))
+            for skill in ranked_rows[:8]:
                 line = f"- {skill['key']}: {self._short_desc(skill['description'])[:100]}\n"
                 if len(wrap([pointer + line])) <= optional_budget:
                     pointer += line
@@ -7483,7 +7506,9 @@ class SkillsLoader:
             if len(wrap([pointer])) <= optional_budget:
                 optional.append(pointer)
         elif on_demand:
-            ranked = sorted(on_demand, key=self._rank_key, reverse=True)
+            # User-authored rows claim the budget first, for the same reason as
+            # the pointer's eight names above.
+            ranked = self._user_first(sorted(on_demand, key=self._rank_key, reverse=True))
             header = (
                 "## Available Skills\n\n"
                 "Search this agent's scope with skill_search(query). "
@@ -7676,6 +7701,43 @@ class SkillsLoader:
         if self._usage is None:
             return (0.0, boost)
         return self._usage.score(s["key"], recency_boost=boost)
+
+    def _is_user_authored(self, s: dict) -> bool:
+        """Whether *s* is a skill the user wrote rather than one Kiro Crew shipped.
+
+        Shipped means a packaged built-in (by key, or by the provenance marker
+        the builtin sync writes into every copy it installs — which also covers
+        a retired built-in still on disk), a skill an app registered (its file
+        resolves into a provider root), or an edition-contributed root. Anything
+        else — a skill the user created in the skills dir, a ``skills.extra_paths``
+        root, a trusted project's ``.kiro/skills``, an agent's ``skill://``
+        mapping — is the user's.
+
+        A confined project row answers before any filesystem call: resolving its
+        path would reintroduce the link probe the confined walker exists to
+        prevent, and a project skill is never shipped anyway.
+        """
+        if s.get("confine_root"):
+            return True
+        if str(s["key"]) in _packaged_skill_names():
+            return False
+        path = Path(str(s["path"]))
+        if any(path.is_relative_to(root) for root in self._edition_extra_paths):
+            return False
+        if os.path.lexists(path.parent / _PROVENANCE_MARKER):
+            return False
+        return not _within_any(os.path.realpath(path), _trusted_skill_roots())
+
+    def _user_first(self, ranked: list[dict]) -> list[dict]:
+        """Stable partition of *ranked*: user-authored skills ahead of shipped ones.
+
+        A new install has no usage history, so rank alone lets the ~60 shipped
+        skills take every slot and a skill the user just wrote is never named.
+        Each half keeps its rank order.
+        """
+        user = [s for s in ranked if self._is_user_authored(s)]
+        mine = {id(s) for s in user}
+        return user + [s for s in ranked if id(s) not in mine]
 
     @staticmethod
     def _short_desc(desc: str, suffix: str = "...") -> str:
