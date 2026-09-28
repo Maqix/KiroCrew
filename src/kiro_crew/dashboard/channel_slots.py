@@ -883,6 +883,42 @@ _RECENT_CLOSES: "weakref.WeakKeyDictionary[Any, dict[str, float]]" = weakref.Wea
 _CLOSE_TOMBSTONE_TTL_SECS = 3600.0
 
 
+#: Per state: ``[closes in flight, closes ever begun]``. A count, not a clock, so
+#: two events in one coarse clock tick still compare as different.
+_CLOSE_ACTIVITY: "weakref.WeakKeyDictionary[Any, list[int]]" = weakref.WeakKeyDictionary()
+
+
+def close_began(state: "DashboardState") -> None:
+    """Mark a tab close as in flight. Pair every call with :func:`close_ended`."""
+    activity = _CLOSE_ACTIVITY.setdefault(state, [0, 0])
+    activity[0] += 1
+    activity[1] += 1
+
+
+def close_ended(state: "DashboardState") -> None:
+    """Mark a tab close as finished, its final save written or abandoned."""
+    activity = _CLOSE_ACTIVITY.setdefault(state, [0, 0])
+    activity[0] = max(0, activity[0] - 1)
+
+
+def closes_quiet_since(state: "DashboardState") -> int:
+    """A mark for :func:`closes_since`: the close count, or -1 if one is in flight.
+
+    With no close in flight, every earlier close has finished writing its
+    session to disk, so a disk scan started after this call sees its placement.
+    """
+    activity = _CLOSE_ACTIVITY.get(state)
+    if activity is None:
+        return 0
+    return -1 if activity[0] else activity[1]
+
+
+def closes_since(state: "DashboardState", mark: int) -> bool:
+    """Whether a close was in flight at *mark*, is in flight now, or began since."""
+    activity = _CLOSE_ACTIVITY.get(state) or [0, 0]
+    return mark < 0 or activity[0] > 0 or activity[1] != mark
+
+
 def note_slot_closed(state: "DashboardState", slot_name: str) -> float:
     """Record that *slot_name*'s tab was just closed; return the close instant.
 

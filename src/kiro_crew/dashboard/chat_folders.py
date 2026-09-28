@@ -10,12 +10,14 @@ import time
 import unicodedata
 import uuid
 import weakref
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 from aiohttp import web
 
 from kiro_crew import pinned_fs
+from kiro_crew.dashboard.channel_slots import closes_quiet_since, closes_since
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
@@ -1077,6 +1079,7 @@ async def create_folder_record(
     color: str = "",
     icon: str = "",
     request_app: str = "",
+    created_by: str = "",
     tags: list[str] | None = None,
     steering_dirs: list[str] | None = None,
     unique_project_dir: bool = False,
@@ -1096,6 +1099,9 @@ async def create_folder_record(
     calling): it is stamped as ``owner_app`` and gates nesting under folders
     other apps own. Never taken from a request body — a caller that could name
     its own owner could name someone else's (see ``_folder_owner_app``).
+
+    ``created_by`` records trusted creator provenance. It is omitted when empty
+    and never taken from a request body.
 
     ``tags`` is a shape-checked list of tag ids the caller wants copied onto
     every new chat filed into this folder (the folder API validates the request
@@ -1217,6 +1223,8 @@ async def create_folder_record(
         folder["steering_dirs"] = resolved_steering
     if request_app:
         folder["owner_app"] = request_app
+    if created_by:
+        folder["created_by"] = created_by
 
     def _append(folders: list[dict[str, Any]]) -> tuple[bool, str]:
         # Re-check the parent under the lock. Its existence was validated before
@@ -1374,6 +1382,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             color=str(body.get("color") or ""),
             icon=icon_val,
             request_app=request_app,
+            created_by="agent" if rl_source == "mcp" else "",
             tags=folder_tags,
             steering_dirs=steering_dirs,
         )
@@ -1980,10 +1989,11 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     # session closing after the scan and writing its folder_id on the way out.
     # Each was closable in isolation; the class was not.
     #
-    # Nothing shipped loses a capability: no MCP tool exposes folder deletion
-    # (the set is chat_folder_tree / chat_folder_create / chat_folder_move /
-    # chat_folder_move_session), and the only client of this route is the
-    # dashboard UI, which is the person. An app organizes its own work by
+    # Nothing shipped loses a capability: no MCP tool calls this route, and the
+    # only client of this route is the dashboard UI, which is the person. The
+    # agent-facing cleanup verb is chat_folder_prune, which deletes only EMPTY
+    # subtrees and so never relocates a session (api_chat_folder_prune). An app
+    # organizes its own work by
     # creating, renaming and reparenting its folders and filing its sessions --
     # cleanup is the person's, who can delete a full folder as they always could.
     if request_app:
@@ -2126,6 +2136,209 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         resources=fid,
     )
     return web.json_response({"ok": True})
+
+
+#: Most folders one prune request may name. A sidebar tree is small; a larger
+#: list is a runaway caller, refused before the store is touched.
+_MAX_PRUNE_IDS = 100
+_MAX_PRUNE_BODY_BYTES = 16 * 1024
+
+#: Row fields that mean a folder carries settings or belongs to another owner.
+#: They remain a second fence after creator provenance: even an agent-created
+#: folder is kept when deleting it would lose configured state.
+_PRUNE_KEEP_FIELDS = (
+    "project_dir",
+    "default_agent",
+    "tags",
+    "steering_dirs",
+    "color",
+    "icon",
+    "channel",
+    "owner_app",
+)
+
+
+def _prune_subtree(folders: list[dict[str, Any]], root_id: str) -> list[str]:
+    """Ids of *root_id* and every folder under it, deepest first.
+
+    Deepest first is the order the sidebar would have to delete them in by
+    hand. The walk is cycle-guarded, so a corrupt parent chain in folders.json
+    cannot hang the request.
+    """
+    children: dict[str, list[str]] = {}
+    for f in folders:
+        children.setdefault(str(f.get("parent_id") or ""), []).append(str(f.get("id") or ""))
+    order: list[str] = []
+    seen: set[str] = set()
+
+    def _visit(fid: str) -> None:
+        if fid in seen:
+            return
+        seen.add(fid)
+        for child in children.get(fid, []):
+            _visit(child)
+        order.append(fid)
+
+    _visit(root_id)
+    return order
+
+
+async def api_chat_folder_prune(request: web.Request) -> web.Response:
+    """POST /api/chat/folders/prune -- delete folders whose whole subtree is empty.
+
+    Body: ``{"ids": [str, ...]}``. The caller only NAMES candidates; every check
+    and every delete happens here, in one ``mutate_folders`` transaction. For
+    each named folder the whole subtree is examined, and it is deleted only when
+    every row was created by an agent and no folder in it holds a live session,
+    an archived session, or configured state (``_PRUNE_KEEP_FIELDS``). Otherwise
+    nothing in that subtree is touched and the folder is reported under
+    ``skipped`` with a reason.
+
+    Why this is sound where an agent DELETE is not: a prune never relocates a
+    session. The ordinary delete unfiles its sessions first, and that unfile and
+    the removal cannot be one atomic step. Prune moves nothing -- it refuses a
+    subtree with anything in it -- so the only question is emptiness, and the
+    live half of that is answered inside the lock. The archived half is a disk
+    scan, taken just before the lock because it cannot run on the event loop.
+    A live session only leaves the live slots by closing, and a close writes its
+    placement to disk only after it leaves them. So a folder whose session
+    closed around the scan may be empty in both halves. Close activity is
+    bracketed through its final save; if any close overlaps the scan, the whole
+    prune request is kept for a later retry.
+
+    Person callers only. An app is refused here, like the ordinary delete; a crew
+    member never reaches this handler (the chat gate admits no member verb on it).
+    """
+    state: DashboardState = request.app["state"]
+    if (refusal := _refuse_unattributable_caller(state, request)) is not None:
+        return refusal
+    principal = folder_principal(state, request)
+    if principal:
+        sel().log_api_access(
+            caller=principal,
+            operation="chat.folder_prune",
+            outcome="denied",
+            source="app_isolation",
+            error="only the person can prune folders",
+        )
+        return web.json_response(
+            {"error": "only the person can prune folders", "code": "folder_delete_forbidden"},
+            status=403,
+        )
+    body, body_err = await read_bounded_json(request, max_bytes=_MAX_PRUNE_BODY_BYTES)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    raw_ids = body.get("ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return web.json_response(
+            {"error": "ids must be a non-empty array", "code": "ids_invalid"}, status=400
+        )
+    if len(raw_ids) > _MAX_PRUNE_IDS:
+        return web.json_response(
+            {"error": "too many folders in one prune", "code": "ids_too_many"}, status=400
+        )
+    if not all(isinstance(i, str) and i for i in raw_ids):
+        return web.json_response(
+            {"error": "each id must be a non-empty string", "code": "ids_invalid"}, status=400
+        )
+    wanted = list(dict.fromkeys(raw_ids))
+
+    # Taken before the scan. A close overlapping that scan may not be represented
+    # in either live slots or history, so the locked mutation refuses the request.
+    cut_off = closes_quiet_since(state)
+    return await _run_prune(request, state, wanted, cut_off)
+
+
+def _cron_folder_ids(jobs: Any) -> set[str]:
+    """Folder ids the given scheduled jobs file their runs into."""
+    return {str(job.chat_folder_id) for job in jobs if getattr(job, "chat_folder_id", "")}
+
+
+async def _run_prune(
+    request: web.Request, state: DashboardState, wanted: list[str], cut_off: int
+) -> web.Response:
+    """Scan, then delete every requested empty subtree in one folder transaction."""
+    loop = asyncio.get_running_loop()
+    history = await loop.run_in_executor(subprocess_executor(), _folder_history_counts, state)
+    crons = getattr(state, "crons", None)
+    # A job another process just saved is on disk before the in-memory cache
+    # polls it, so the fresh read covers it; the cache read under the lock covers
+    # a save this process made since.
+    on_disk = (
+        _cron_folder_ids(await crons.list_jobs_async(include_disabled=True)) if crons else set()
+    )
+
+    def _prune(
+        folders: list[dict[str, Any]],
+    ) -> tuple[bool, tuple[list[str], list[dict[str, str]]]]:
+        # A close overlapping the archive scan can be absent from both history
+        # and live slots. Keep every candidate rather than guess which folder moved.
+        if closes_since(state, cut_off):
+            reason = "busy: a session just closed; try again in a few minutes"
+            return False, ([], [{"id": fid, "reason": reason} for fid in wanted])
+        # Live occupancy is read HERE, under the lock, so no session can be filed
+        # into a folder between this check and its removal.
+        live = {str(getattr(s, "folder_id", "") or "") for s in state._slots.values()}
+        scheduled = on_disk | (
+            _cron_folder_ids(crons.list_jobs(include_disabled=True)) if crons else set()
+        )
+        deleted: list[str] = []
+        skipped: list[dict[str, str]] = []
+        for fid in wanted:
+            by_id = {str(f.get("id") or ""): f for f in folders}
+            # A row whose id repeats is shadowed in by_id, so its fields were
+            # never read; such a subtree is kept whole.
+            counts = Counter(str(f.get("id") or "") for f in folders)
+            doubled = {i for i, n in counts.items() if n > 1}
+            if fid not in by_id:
+                if fid not in deleted:
+                    skipped.append({"id": fid, "reason": "not found"})
+                continue
+            subtree = _prune_subtree(folders, fid)
+            reason = ""
+            for sid in subtree:
+                row = by_id.get(sid, {})
+                if row.get("created_by") != "agent":
+                    reason = "not made by an agent"
+                elif sid in live or history.get(sid, 0):
+                    reason = "not empty: holds sessions"
+                elif sid in scheduled:
+                    reason = "in use: a scheduled job files its runs into it"
+                elif sid in doubled:
+                    reason = "in use: another folder shares its id"
+                elif any(row.get(k) for k in _PRUNE_KEEP_FIELDS):
+                    reason = "in use: has settings, a channel or an owner"
+                if reason:
+                    break
+            if reason:
+                skipped.append({"id": fid, "reason": reason})
+                continue
+            gone = set(subtree)
+            folders[:] = [f for f in folders if str(f.get("id") or "") not in gone]
+            deleted.extend(subtree)
+        return bool(deleted), (deleted, skipped)
+
+    deleted, skipped = await state.mutate_folders(_prune)
+    for fid in deleted:
+        # Same post-commit cleanup as the single delete: drop the icon epoch and
+        # cancel a queued icon generation for a folder that is gone.
+        _CHAT_FOLDER_ICON_EPOCHS.pop(fid, None)
+        pending = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(fid, None)
+        if pending is not None and not pending.done():
+            pending.cancel()
+    source, caller = _audit_origin(request)
+    for fid in deleted:
+        sel().log_api_access(
+            caller=caller,
+            operation="chat.folder_prune",
+            outcome="allowed",
+            source=source,
+            resources=fid,
+        )
+    if deleted:
+        state.push_slots_update()
+    return web.json_response({"deleted": deleted, "skipped": skipped})
 
 
 # The authorization-identity helper is homed in ``token_auth`` beside the rule it

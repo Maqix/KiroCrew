@@ -19,8 +19,8 @@ every tool in it. That is the unit to keep in mind when adding one — a capabil
 that must be grantable separately belongs in a server of its own.
 
 What it controls today is the chat (sidebar) folder tree: read it, create a
-folder, reparent a folder, and file a live session into one. Create and move
-only — no delete and no rename, so nothing here can lose a conversation. It also
+folder, reparent a folder, file a live session into one, and prune empty folders
+the agent created. Prune never moves or deletes a conversation. It also
 controls session TAGS with the same posture: read the vocabulary, create or
 update a tag (rename, recolor, status flag), and add or remove tags on a live
 session — no tag delete, so nothing here can strip a label from every session
@@ -40,8 +40,9 @@ caller's.
 Why the set needs no second gate behind the assignment: these tools grant no
 read the agent does not already have (``list_sessions`` in ``kirocrew-core`` is
 always available and already returns every session's title and key), they cannot
-delete a folder or a conversation, and the worst outcome is a sidebar the user
-has to tidy. Contrast the keystone leaves in ``security.py``
+delete a conversation or a folder the person or a channel made, and the worst
+outcome is a sidebar the user has to tidy. Contrast the keystone leaves in
+``security.py``
 (``computer_use.json``, ``browser-mode-enabled``, the Ops Mission Control mode):
 each grants reach OUTSIDE Kiro Crew — desktop input synthesis, the operator's
 logged-in browser, writes against production incident tooling — or is the
@@ -96,11 +97,13 @@ from kiro_crew.mcp_core import (
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.mcp_tool_titles import with_titles
 from kiro_crew.platform import redact_via_context as redact
+from kiro_crew.sel import sel
 from kiro_crew.validation import (
     CHAT_FOLDER_CREATE_SCHEMA,
     CHAT_FOLDER_FILE_SELF_SCHEMA,
     CHAT_FOLDER_MOVE_SCHEMA,
     CHAT_FOLDER_MOVE_SESSION_SCHEMA,
+    CHAT_FOLDER_PRUNE_SCHEMA,
     CHAT_FOLDER_TREE_SCHEMA,
     CHAT_SESSION_PIN_SCHEMA,
     CHAT_TAG_ASSIGN_SCHEMA,
@@ -176,8 +179,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "then one line per live session (slot key + title) nested under it, "
                 "and an '(unfiled)' group for sessions at the top level. Use this to "
                 "get folder ids/paths and session keys before calling "
-                "chat_folder_create / chat_folder_move / chat_folder_move_session, "
-                "or when the user asks what their tree looks like. This is the "
+                "chat_folder_create / chat_folder_move / chat_folder_move_session / "
+                "chat_folder_prune, or when the user asks what their tree looks like. "
+                "A folder with no sessions and no subfolders listed under it is a "
+                "chat_folder_prune candidate. This is the "
                 "folder-shaped view; list_sessions is the flat newest-first one."
             ),
             "inputSchema": {"type": "object", "properties": {}},
@@ -262,6 +267,38 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["folder"],
+            },
+        },
+        {
+            "name": "chat_folder_prune",
+            "description": (
+                "Delete empty sidebar folders an agent created, to keep the sidebar tidy. "
+                "Name the candidates in ``folders`` (ids or human paths from "
+                "chat_folder_tree); the dashboard does every check and every delete "
+                "itself, in one step. A named folder is deleted together with its "
+                "subfolders only when every folder in that subtree was made by an agent "
+                "through chat_folder_create and the whole subtree is empty: no live session, "
+                "no archived session, no setting the person chose (project directory, "
+                "default agent, tag presets, steering, colour, icon), no channel "
+                "or scheduled job filing into it, and no app owner. Folders made by the "
+                "person or a channel are always kept. Any folder that fails is left exactly as "
+                "it is and reported as skipped with the reason, so naming a folder "
+                "that turns out not to be empty is safe. Deletion cannot be undone, "
+                "but it only ever removes empty folder names — no session is moved "
+                "or deleted. Only the person's own sessions may prune; an app agent "
+                "or crew member is refused."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "folders": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 100,
+                        "description": "Folders to delete if empty (id or human path each).",
+                    },
+                },
+                "required": ["folders"],
             },
         },
         {
@@ -2501,6 +2538,64 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             )
         return redact(f"Moved folder (id={fld_id}) to `{dest_path}`.")
 
+    if name == "chat_folder_prune":
+        args = validate_tool_args(args, CHAT_FOLDER_PRUNE_SCHEMA)
+        caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable("pruning folders")
+        if gate:
+            return gate
+        # Same dispatch-time containment as chat_session_pin: the channel entry in
+        # CHANNEL_AGENT_BLOCKED_TOOLS guards only the permission prompt, which an
+        # auto-approved call never reaches.
+        if caller_key.startswith("channel:"):
+            try:
+                sel().log_tool_invocation(
+                    session_key=caller_key,
+                    source="mcp",
+                    tool_name=name,
+                    tool_kind=SERVER_NAME,
+                    outcome="rejected_blocked_tool",
+                )
+            except Exception:
+                # Stdio-silent: stderr would corrupt the JSON-RPC stream. The
+                # refusal below holds either way.
+                pass
+            return (
+                "Error: chat_folder_prune is not available to channel agents — it "
+                "deletes folders in the person's sidebar, and a channel agent acts "
+                "on thread text other people wrote."
+            )
+        chat_folders, folders_err = _get_rows("/api/chat/folders")
+        if folders_err:
+            return f"Error: {folders_err}"
+        paths_before = _chat_folder_paths(chat_folders)
+        ids: list[str] = []
+        unresolved: list[str] = []
+        for ref in args["folders"]:
+            fid, err = _resolve_chat_folder_id(str(ref), chat_folders)
+            if err or not fid:
+                unresolved.append(f"`{ref}` — {err or 'root is not a folder'}")
+            elif fid not in ids:
+                ids.append(fid)
+        out: list[str] = []
+        if ids:
+            d = _post("/api/chat/folders/prune", {"ids": ids}, session_key=caller_key)
+            if d.get("error"):
+                return redact(f"Error: {d['error']}")
+            deleted = [str(i) for i in d.get("deleted") or []]
+            skipped = [s for s in d.get("skipped") or [] if isinstance(s, dict)]
+            if deleted:
+                out.append(f"Deleted {len(deleted)} empty folder(s):")
+                out.extend(f"  - `{paths_before.get(i, i)}` (id={i})" for i in deleted)
+            if skipped:
+                out.append(f"Kept {len(skipped)} folder(s):")
+                for s in skipped:
+                    sid = str(s.get("id") or "?")
+                    out.append(f"  - `{paths_before.get(sid, sid)}` — {s.get('reason', '?')}")
+        if unresolved:
+            out.append("Could not find:")
+            out.extend(f"  - {u}" for u in unresolved)
+        return redact("\n".join(out) or "Nothing to prune.")
+
     if name == "chat_folder_move_session":
         args = validate_tool_args(args, CHAT_FOLDER_MOVE_SESSION_SCHEMA)
         chat_folders, folders_err = _get_rows("/api/chat/folders")
@@ -2818,8 +2913,6 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # session is listed.
         if caller_key.startswith("channel:"):
             try:
-                from kiro_crew.sel import sel
-
                 sel().log_tool_invocation(
                     session_key=caller_key,
                     source="mcp",

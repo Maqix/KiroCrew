@@ -65,6 +65,7 @@ class TestFolderAuditOrigin:
         try:
             resp = await client.post("/api/chat/folders", json={"name": "Browser"})
             assert resp.status == 201
+            assert "created_by" not in await resp.json()
         finally:
             await client.close()
         event = next(e for e in recorded.events if e["operation"] == "chat.folder_create")
@@ -115,6 +116,7 @@ class TestFolderAuditOrigin:
                 },
             )
             assert resp.status == 201
+            assert (await resp.json())["created_by"] == "agent"
         finally:
             await client.close()
         event = next(e for e in recorded.events if e["operation"] == "chat.folder_create")

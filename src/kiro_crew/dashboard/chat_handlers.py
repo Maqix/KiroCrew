@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -41,7 +42,12 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.dashboard import remote_mirror
-from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
+from kiro_crew.dashboard.channel_slots import (
+    channel_slot_name,
+    close_began,
+    close_ended,
+    note_slot_closed,
+)
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
 from kiro_crew.dashboard.chat_delivery import (
     STEER_REQUEUED,
@@ -6448,9 +6454,13 @@ async def close_slot(
     pre_pop_check: Callable[[], None] | None = None,
 ) -> None:
     """Close a slot while releasing its admission fence on every aborted path."""
+    # Brackets the whole close, final save included, for folder prune
+    # (``channel_slots.closes_quiet_since``).
+    close_began(state)
     try:
         await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
     finally:
+        close_ended(state)
         if state.get_slot(name) is slot:
             slot.cancel_close()
 
@@ -6945,6 +6955,26 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def _brackets_closes(
+    handler: Callable[[web.Request], Awaitable[web.Response]],
+) -> Callable[[web.Request], Awaitable[web.Response]]:
+    """Mark *handler*'s tab closes, final saves included, as in flight.
+
+    Read by folder prune (``channel_slots.closes_quiet_since``).
+    """
+
+    @functools.wraps(handler)
+    async def _bracketed(request: web.Request) -> web.Response:
+        close_began(request.app["state"])
+        try:
+            return await handler(request)
+        finally:
+            close_ended(request.app["state"])
+
+    return _bracketed
+
+
+@_brackets_closes
 async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
     """POST /api/chat/slots/cleanup — bulk-archive inactive sessions to history.
 

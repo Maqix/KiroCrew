@@ -317,10 +317,11 @@ async def ensure_channel_folder(
             # An unstamped folder the user already had under this name. Adopt it
             # as-is: stamping someone else's folder with a brand mark would
             # rebrand a folder they created for their own purposes.
-            was_hidden = bool(existing.get("hidden"))
-            if was_hidden:
+            changed = existing.pop("created_by", None) is not None
+            if existing.get("hidden"):
                 existing["hidden"] = False
-            return was_hidden, str(existing.get("id", ""))
+                changed = True
+            return changed, str(existing.get("id", ""))
         folder = {
             "id": uuid.uuid4().hex[:12],
             "name": name,
