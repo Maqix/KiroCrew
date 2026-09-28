@@ -605,7 +605,10 @@ class TestHomeInTheBackground:
         assert "Where should your crew live?" in kickoff
         assert "account …9012, region eu-north-1" in kickoff
         assert "123456789012" not in kickoff
-        assert f"${sc.monthly_estimate_usd(sc.HOME_DEFAULT_SIZE)}/month" in kickoff
+        # The Hello quotes the cheapest size the card offers, not one the user may
+        # never pick.
+        cheapest = min(o["monthly_usd"] for o in home.payload["size_options"])
+        assert f"from about ${cheapest}/month" in kickoff
         assert "do not ask it again in prose" in kickoff
 
     @pytest.mark.asyncio

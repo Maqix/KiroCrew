@@ -267,6 +267,11 @@ Service Quotas `L-1216C47A`, read before anything is spent:
 `home_vcpu_quota_low`, with a link to the Service Quotas page). A build that
 fails on the account's spend limit is `home_spend_limit` rather than the generic
 `home_build_failed`. `kirocrew start --home cloud` records no fallback region.
+A build the card can no longer follow (its job unreadable or gone for
+`_UNTRACKED_POLLS` polls in a row, or the watcher itself failing) is stopped
+through the launch's own cancel event, whose worker rolls its stack back at the
+next checkpoint, and the card fails with `home_build_untracked`
+(`_stop_untracked_build`): a build nobody can see is one nobody would stop.
 
 ## The home's Kiro sign-in
 

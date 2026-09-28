@@ -278,3 +278,5 @@
 {"timestamp":"2026-09-28T19:49:30.133379348Z","action":"edit","task_id":96,"detail":"PN.12 A new AWS account's home region, not a us-east-1 fallback"}
 {"timestamp":"2026-09-28T19:49:46.351372487Z","action":"edit","task_id":100,"detail":"PN.16 Home size options the owner chooses on the card (Free vs Paid plan)"}
 {"timestamp":"2026-09-28T20:05:41.384088693Z","action":"edit","task_id":100,"detail":"PN.16 Home size options the owner chooses on the card (Free vs Paid plan)"}
+{"timestamp":"2026-09-28T20:16:41.418020233Z","action":"edit","task_id":98,"detail":"PN.15 A failed home card must stop the build it started"}
+{"timestamp":"2026-09-28T20:16:41.418223019Z","action":"claim","task_id":98,"detail":"lead"}

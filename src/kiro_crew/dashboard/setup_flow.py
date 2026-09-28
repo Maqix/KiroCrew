@@ -1217,6 +1217,8 @@ async def _inherited_login_target() -> Any:
 
 #: How AWS words a refusal from the account's spend limit, in a launch error.
 _SPEND_LIMIT_RE = re.compile(r"spend(?:ing)?[\s_-]*limit", re.IGNORECASE)
+#: Polls in a row the home card may fail to read its build before it stops it.
+_UNTRACKED_POLLS = 3
 
 
 def _home_outcome(job: Any, **extra: Any) -> dict[str, Any]:
@@ -1265,13 +1267,25 @@ async def _watch_home(
 
     store = _store(state)
     last: dict[str, Any] | None = None
+    misses = 0
     try:
         while True:
             await asyncio.sleep(_CONNECT_POLL_SECS)
-            job = await asyncio.to_thread(store.get, job_id)
             card = await asyncio.to_thread(sc.get_card, card_id)
-            if job is None or card is None or card.status != sc.STATUS_WAITING:
+            if card is None or card.status != sc.STATUS_WAITING:
                 return
+            try:
+                job = await asyncio.to_thread(store.get, job_id)
+            except Exception:
+                logger.warning("home card %s: its build %s is unreadable", card_id, job_id)
+                job = None
+            if job is None:
+                misses += 1
+                if misses >= _UNTRACKED_POLLS:
+                    await _stop_untracked_build(state, card_id, job_id)
+                    return
+                continue
+            misses = 0
             outcome = _home_outcome(job)
             if job.status == lj.DONE:
                 card = await _home_built(card, job, outcome)
@@ -1300,6 +1314,41 @@ async def _watch_home(
         raise
     except Exception:
         logger.exception("home card %s watcher failed", card_id)
+        await _stop_untracked_build(state, card_id, job_id)
+
+
+async def _stop_untracked_build(state: "DashboardState", card_id: str, job_id: str) -> None:
+    """The card can no longer follow its build: stop the build, and say so.
+
+    A build the owner cannot see is a build nobody would stop, and it creates
+    billed AWS resources. So the build is cancelled the way the launch's own
+    cancel does it (the in-process worker's event; the worker rolls its stack
+    back at its next checkpoint), and the card fails with a message instead of
+    waiting forever. Never raises.
+    """
+    try:
+        from kiro_crew.dashboard.handlers_cloud import _cancels
+
+        event = _cancels(state).get(job_id)
+        if event is not None:
+            event.set()
+        card = await asyncio.to_thread(sc.get_card, card_id)
+        if card is None or card.status != sc.STATUS_WAITING:
+            return
+        card = await _finish(
+            card,
+            sc.STATUS_FAILED,
+            outcome={"job_id": job_id, "stopped": event is not None},
+            error=(
+                "home_build_untracked",
+                "the home's build could not be followed any more, so it was stopped; "
+                "whatever it had created in AWS is being removed",
+            ),
+        )
+        broadcast(state, card)
+        await _report(state, card)
+    except Exception:
+        logger.exception("home card %s: stopping its untracked build failed", card_id)
 
 
 async def _home_built(card: sc.SetupCard, job: Any, outcome: dict[str, Any]) -> sc.SetupCard:
@@ -1537,9 +1586,26 @@ def _home_card_in(slot_key: str) -> "sc.SetupCard | None":
 def _home_step_fact(card: "sc.SetupCard") -> str:
     """What the Hello is told about the home step the gateway put on screen."""
     p = card.payload
-    raw_size = p.get("size")
-    size: dict[str, Any] = raw_size if isinstance(raw_size, dict) else {}
-    cost = f"about ${p.get('monthly_usd')}/month on {size.get('instance_type', '')}, billed by AWS"
+    raw_options = p.get("size_options")
+    options = (
+        [o for o in raw_options if isinstance(o, dict)] if isinstance(raw_options, list) else []
+    )
+    prices = [o["monthly_usd"] for o in options if isinstance(o.get("monthly_usd"), (int, float))]
+    if prices:
+        # The card offers sizes; the Hello quotes the cheapest, not one the user
+        # may never pick.
+        cost = (
+            f"sizes from about ${min(prices)}/month, chosen on the card, billed by AWS"
+            if len(prices) > 1
+            else f"about ${prices[0]}/month, billed by AWS"
+        )
+    else:
+        raw_size = p.get("size")
+        size: dict[str, Any] = raw_size if isinstance(raw_size, dict) else {}
+        cost = (
+            f"about ${p.get('monthly_usd')}/month on {size.get('instance_type', '')}, "
+            "billed by AWS"
+        )
     where = (
         f"this machine's AWS CLI is signed in (account {p.get('aws_account') or 'unknown'}, "
         f"region {p.get('region')})"

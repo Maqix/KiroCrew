@@ -506,3 +506,74 @@ class TestTheCardShowsWhatWasIssued:
 
         _issue(BUILDER_ID_URL, "ABCD-EFGH")
         assert "signin" not in _home_outcome(_job(lj.RUNNING, url=""))
+
+
+class TestAnUntrackedBuild:
+    """A build the card can no longer follow is stopped, not left running unseen."""
+
+    @pytest.fixture(autouse=True)
+    def _fast_polls(self, monkeypatch):
+        monkeypatch.setattr(setup_flow, "_CONNECT_POLL_SECS", 0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["missing", "unreadable"])
+    async def test_a_build_the_card_cannot_read_is_stopped(self, state, monkeypatch, failure):
+        import threading
+
+        from kiro_crew.dashboard import handlers_cloud
+
+        card = _home_card(monkeypatch)
+        cancel = threading.Event()
+        monkeypatch.setattr(handlers_cloud, "_cancels", lambda st: {"job-1": cancel})
+
+        class _Gone:
+            def get(self, job_id):
+                if failure == "unreadable":
+                    raise ValueError("persisted Kiro identity target is unreadable")
+                return None
+
+        monkeypatch.setattr(handlers_cloud, "_store", lambda st: _Gone())
+        await asyncio.wait_for(setup_flow._watch_home(state, card.id, "job-1"), 5)
+        assert cancel.is_set()
+        failed = sc.get_card(card.id)
+        assert failed.status == sc.STATUS_FAILED
+        assert failed.error["code"] == "home_build_untracked"
+
+    @pytest.mark.asyncio
+    async def test_one_bad_read_is_not_enough(self, state, monkeypatch):
+        import threading
+
+        from kiro_crew.dashboard import handlers_cloud
+
+        card = _home_card(monkeypatch)
+        cancel = threading.Event()
+        monkeypatch.setattr(handlers_cloud, "_cancels", lambda st: {"job-1": cancel})
+        reads = iter([None, _job(lj.DONE, url="", signin_detected=True)])
+
+        class _Flaky:
+            def get(self, job_id):
+                return next(reads)
+
+        monkeypatch.setattr(handlers_cloud, "_store", lambda st: _Flaky())
+        await asyncio.wait_for(setup_flow._watch_home(state, card.id, "job-1"), 5)
+        assert not cancel.is_set()
+        assert sc.get_card(card.id).status == sc.STATUS_PENDING
+
+    @pytest.mark.asyncio
+    async def test_a_watcher_that_crashes_stops_its_build(self, state, monkeypatch):
+        import threading
+
+        from kiro_crew.dashboard import handlers_cloud
+
+        card = _home_card(monkeypatch)
+        cancel = threading.Event()
+        monkeypatch.setattr(handlers_cloud, "_cancels", lambda st: {"job-1": cancel})
+        monkeypatch.setattr(handlers_cloud, "_store", lambda st: FakeStore([_job(lj.RUNNING)]))
+
+        def _boom(job, **extra):
+            raise RuntimeError("mirror failed")
+
+        monkeypatch.setattr(setup_flow, "_home_outcome", _boom)
+        await asyncio.wait_for(setup_flow._watch_home(state, card.id, "job-1"), 5)
+        assert cancel.is_set()
+        assert sc.get_card(card.id).error["code"] == "home_build_untracked"
