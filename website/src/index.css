@@ -2982,13 +2982,13 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 
 /* Composer halo (ChatInput.tsx): an offset-free shadow spreading evenly on all
  * four sides, so the box reads as set INTO the page rather than dropped onto it.
- * At rest it is neutral and faint; while the composer holds focus it takes the
- * theme's --accent-glow (the accent at each theme's own glow alpha, stronger in
- * dark themes and tunable by an installed pack), lighting up together with the
- * wrapper's focus-within accent border as one signal. The rest shadow is
- * neutral black on purpose: a themed shadow color would shift hue on colorful
- * backgrounds instead of reading as depth, and dark themes take a stronger
- * alpha because the surrounding background is already near black. */
+ * At rest it is neutral and faint (this is depth, not decoration, so it stays).
+ * On focus it draws a tight 1px accent ring (0 0 0 1px, no blur) instead of a
+ * soft bloom: the ring reads as a deliberate focus indicator rather than a glow,
+ * and pairs with the wrapper's focus-within accent border as one crisp signal.
+ * The rest shadow is neutral black on purpose: a themed shadow color would shift
+ * hue on colorful backgrounds instead of reading as depth, and dark themes take
+ * a stronger alpha because the surrounding background is already near black. */
 .composer-halo {
   box-shadow: 0 0 18px rgba(0, 0, 0, 0.06);
   transition: box-shadow 0.18s ease;
@@ -3000,31 +3000,34 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 [data-mode="dark"] .composer-halo {
   box-shadow: 0 0 18px rgba(0, 0, 0, 0.30);
 }
+/* Focus is a tight accent ring, not a bloom. `--accent-glow` (the theme's tuned
+ * accent) is kept as the ring color so a pack's chosen hue still drives it, but
+ * the spread is zero blur so it renders as a hairline outline rather than a
+ * halo. The rest shadow stays under it for depth. */
 .composer-halo:focus-within {
-  box-shadow: 0 0 18px var(--accent-glow);
+  box-shadow: 0 0 0 1px var(--accent-glow), 0 0 18px rgba(0, 0, 0, 0.06);
 }
-/* Dark themes add a 1px accent ring under the glow: on smoked glass the glow
-   alone did not separate a focused capsule from a resting one (a reader could
-   not tell the two apart), while on a light page the hairline turning accent
-   already reads. Same specificity as the dark rest rule, later in source, so
-   focus still wins; the memory-mode forms below come later again. */
+/* Dark themes deepen the rest shadow one step under the same ring, so a focused
+ * capsule still separates from a resting one on smoked glass. Same specificity
+ * as the dark rest rule, later in source, so focus still wins; the memory-mode
+ * forms below come later again. */
 [data-mode="dark"] .composer-halo:focus-within {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent), 0 0 18px var(--accent-glow);
+  box-shadow: 0 0 0 1px var(--accent-glow), 0 0 18px rgba(0, 0, 0, 0.30);
 }
 /* Memory-mode variants follow the wrapper's always-on border color (warn for
- * incognito, aim for temporary) so focus reads as one color per control. No
- * per-theme glow token exists for these two colors, so the alpha is fixed. */
+ * incognito, aim for temporary) so focus reads as one color per control. Same
+ * tight ring, in each mode's color. */
 .composer-halo-warn:focus-within {
-  box-shadow: 0 0 18px color-mix(in srgb, var(--warn) 18%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 55%, transparent), 0 0 18px rgba(0, 0, 0, 0.06);
 }
 .composer-halo-aim:focus-within {
-  box-shadow: 0 0 18px color-mix(in srgb, var(--aim) 18%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--aim) 55%, transparent), 0 0 18px rgba(0, 0, 0, 0.06);
 }
 [data-mode="dark"] .composer-halo-warn:focus-within {
-  box-shadow: 0 0 18px color-mix(in srgb, var(--warn) 22%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 55%, transparent), 0 0 18px rgba(0, 0, 0, 0.30);
 }
 [data-mode="dark"] .composer-halo-aim:focus-within {
-  box-shadow: 0 0 18px color-mix(in srgb, var(--aim) 22%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--aim) 55%, transparent), 0 0 18px rgba(0, 0, 0, 0.30);
 }
 
 /* File-diff chips (FileChangeChips.tsx): flatter edge — no top highlight or
