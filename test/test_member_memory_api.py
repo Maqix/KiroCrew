@@ -1101,6 +1101,15 @@ async def test_private_continue_authenticates_parent_before_cwd_read(env, claime
     assert json.loads(response.text)["code"] == "member_identity_unavailable"
 
 
+async def _no_queued(parent_session_key: str) -> int:
+    return 0
+
+
+# ``GET /api/spawn`` also reports the caller's own waiting spawns; these run
+# lists have none.
+_NO_QUEUE = {"queued_count_for_async": _no_queued, "queue_wait_for": lambda _key: {}}
+
+
 @pytest.mark.asyncio
 async def test_spawn_list_follows_origin_including_cross_member_delegation(env):
     from kiro_crew.dashboard.handlers import messaging
@@ -1125,7 +1134,10 @@ async def test_spawn_list_follows_origin_including_cross_member_delegation(env):
 
     rows = [row("alice-run", "member-bob"), row("bob-run", "member-alice"), row("global-run", "")]
     env.state.subagents = SimpleNamespace(
-        all_agents=rows, _agents={r.id: r for r in rows}, _tasks={r.id: object() for r in rows}
+        all_agents=rows,
+        _agents={r.id: r for r in rows},
+        _tasks={r.id: object() for r in rows},
+        **_NO_QUEUE,
     )
     response = await messaging.api_spawn_list(request(env, internal=True))
     assert [r["id"] for r in json.loads(response.text)["agents"]] == ["alice-run"]
@@ -1318,6 +1330,7 @@ async def test_the_dashboard_owner_still_sees_and_controls_every_run(env):
         all_agents=rows,
         _agents={r.id: r for r in rows},
         _tasks={r.id: object() for r in rows},
+        **_NO_QUEUE,
     )
     response = await messaging.api_spawn_list(request(env, owner=True))
     assert sorted(r["id"] for r in json.loads(response.text)["agents"]) == ["cli-run", "owned-run"]

@@ -1403,7 +1403,22 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         if withheld:
             entry["context_withheld"] = withheld
         agents.append(entry)
-    return web.json_response({"agents": agents})
+    body: dict[str, object] = {"agents": agents}
+    # Spawns accepted but still waiting behind the concurrency cap, stagger or
+    # memory gate have no SubagentInfo yet, so the loop above cannot see them:
+    # a caller whose wave chip read "queued 1" got back only its finished runs
+    # and could not tell a real wait from a stale chip. Report the CALLER'S OWN
+    # waiting depth and the gate's label for why it waits. Keyed on the
+    # caller's X-Session-Key alone -- never on a request parameter -- so a
+    # scoped caller learns no other session's depth, and a request with no
+    # session key gets the unchanged payload.
+    if caller:
+        depth = await state.subagents.queued_count_for_async(caller)
+        caller_queue: dict[str, object] = {"queued": depth}
+        if depth > 0:
+            caller_queue.update(state.subagents.queue_wait_for(caller))
+        body["caller_queue"] = caller_queue
+    return web.json_response(body)
 
 
 async def api_spawn_retry(request: web.Request) -> web.Response:

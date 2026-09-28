@@ -1009,6 +1009,22 @@ reads the gateway-injected caller context, the MAC-signed per-session token, the
 a session's own kiro-cli process carries its key and its run controls are
 unaffected.
 
+**`spawn_list` reports the caller's own spawns that are waiting to start.** A
+spawn accepted behind the concurrency cap, the stagger tick or the memory gate
+has no `SubagentInfo` until it drains (it sits in `_queue` or the task store's
+overflow), so the run rows cannot show it. `GET /api/spawn` therefore adds
+`caller_queue: {"queued": N, "reason"?, "available_gb"?, "required_gb"?}` whenever
+the request carries an `X-Session-Key`: `N` is
+`queued_count_for_async(<that key>)` and, while `N > 0`, the wait label is
+`queue_wait_for(<that key>)` -- the same label `subagent_queued` carries (see
+`_emit_queue_depth`). It is keyed on the caller's own header and never on a
+request parameter, so a scoped caller learns no other session's depth; a request
+with no session key gets the unchanged `{"agents": [...]}` payload. The
+`spawn_list` tool prints `N waiting to start — <why>` above the run rows, in the
+chip's wording (`subagentQueuedReason.ts`: concurrency limit, paused starts,
+low/critical memory with the gate's figures), prints nothing new at `N = 0`, and
+does not say "No subagents running." while rows wait.
+
 - `running -> list[SubagentInfo]` — currently running agents
 - `count -> int` — number of running agents
 - `max_concurrent -> int` — the EFFECTIVE capacity limit (`min(user cap, adaptive cap)`)
@@ -1904,7 +1920,7 @@ changes submission, allocation, governance, or the captured memory binding.
 Response semantics:
 - An ID means the submission was accepted. Running and queued work return the same stable agent ID; capacity or stagger queueing preserves that ID when the row drains. Treat it as an identifier, not a result path.
 - An explicit HTTP error response means the submission was rejected and is reported as `failed to start`; rejected work is never described as queued.
-- A transport failure has unknown acceptance status because the gateway may have accepted the work before the response failed. The response warns against automatic retries and directs callers to wait and recheck `spawn_list` or completion events first. An empty immediate `spawn_list` result is inconclusive because the stagger queue is not listed. If the request was truly lost, accepted siblings may remain held until the `_WAVE_STUCK_SECS` backstop (1800s / 30 minutes) reconciles the wave.
+- A transport failure has unknown acceptance status because the gateway may have accepted the work before the response failed. The response warns against automatic retries and directs callers to wait and recheck `spawn_list` or completion events first. An empty immediate `spawn_list` result is inconclusive: a caller whose session key reaches the gateway sees its waiting rows as an `N waiting to start` line, but a submission still in flight is not yet counted. If the request was truly lost, accepted siblings may remain held until the `_WAVE_STUCK_SECS` backstop (1800s / 30 minutes) reconciles the wave.
 - If every submission is explicitly rejected (with no transport uncertainty), the response states that none of the requested subagents were started and does not promise completion events or suggest polling.
 - For a partial batch, accepted IDs remain paired with their tasks, rejected tasks appear in a separate failure section, and completion guidance applies only to accepted submissions.
 

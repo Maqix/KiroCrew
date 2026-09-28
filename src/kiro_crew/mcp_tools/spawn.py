@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import uuid
 from collections.abc import Callable, Iterable, Mapping
@@ -1044,16 +1045,70 @@ def spawn_release(name: str, args: dict[str, Any]) -> str:
     return f"Released conversation {conv} — it can no longer be continued."
 
 
+def _gb(value: object) -> str | None:
+    """``4.5GB`` for a finite number, ``None`` for anything else."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value):
+        return None
+    return f"{float(value):.1f}GB"
+
+
+def _queued_wait_line(caller_queue: object) -> str:
+    """``N waiting to start — <why>`` for the caller's own queued spawns.
+
+    Those rows have no run record yet, so the id list cannot show them; without
+    this line an agent whose chip read ``queued 1`` saw only its finished runs
+    and could not tell a real wait from a stale chip. The wording follows the
+    chip's (``subagentQueuedReason.ts``) so the two surfaces describe one wait
+    the same way. ``""`` when nothing waits or the gateway sent no count.
+    """
+    if not isinstance(caller_queue, Mapping):
+        return ""
+    depth = caller_queue.get("queued")
+    if isinstance(depth, bool) or not isinstance(depth, int) or depth <= 0:
+        return ""
+    reason = caller_queue.get("reason")
+    available = _gb(caller_queue.get("available_gb"))
+    required = _gb(caller_queue.get("required_gb"))
+    if reason == "low_memory":
+        why = (
+            f"needs {required} of free memory, {available} free now; free up memory to continue"
+            if required and available
+            else "not enough free memory; free up memory to continue"
+        )
+    elif reason == "posture_critical":
+        why = (
+            f"this computer's memory is critically low ({available} free); "
+            "free up memory to continue"
+            if available
+            else "this computer's memory is critically low; free up memory to continue"
+        )
+    elif reason == "adaptive_cap_zero":
+        why = (
+            "starts are paused while this computer is low on memory or overloaded; "
+            "they resume on their own once it recovers"
+        )
+    else:
+        # ``concurrency_limit`` and an unlabelled wait: the ordinary wave shape.
+        why = "queued behind the concurrency limit"
+    return f"{depth} waiting to start — {why}"
+
+
 def spawn_list(name: str, args: dict[str, Any]) -> str:
     d = mcp_core._get("/api/spawn")
     agents = d.get("agents", [])
+    waiting = _queued_wait_line(d.get("caller_queue"))
 
     def _redact(text: str) -> str:
         return redact(text)
 
     lines: list[str] = []
+    if waiting:
+        lines.append(waiting)
     if not agents:
-        lines.append("No subagents running.")
+        if not waiting:
+            lines.append("No subagents running.")
     else:
         for a in agents:
             # A run parked on an unanswered spawn-approval prompt has launched

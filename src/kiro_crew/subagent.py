@@ -5265,6 +5265,17 @@ class SubagentManager:
     async def has_pending_work_for_async(self, parent_session_key: str) -> bool:
         return await self._run_events.has_pending_work_for_async_impl(parent_session_key)
 
+    def queue_wait_for(self, parent_session_key: str) -> dict[str, Any]:
+        """A copy of the wait label last recorded for *parent_session_key*.
+
+        ``{"reason": <QUEUED_REASON_*>, "available_gb"?, "required_gb"?}``, or
+        ``{}`` when the gate labelled nothing for this parent. The same label
+        ``subagent_queued`` carries, for a reader outside the event stream
+        (``GET /api/spawn``). It is only meaningful while the parent still has
+        rows waiting; pair it with :meth:`queued_count_for_async`.
+        """
+        return dict(self._queue_wait.get(parent_session_key, {}))
+
     def _emit_queue_depth(
         self,
         parent_session_key: str,
