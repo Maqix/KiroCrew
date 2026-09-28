@@ -58,7 +58,7 @@ import {
   committedDetail,
   DRAFT_KINDS,
   errorText,
-  STATUS_KEY,
+  resultStatusKey,
 } from './setupCardCopy'
 
 /** How often a `working` / `waiting` card re-reads itself, beside the WS push. */
@@ -327,7 +327,7 @@ export default function SetupCard({ cardId, placement = 'inline' }: { cardId: st
                 className="border-transparent text-muted hover:text-text"
                 data-testid="setup-card-decline"
               >
-                {t('components.setupCard.not_now')}
+                {actions.declineLabel ?? t('components.setupCard.not_now')}
               </Btn>
             )}
             {classic && (
@@ -404,7 +404,7 @@ function ResultLine({ card, title }: { card: SetupCardData; title: string }) {
   const tone =
     card.status === 'committed' ? 'text-ok' : card.status === 'failed' ? 'text-danger' : 'text-muted'
   const detail = card.status === 'committed' ? committedDetail(card) : null
-  const statusKey = STATUS_KEY[card.status as keyof typeof STATUS_KEY]
+  const statusKey = resultStatusKey(card)
   return (
     <div className="flex flex-col gap-1 min-w-0" data-testid="setup-card-result">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0 text-[13px]">

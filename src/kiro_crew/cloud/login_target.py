@@ -234,7 +234,8 @@ def parse_whoami_output(raw: str) -> dict[str, str]:
     stdout is untrusted: only the LEADING JSON object is parsed (kiro-cli
     appends a non-JSON "Profile:" block after it), values must be strings, and
     each is length-bounded. Returns any of ``email`` / ``account_type`` /
-    ``start_url``, or ``{}`` when no identity can be read.
+    ``start_url`` / ``region`` (the Identity Center region kiro-cli reports),
+    or ``{}`` when no identity can be read.
     """
     start = raw.find("{")
     if start < 0:
@@ -263,6 +264,7 @@ def parse_whoami_output(raw: str) -> dict[str, str]:
         ("email", "email", 254),
         ("accountType", "account_type", 60),
         ("startUrl", "start_url", 200),
+        ("region", "region", 32),
     ):
         v = data.get(src)
         if isinstance(v, str) and v:
@@ -274,8 +276,9 @@ def target_from_whoami(identity: Mapping[str, Any], *, region: str = "") -> Kiro
     """Derive the target a ``whoami`` identity implies.
 
     An Identity Center identity yields a Pro target on its start URL; *region*
-    is the Identity Center region, which whoami does not report and the caller
-    must supply (or the result is left un-regioned for the caller to complete).
+    is the Identity Center region. When the caller supplies none, the region
+    whoami reports is used; with neither, the result is left un-regioned for the
+    caller to complete, and :func:`KiroLoginTarget.from_dict` will refuse it.
     Builder ID, a personal (social) sign-in, or no identity at all is the default
     target. An Identity Center identity with NO readable start URL (missing, or
     one that fails validation) is ``None``: the machine is signed in to some
@@ -289,7 +292,9 @@ def target_from_whoami(identity: Mapping[str, Any], *, region: str = "") -> Kiro
         return None
     try:
         return KiroLoginTarget(
-            license="pro", start_url=normalize_start_url(url), region=normalize_region(region)
+            license="pro",
+            start_url=normalize_start_url(url),
+            region=normalize_region(region or str(identity.get("region") or "")),
         )
     except LoginTargetError:
         return None

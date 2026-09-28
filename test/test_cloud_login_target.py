@@ -179,6 +179,21 @@ class TestWhoamiParsing:
         assert target_from_whoami(parse_whoami_output(BUILDER_WHOAMI)) == KiroLoginTarget()
         assert target_from_whoami({}) == KiroLoginTarget()
 
+    def test_the_region_whoami_reports_completes_an_identity_center_target(self):
+        # Current kiro-cli reports the Identity Center region; a target built
+        # without it could not be read back from a launch job (from_dict refuses
+        # an un-regioned Identity Center target), which failed the home card
+        # while the build went on.
+        raw = json.dumps({**json.loads(IDC_WHOAMI), "region": "us-east-1"})
+        ident = parse_whoami_output(raw)
+        assert ident["region"] == "us-east-1"
+        target = target_from_whoami(ident)
+        assert target == IDC
+        assert KiroLoginTarget.from_dict(target.to_dict()) == IDC
+        # An explicit region still wins, and a malformed reported one is unknown.
+        assert target_from_whoami(ident, region="eu-west-1").region == "eu-west-1"
+        assert target_from_whoami({**ident, "region": "not a region"}) is None
+
     @pytest.mark.parametrize(
         "start_url", ["", "http://example.awsapps.com/start", "https://bad host/start"]
     )

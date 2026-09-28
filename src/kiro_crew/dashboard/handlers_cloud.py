@@ -1128,6 +1128,117 @@ def _unclaim_signin(state: "DashboardState", job: lj.LaunchJob) -> None:
     store.save(fresh)
 
 
+async def restart_signin(
+    state: "DashboardState", job_id: str
+) -> "tuple[Optional[lj.LaunchJob], Optional[LaunchRefusal]]":
+    """Start (again) the Kiro sign-in on a finished crew; the one path every restart takes.
+
+    The route below and the home card's "Sign the home in to Kiro"
+    (``setup_flow``) both call it, so they refuse alike. Returns the claimed job
+    and ``None``, or ``None`` and the refusal to answer.
+    """
+    # Same lock as create: the "nothing active" check awaits, so two restarts
+    # arriving together would otherwise both pass it and race two remote logins.
+    async with _launch_lock(state):
+        store = await _astore(state)
+        job = await _in_executor(store.get, job_id)
+        if job is None:
+            return None, LaunchRefusal({"error": "not found", "code": "launch_job_not_found"}, 404)
+        if job.signin_detected:
+            # A stale tab asking to restart a sign-in that another tab (or the
+            # re-probe) has since confirmed. Admitting it would clear
+            # `signin_detected` in the claim, and an SSM failure after that would
+            # persist a signed-in crew as unsigned. Nothing to do: say so.
+            _audit("launch_signin_restart", "denied", request_id=job_id, error="already signed in")
+            return None, LaunchRefusal(
+                {
+                    "error": "this crew is already signed in",
+                    "code": "signin_already_complete",
+                    "job": job.to_dict(),
+                },
+                409,
+            )
+        if lj.target_is_unreadable(job):
+            # The job named an identity this release cannot parse, so `from_dict`
+            # substituted the DEFAULT (Builder ID). Admitting the restart would
+            # persist that substitution over the original bytes and start a
+            # Builder ID device flow on a crew that belongs to an org portal --
+            # the silent identity downgrade the target exists to prevent, with the
+            # start URL gone from the job and nothing to recover it from. The
+            # remedy is a release that can read the target, or deleting the crew
+            # and launching again; not a sign-in from here.
+            _audit(
+                "launch_signin_restart", "denied", request_id=job_id, error="unreadable identity"
+            )
+            return None, LaunchRefusal(
+                {
+                    "error": (
+                        "this crew's Kiro identity cannot be read by this version, so a "
+                        "sign-in here would use the wrong account"
+                    ),
+                    "code": "login_target_unreadable",
+                    "job": job.to_dict(),
+                },
+                409,
+            )
+        if not job.instance_id or job.step(lj.STEP_CONNECT).state != lj.STEP_DONE:
+            _audit("launch_signin_restart", "denied", request_id=job_id, error="no crew")
+            return None, LaunchRefusal(
+                {
+                    "error": "this setup did not create a crew to sign in on",
+                    "code": "launch_has_no_instance",
+                },
+                400,
+            )
+        existing = await _in_executor(store.list)
+        active = next((j for j in existing if not j.terminal), None)
+        if active is not None:
+            _audit("launch_signin_restart", "denied", request_id=job_id, error="already running")
+            return None, LaunchRefusal(
+                {
+                    "error": "a crew setup or sign-in is already running; wait for it or cancel it",
+                    "code": "launch_already_running",
+                    "job": active.to_dict(),
+                },
+                409,
+            )
+        try:
+            engine = _engine(state, job.provider_id)
+        except KeyError:
+            _audit("launch_signin_restart", "denied", request_id=job_id, error="no engine")
+            return None, LaunchRefusal(
+                {
+                    "error": f"provisioner {job.provider_id!r} has no launch engine",
+                    "code": "unknown_provisioner",
+                },
+                400,
+            )
+        # Event BEFORE claim, both under the lock: once RUNNING is on disk a
+        # cancel must find something to set, or it terminalizes a job the worker
+        # is about to drive (see `_start_signin_worker`).
+        cancel = threading.Event()
+        _register_cancel(state, job.id, cancel)
+        await _in_executor(functools.partial(_claim_signin, state, job))
+        try:
+            _start_signin_worker(state, job, engine, cancel)
+        except RuntimeError:
+            # Revert the claim off the loop, still under the launch lock that made
+            # it, then tell the caller the truth rather than 202-ing a sign-in that
+            # is not running. Retryable, so 503.
+            await _in_executor(functools.partial(_unclaim_signin, state, job))
+            _audit("launch_signin_restart", "error", request_id=job_id, error="thread start failed")
+            return None, LaunchRefusal(
+                {
+                    "error": "could not start the sign-in worker; try again",
+                    "code": "signin_worker_unavailable",
+                },
+                503,
+            )
+    _audit("launch_signin_restart", "success", request_id=job_id)
+    updated = await _in_executor(store.get, job_id) or job
+    return updated, None
+
+
 async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
     """POST /api/cloud/launch/{id}/signin/restart — start (again) the Kiro sign-in.
 
@@ -1150,110 +1261,21 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
     denied = _guard(request, "launch_signin_restart")
     if denied is not None:
         return denied
-    state: "DashboardState" = request.app["state"]
-    job_id = request.match_info["id"]
-    # Same lock as create: the "nothing active" check awaits, so two restarts
-    # arriving together would otherwise both pass it and race two remote logins.
-    async with _launch_lock(state):
-        store = await _astore(state)
-        job = await _in_executor(store.get, job_id)
-        if job is None:
-            return web.json_response(
-                {"error": "not found", "code": "launch_job_not_found"}, status=404
-            )
-        if job.signin_detected:
-            # A stale tab asking to restart a sign-in that another tab (or the
-            # re-probe) has since confirmed. Admitting it would clear
-            # `signin_detected` in the claim, and an SSM failure after that would
-            # persist a signed-in crew as unsigned. Nothing to do: say so.
-            _audit("launch_signin_restart", "denied", request_id=job_id, error="already signed in")
-            return web.json_response(
-                {
-                    "error": "this crew is already signed in",
-                    "code": "signin_already_complete",
-                    "job": job.to_dict(),
-                },
-                status=409,
-            )
-        if lj.target_is_unreadable(job):
-            # The job named an identity this release cannot parse, so `from_dict`
-            # substituted the DEFAULT (Builder ID). Admitting the restart would
-            # persist that substitution over the original bytes and start a
-            # Builder ID device flow on a crew that belongs to an org portal --
-            # the silent identity downgrade the target exists to prevent, with the
-            # start URL gone from the job and nothing to recover it from. The
-            # remedy is a release that can read the target, or deleting the crew
-            # and launching again; not a sign-in from here.
-            _audit(
-                "launch_signin_restart", "denied", request_id=job_id, error="unreadable identity"
-            )
-            return web.json_response(
-                {
-                    "error": (
-                        "this crew's Kiro identity cannot be read by this version, so a "
-                        "sign-in here would use the wrong account"
-                    ),
-                    "code": "login_target_unreadable",
-                    "job": job.to_dict(),
-                },
-                status=409,
-            )
-        if not job.instance_id or job.step(lj.STEP_CONNECT).state != lj.STEP_DONE:
-            _audit("launch_signin_restart", "denied", request_id=job_id, error="no crew")
-            return web.json_response(
-                {
-                    "error": "this setup did not create a crew to sign in on",
-                    "code": "launch_has_no_instance",
-                },
-                status=400,
-            )
-        existing = await _in_executor(store.list)
-        active = next((j for j in existing if not j.terminal), None)
-        if active is not None:
-            _audit("launch_signin_restart", "denied", request_id=job_id, error="already running")
-            return web.json_response(
-                {
-                    "error": "a crew setup or sign-in is already running; wait for it or cancel it",
-                    "code": "launch_already_running",
-                    "job": active.to_dict(),
-                },
-                status=409,
-            )
-        try:
-            engine = _engine(state, job.provider_id)
-        except KeyError:
-            _audit("launch_signin_restart", "denied", request_id=job_id, error="no engine")
-            return web.json_response(
-                {
-                    "error": f"provisioner {job.provider_id!r} has no launch engine",
-                    "code": "unknown_provisioner",
-                },
-                status=400,
-            )
-        # Event BEFORE claim, both under the lock: once RUNNING is on disk a
-        # cancel must find something to set, or it terminalizes a job the worker
-        # is about to drive (see `_start_signin_worker`).
-        cancel = threading.Event()
-        _register_cancel(state, job.id, cancel)
-        await _in_executor(functools.partial(_claim_signin, state, job))
-        try:
-            _start_signin_worker(state, job, engine, cancel)
-        except RuntimeError:
-            # Revert the claim off the loop, still under the launch lock that made
-            # it, then tell the caller the truth rather than 202-ing a sign-in that
-            # is not running. Retryable, so 503.
-            await _in_executor(functools.partial(_unclaim_signin, state, job))
-            _audit("launch_signin_restart", "error", request_id=job_id, error="thread start failed")
-            return web.json_response(
-                {
-                    "error": "could not start the sign-in worker; try again",
-                    "code": "signin_worker_unavailable",
-                },
-                status=503,
-            )
-    _audit("launch_signin_restart", "success", request_id=job_id)
-    updated = await _in_executor(store.get, job_id) or job
-    return web.json_response(updated.to_dict(), status=202)
+    job, refusal = await restart_signin(request.app["state"], request.match_info["id"])
+    if refusal is not None or job is None:
+        refused = refusal or LaunchRefusal(
+            {"error": "not found", "code": "launch_job_not_found"}, 404
+        )
+        # Spelled out, as the launch route does: every refusal carries its code.
+        return web.json_response(
+            {
+                "error": refused.body.get("error", ""),
+                "code": refused.body["code"],
+                "job": refused.body.get("job"),
+            },
+            status=refused.status,
+        )
+    return web.json_response(job.to_dict(), status=202)
 
 
 def _teardown_after_delete(tag: str, profile: str, region: str, instance_id: str) -> None:

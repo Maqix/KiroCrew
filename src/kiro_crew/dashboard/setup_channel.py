@@ -69,7 +69,7 @@ _REPLY_FAILED = "Pairing could not be saved on the gateway. Start again from the
 class _Pairing:
     card_id: str
     code: str
-    #: ``time.monotonic()`` past which the code no longer pairs.
+    #: ``time.monotonic()`` past which the code does not pair.
     deadline: float
     wrong_left: int
     state: "DashboardState"
@@ -347,7 +347,7 @@ async def _settle(
 ) -> None:
     """Move a WAITING card to terminal *status*, then show and report it.
 
-    A card that is no longer waiting was settled by someone else and is left as
+    A card that is not waiting any more was settled by someone else and is left as
     it is, so a late watcher cannot overwrite a pairing that just landed.
     """
     settled = False

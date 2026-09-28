@@ -223,11 +223,11 @@ These are out of scope entirely:
 ## 5. The experience
 
 ```
- Egg ──────▶ Hello ──────▶ Bring & connect ──────▶ Preview now ──────▶ Keep it ──────▶ Stay on
- no model    name, lang,   import found agents;    run the job once   schedule it;    service card
- install     tone; what    connect one dev         on your data       adapted crons   (when asked or
- harness     I found       service                                                    when it hurts)
- privacy
+ Egg ──────▶ Home ──────▶ Hello ──────▶ Bring & connect ──────▶ Preview now ──────▶ Keep it ──────▶ Stay on
+ no model    where the     name, lang,   import found agents;    run the job once   schedule it;    service card
+ install     crew lives    tone; what    connect one dev         on your data       adapted crons   (when asked or
+ harness     (a card; the  I found       service                                                    when it hurts)
+ privacy     build runs in the background)
 ```
 
 Only the Egg is fixed. After that, the agent *recommends* the order. The user
@@ -239,8 +239,8 @@ start.sh runs these steps and asks nothing: every choice after the command is
 made in the web chat. The one terminal step left is the harness's own sign-in on
 a signed-out machine, which runs without a yes/no because the chat cannot start
 without it (it opens the browser, or prints a device code on a headless host).
-Where the crew lives is asked in the Hello (§5.2); `--home here|cloud|later`
-lets a script answer ahead of time.
+Where the crew lives is a step of its own in the chat, right after privacy (§5.7);
+`--home here|cloud|later` lets a script answer ahead of time.
 
 1. **Install as `cli.sh` does.** It uses the same signed manifest, the same
    pinned trust root and the same managed Python (§6.1).
@@ -274,12 +274,9 @@ what it found. For example:
 > kiro-cli is signed in. Want me to bring Hermes over? Also, what should I be
 > called? Here are three ideas.
 
-When this machine's AWS CLI is signed in, it adds one sentence on where the crew
-lives: here, or a home in the cloud in that account, at the stated monthly cost,
-built while the setup carries on (§5.7). A yes puts the home card on screen. A
-no, or no answer, is not asked again during setup; "move me to the cloud" works
-from any later chat, and a first-week tip names it. With no AWS sign-in the Hello
-says nothing about homes.
+It points in one sentence to the home step already on screen (§5.7) and does not
+ask it again in prose. The prototype first asked it only in that sentence; a tester
+never noticed it next to the import card, so it became a card of its own.
 
 It asks four things in passing: a name, a reply language, the timezone
 (pre-filled from the OS) and the tone. It asks whether the user writes code and
@@ -344,8 +341,14 @@ shows this every morning?").
 
 ### 5.7 The home, built while you talk
 
-If the user picks a home in the cloud (in the Hello, or later), a deterministic
-**home card** sits in the chat from that moment and shows the build's progress.
+Right after privacy, every first run shows a deterministic **"Where should your
+crew live?"** card: stay on this machine (one click), or a home in the cloud in the
+owner's AWS account at the stated monthly cost. When the AWS CLI is signed in it
+names the account's last four digits and the region and builds on one click; when
+it is not, the same card walks the owner through it first: install the AWS CLI if
+it is missing, create an AWS account if they have none, sign in (§6.8 rule 2), and
+the agent guides them through those steps in the chat. Once they press Build, the
+card stays in the chat and shows the build's progress.
 Nothing waits on it: name, import, connect and the preview job all happen
 locally meanwhile. When the home is healthy the card turns into **Move in**:
 one click hands the crew over (memory, schedules, settings, SOUL.md and USER.md,

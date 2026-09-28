@@ -88,7 +88,7 @@ _START_READY_TIMEOUT_SECS = 60.0
 _SERVICE_READY_TIMEOUT_SECS = 30.0
 #: How long to wait for the gateway to record the first-run session. The
 #: gateway writes it during its first start, which may finish just after
-#: readiness; an install that can no longer get one (onboarded, or the privacy
+#: readiness; an install that cannot get one (onboarded, or the privacy
 #: notice already acknowledged) does not wait at all.
 _FIRST_RUN_SLOT_WAIT_SECS = 10.0
 _FIRST_RUN_SLOT_POLL_SECS = 0.25

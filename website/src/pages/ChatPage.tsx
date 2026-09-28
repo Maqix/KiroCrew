@@ -23,6 +23,7 @@ import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, useAppStore, store } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { useOptionalTheme } from '../hooks/useTheme'
+import { firstRunLayoutActive, useFirstRunLayout } from '../hooks/useFirstRunLayout'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
@@ -4162,7 +4163,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (autoOpenGitPanel) dispatch(openActivityPanel())
   }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch, autoOpenGitPanel, autoOpenGitPanelKnown])
 
-  const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
+  // A remount inside a first-run page load keeps the hidden list it started
+  // with; the first mount picks the verdict up in the effect beside the
+  // force-open rule below.
+  const [sidebarPinned, setSidebarPinned] = useState(() => {
+    const stored = localStorage.getItem('mc-sidebar-pinned')
+    if (stored === null && !embedded && filteredSlots.length > 0 && firstRunLayoutActive()) return false
+    return stored !== 'false'
+  })
   const sidebarPinnedRef = useRef(sidebarPinned)
   sidebarPinnedRef.current = sidebarPinned
   // Pre-focus session-list state while the Web Preview expand mode auto-hides
@@ -6770,6 +6778,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       safeSetItem('mc-sidebar-pinned', 'true')
     }
   }, [filteredSlots.length, sidebarPinned, previewExpanded])
+
+  // A page load that opens on the one-chat first run starts with the list
+  // hidden (useFirstRunLayout; App collapses the rail off the same verdict). It
+  // waits for a row, since an empty unpinned list is the rule above's to
+  // force open and persist, and it never writes `mc-sidebar-pinned`: the
+  // sessions toggle does, so the user's first expand is the one that sticks.
+  const firstRunLayout = useFirstRunLayout()
+  const firstRunHideDone = useRef(false)
+  useEffect(() => {
+    if (!firstRunLayout || embedded || firstRunHideDone.current || filteredSlots.length === 0) return
+    firstRunHideDone.current = true
+    if (localStorage.getItem('mc-sidebar-pinned') === null) setSidebarPinned(false)
+  }, [firstRunLayout, embedded, filteredSlots.length])
 
   // Horizontal space (px) the detail panel must keep clear so it never grows
   // past its flex row and collapses the chat pane: the open sidebar's width

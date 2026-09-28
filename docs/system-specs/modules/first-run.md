@@ -70,7 +70,7 @@ whose payload no longer hashes to its `payload_hash` is read back `expired` with
 | `channel` | agent | the channel (Telegram) | stores the bot token typed into the card as `TELEGRAM_BOT_TOKEN` in `.env` through the Settings save's own helper (`messaging.commit_telegram_writes`), turns `telegram.enabled` on and reconnects the channel, then goes `waiting` with a one-time 4-digit pairing code. A `/pair <code>` DM to the bot adds that sender's id to `telegram.allowed_user_ids` and commits with `{channel, paired, username}`; five wrong codes fail the card, and ten unpaired minutes expire it. See [Channel pairing](#channel-pairing) |
 | `cron` | agent | name, prompt summary, schedule in words, timezone (the full prompt is private) | `preview`: creates the job disabled and silent, runs it once, shows the output (status `success`, `failure` or `timeout`, mapped from the cron run's own status, and `failure` with `reason: approval_not_given` when an approval the run asked for was rejected or went unanswered), returns to `pending`. While it runs, the card shows the run's pending approvals with Allow once and Reject; after a run that asked, `approvals` counts them and the card says the job will ask on every run, in Notifications. See [Job previews](#job-previews). `commit` (Keep it): makes it non-silent and enables it. `decline`: removes the preview job |
 | `service` | agent | platform, the command, whether a terminal is needed, installed | macOS: installs the launchd agent. Linux: verifies the unit exists (the owner runs `kirocrew stop && kirocrew service install`, which needs sudo) |
-| `home` | agent, or the gateway when a script passed `kirocrew start --home cloud` | provider, region, AWS profile, size, estimated monthly cost, who bills it, whether AWS is signed in, whether the run is simulated | two decisions on one card, after **Sign in to AWS** when AWS was not signed in: the `aws_signin` decision runs `aws login` from the card, goes `waiting`, and returns to `pending` with `aws_signed_in: true` in the outcome once AWS answers (see [Signing in to AWS](#signing-in-to-aws)). **Build my home**: records whether the owner's browser is on this machine, starts the launch job (`handlers_cloud.start_launch_job`), goes `waiting`, and a watcher mirrors the build's steps onto the card until it is done (`pending`, `ready`) or fails; while the build waits on the home's own Kiro sign-in, see [The home's Kiro sign-in](#the-homes-kiro-sign-in). **Move in**: a simulated home walks four steps and moves nothing; a live one is handed the crew and this chat, see [Moving in](#moving-in). Commits with `moved: true` |
+| `home` | agent, or the gateway when a script passed `kirocrew start --home cloud` | provider, region, AWS profile, size, estimated monthly cost, who bills it, whether AWS is signed in, whether the run is simulated | two decisions on one card, after **Sign in to AWS** when AWS was not signed in: the `aws_signin` decision runs `aws login` from the card, goes `waiting`, and returns to `pending` with `aws_signed_in: true` in the outcome once AWS answers (see [Signing in to AWS](#signing-in-to-aws)). **Build my home**: records whether the owner's browser is on this machine, starts the launch job (`handlers_cloud.start_launch_job`), goes `waiting`, and a watcher mirrors the build's steps onto the card until it is done (`pending`, `ready`) or fails; while the build waits on the home's own Kiro sign-in, see [The home's Kiro sign-in](#the-homes-kiro-sign-in). A build that finished without that sign-in is not `ready`: the card is `pending` in phase `signin` with `needs_signin`, and its commit is **Sign the home in to Kiro** (`handlers_cloud.restart_signin`). **Move in**: a simulated home walks four steps and moves nothing; a live one is handed the crew and this chat, see [Moving in](#moving-in). Commits with `moved: true` |
 
 ## Invariants
 
@@ -272,6 +272,25 @@ is writable from the agent's sandbox, so none of them can start an open on its
 own, and no URL comes from the card. The page that opens is always one the
 worker in this process received from kiro-cli on the home.
 
+**A build that finished unsigned.** The build finishes (`DONE`) even when its
+sign-in step was skipped: the device code ran out unapproved, or a gateway
+restart cut the wait short, leaving `signin_detected` false. Such a home's agent
+cannot answer, so the watcher (`setup_flow._home_built`) does NOT offer Move in:
+it sets phase `signin` and leaves the card `pending` with outcome `{ready: false,
+needs_signin: true, steps}`, plus the `signin` link and code when the job still
+holds them. The card's commit in that phase, **Sign the home in to Kiro**
+(`_sign_home_in`), runs `handlers_cloud.restart_signin`, the same body as the
+Instances hub's `POST /api/cloud/launch/{id}/signin/restart`, with every refusal
+it has (already signed in, an unreadable identity, no crew to sign in on, a setup
+or sign-in already running, no launch engine); a refusal is the card's error and
+the card stays in phase `signin`. "Already signed in" goes straight to Move in.
+Otherwise the card goes `waiting` and is watched again, with `may_open` from the
+`browser_is_here` this click recorded, so the fresh code's page may open once in
+the owner's browser. When that watch sees `DONE` with `signin_detected`, the card
+moves to phase `move` as before. The phase is on the stored card, so a card left
+at `needs_signin` across a gateway restart still offers the button. A simulated
+home is never held here.
+
 ## Moving in
 
 When a live home's build is done, the card's private record holds the EC2
@@ -355,18 +374,34 @@ disk. It is idempotent across restarts. `_theme_payload` reports
 `first_run_slot`, which the SPA uses to keep the classic chapters from opening
 by themselves; `/onboarding` still opens them.
 
+On a desktop-width page load that opens on the first-run chat before
+graduation, the dashboard starts with the nav rail collapsed to its icons and
+the session list hidden (`hooks/useFirstRunLayout.ts`). The rule is decided once
+per load and never persisted: the rail and sessions toggles write `mc-nav` and
+`mc-sidebar-pinned` as they always do, and a stored value wins. Any other load,
+including the main chat after graduation, keeps the stored or default layout.
+
 Committing the privacy card dispatches the `[First run]` kickoff turn
 (`FIRST_RUN_PREFIX` in `dashboard/state.py`, `injectKind: "first_run"`), whose
 text carries facts the gateway gathered (other agents detected, curated
 connections, whether the service is installed, and where the crew lives) and the
-`$crew-setup` token, so the skill body is expanded into that turn. Where the crew
-lives is asked in the chat, never in the terminal: with no home answer recorded,
-`_aws_home_fact` makes one read-only `aws sts get-caller-identity` call
-(`cloud/local_signin.py`) and, when the AWS CLI is signed in, the fact names the
-account's last four digits, the profile's region and the monthly estimate, and
-tells the Hello to offer the home in one sentence. A signed-out machine gets no
-offer. A `--home cloud` answer puts the home card on screen instead, and
-`--home here|later` skips the call.
+`$crew-setup` token, so the skill body is expanded into that turn.
+
+Where the crew lives is a step of its own, asked in the chat, never in the
+terminal. Before that kickoff, `_offer_home_step` shows a home card with payload
+`offer: true` (`HOME_STEP_KEY`) on every first run: "Where should your crew
+live?". Its payload is the ordinary home card's (`_home_payload`: one read-only
+AWS reachability check; the profile's region from `local_signin.configured_region`,
+else `HOME_DEFAULT_REGION`), so a signed-in machine sees the account's last four
+digits, region and monthly cost, and a signed-out one gets the sign-in and
+account-creation path (see [Signing in to AWS](#signing-in-to-aws)). Declining it
+keeps the crew on this machine. The kickoff fact (`_home_step_fact`) tells the
+Hello to point to the card in one sentence, not to ask again in prose, and to
+guide the owner through the card's AWS steps when they choose the cloud. The step
+card is the gateway's, so it does not count toward the agent's card budget. A
+`--home cloud` answer shows the same card without the step framing;
+`--home here|later` shows none. An earlier prototype asked only in the Hello's
+prose; a tester missed it next to the first card, which is why it is a card.
 
 ## Guardrails
 

@@ -110,6 +110,10 @@ def _no_aws_sign_in(monkeypatch):
     monkeypatch.setattr(local_signin, "detect", lambda profile="", **kw: None)
     monkeypatch.setattr(local_signin, "configured_region", lambda profile="": "")
     monkeypatch.setattr(local_signin, "kiro_signs_in_with_builder_id", lambda: False)
+    # The home step after privacy probes AWS for its card; never the real one.
+    from kiro_crew.cloud import iam
+
+    monkeypatch.setattr(iam, "reachability_check", lambda profile, region: {"reachable": False})
 
 
 async def _propose(state, args, *, user_facing=True, slot="chat-1-1"):
@@ -534,6 +538,7 @@ class TestHomeInTheBackground:
             return {
                 "account_type": ACCOUNT_TYPE_IDENTITY_CENTER,
                 "start_url": "https://example.awsapps.com/start",
+                "region": "us-east-1",
             }
 
         monkeypatch.setattr(sessions, "fetch_local_identity", _identity)
@@ -549,6 +554,8 @@ class TestHomeInTheBackground:
         await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
         target = seen["login_target"]
         assert target.is_identity_center and target.start_url.startswith("https://example.")
+        # The region whoami reports rides along, so the job can be read back.
+        assert target.region == "us-east-1"
 
     @pytest.mark.asyncio
     async def test_the_first_run_offers_the_home_the_owner_chose(self, dispatched, monkeypatch):
@@ -567,45 +574,80 @@ class TestHomeInTheBackground:
         assert "home in the cloud" in dispatched[-1][2]
 
     @pytest.mark.asyncio
-    async def test_a_signed_in_machine_is_offered_a_home_in_the_hello(
+    async def test_a_signed_in_machine_gets_the_home_step_after_privacy(
         self, dispatched, monkeypatch
     ):
-        from kiro_crew.cloud import local_signin
+        from kiro_crew.cloud import iam, local_signin
 
-        signin = local_signin.AwsSignIn("123456789012", "arn:aws:iam::123456789012:user/me")
-        monkeypatch.setattr(local_signin, "detect", lambda profile="", **kw: signin)
         monkeypatch.setattr(local_signin, "configured_region", lambda profile="": "eu-north-1")
+        monkeypatch.setattr(
+            iam,
+            "reachability_check",
+            lambda profile, region: {"reachable": True, "account": "123456789012"},
+        )
         st = FakeState()
         slot_key = await setup_flow.ensure_first_run_session(st)
         privacy = _only_card(slot_key)
         await setup_flow.decide(st, privacy.id, "commit", privacy.payload_hash, {})
-        # An offer in the Hello, not a card: the user answers in the chat.
-        assert [c.kind for c in sc.list_cards(slot_key)] == ["privacy"]
+        # Its own step on screen, not a sentence in the Hello the user can miss.
+        cards = sc.list_cards(slot_key)
+        assert [c.kind for c in cards] == ["privacy", "home"]
+        home = cards[1]
+        assert home.payload[setup_flow.HOME_STEP_KEY] is True
+        assert home.payload["region"] == "eu-north-1"
+        assert home.payload["aws_signed_in"] is True
         kickoff = dispatched[-1][2]
+        assert "Where should your crew live?" in kickoff
         assert "account …9012, region eu-north-1" in kickoff
         assert "123456789012" not in kickoff
         assert f"${sc.monthly_estimate_usd(sc.HOME_DEFAULT_SIZE)}/month" in kickoff
-        assert "kind: home with region eu-north-1" in kickoff
+        assert "do not ask it again in prose" in kickoff
 
     @pytest.mark.asyncio
-    async def test_a_signed_out_machine_gets_no_home_offer(self, dispatched):
+    async def test_a_signed_out_machine_gets_the_step_that_walks_it_through_aws(self, dispatched):
         st = FakeState()
         slot_key = await setup_flow.ensure_first_run_session(st)
         privacy = _only_card(slot_key)
         await setup_flow.decide(st, privacy.id, "commit", privacy.payload_hash, {})
-        assert "AWS CLI is signed in" not in dispatched[-1][2]
+        cards = sc.list_cards(slot_key)
+        assert [c.kind for c in cards] == ["privacy", "home"]
+        assert cards[1].payload["aws_signed_in"] is False
+        assert cards[1].payload["signup_url"].startswith("https://signin.aws.amazon.com/signup")
+        kickoff = dispatched[-1][2]
+        assert "creating an AWS account if they have none" in kickoff
+
+    @pytest.mark.asyncio
+    async def test_the_home_step_is_not_one_of_the_agents_cards(self, dispatched, state):
+        # The gateway's step leaves the agent its whole card budget.
+        home = sc.create_card(
+            slot="chat-1-1",
+            session_key="dashboard:chat-1-1",
+            kind=sc.KIND_HOME,
+            payload={"region": "us-east-1", setup_flow.HOME_STEP_KEY: True},
+            private={},
+        )
+        assert home.payload[setup_flow.HOME_STEP_KEY]
+        for i in range(sc.CARD_BUDGET_BEFORE_FIRST_JOB - 1):
+            await _propose(state, {"kind": "profile", "fields": {"bot_name": f"N{i}"}})
+            sc.update_card(
+                sc.list_cards("chat-1-1")[-1].id,
+                lambda c: setattr(c, "status", sc.STATUS_DECLINED),
+            )
+        out = await _propose(state, {"kind": "profile", "fields": {"bot_name": "Last"}})
+        assert out.startswith("Setup card shown"), out
 
     @pytest.mark.asyncio
     async def test_a_scripted_here_answer_is_never_asked_again(self, dispatched, monkeypatch):
-        from kiro_crew.cloud import local_signin
+        from kiro_crew.cloud import iam
 
-        monkeypatch.setattr(local_signin, "detect", _refuse_detect)
+        monkeypatch.setattr(iam, "reachability_check", _refuse_detect)
         first_run.record_home_choice("here")
         st = FakeState()
         slot_key = await setup_flow.ensure_first_run_session(st)
         privacy = _only_card(slot_key)
         await setup_flow.decide(st, privacy.id, "commit", privacy.payload_hash, {})
-        assert "AWS CLI is signed in" not in dispatched[-1][2]
+        assert [c.kind for c in sc.list_cards(slot_key)] == ["privacy"]
+        assert "Where should your crew live?" not in dispatched[-1][2]
 
 
 def _refuse_detect(*args, **kw):

@@ -161,7 +161,8 @@ class TestOpen:
         self, state, opened, monkeypatch
     ):
         card = _home_card(monkeypatch, browser_here=True)
-        polls = [_job(lj.AWAITING_SIGNIN)] * 3 + [_job(lj.DONE, url="")]
+        # The owner approved it: the build ends signed in, so Move in is offered.
+        polls = [_job(lj.AWAITING_SIGNIN)] * 3 + [_job(lj.DONE, url="", signin_detected=True)]
         await _watch(monkeypatch, state, card, polls, may_open=True)
         assert opened == [BUILDER_ID_URL]
         notices = _notices(state)
@@ -405,6 +406,37 @@ class TestTheClick:
         assert building.status == sc.STATUS_WAITING
         assert sc.get_card(card.id).private[home_signin.BROWSER_HERE_KEY] is here
         assert watched == {"may_open": here}
+
+
+class TestTheIdentityTarget:
+    @pytest.mark.asyncio
+    async def test_an_identity_center_target_without_a_region_builds_nothing(
+        self, state, monkeypatch
+    ):
+        # Seen on a real build: the job could never be read back, so the card
+        # failed while the worker went on creating the stack.
+        from kiro_crew.cloud.login_target import KiroLoginTarget
+        from kiro_crew.dashboard import handlers_cloud
+
+        monkeypatch.setattr(setup_flow, "_governance_denial", lambda kind, sk: None)
+
+        async def _unregioned():
+            return KiroLoginTarget(license="pro", start_url="https://example.awsapps.com/start")
+
+        async def _start(state_, **kw):
+            raise AssertionError("no launch may start with an unreadable identity")
+
+        monkeypatch.setattr(setup_flow, "_inherited_login_target", _unregioned)
+        monkeypatch.setattr(handlers_cloud, "start_launch_job", _start)
+        card = _home_card(monkeypatch)
+
+        def _pending(c: sc.SetupCard) -> None:
+            c.status = sc.STATUS_PENDING
+
+        sc.update_card(card.id, _pending)
+        out = await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
+        assert out.status == sc.STATUS_PENDING
+        assert (out.error or {}).get("code") == "home_identity_region_unknown"
 
 
 class TestOpenable:

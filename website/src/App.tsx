@@ -32,6 +32,7 @@ import { useSidePanelDock } from './hooks/useSidePanelDock'
 import { useDndSensors } from './hooks/useDndSensors'
 import { usePreviewFlagRevision } from './hooks/usePreviewFlag'
 import { setRailWidth, railWidthFor } from './hooks/useRailWidth'
+import { firstRunLayoutVerdict, settleFirstRunLayout, useFirstRunLayout } from './hooks/useFirstRunLayout'
 import { useFocusMode, useFocusChromeVisible, setFocusChromeVisible, FOCUS_INSET } from './hooks/useFocusMode'
 import { APP_NAV_ORDER_KEY, buildReorderBaseline, mergeVisibleReorder, readAppNavOrder, useAppNavHidden } from './lib/appNavHidden'
 import { useNavPinned } from './lib/navPinned'
@@ -1840,6 +1841,7 @@ export default function App() {
     privacyAcked,
     themeBootReady,
     firstRunSlot,
+    mainSlot,
     markOnboarded,
     markImportOnboarded,
     markPrivacyAcked,
@@ -2007,6 +2009,22 @@ export default function App() {
     return () => window.removeEventListener(PREVIEW_EXPAND_EVENT, onPreviewExpand)
   }, [])
   const isMobile = useIsMobile()
+  // A page load that opens on the one-chat first run starts with the rail
+  // collapsed (see useFirstRunLayout; ChatPage hides the session list off the
+  // same verdict). Unpersisted, and skipped once `mc-nav` holds a choice, so
+  // the brand toggle's first write is what the user keeps.
+  const landingSlot = useAppSelector(s => s.chat.activeSlot)
+  useEffect(() => {
+    const verdict = firstRunLayoutVerdict({
+      themeBootReady, firstRunSlot, mainSlot: mainSlot ?? null,
+      pathname: location.pathname, activeSlot: landingSlot, isMobile,
+    })
+    if (verdict !== null) settleFirstRunLayout(verdict)
+  }, [themeBootReady, firstRunSlot, mainSlot, location.pathname, landingSlot, isMobile])
+  const firstRunLayout = useFirstRunLayout()
+  useEffect(() => {
+    if (firstRunLayout && localStorage.getItem('mc-nav') === null) setNavCollapsed(true)
+  }, [firstRunLayout])
   // Focus mode: the top bar and nav rail leave the shell grid and become
   // edge-triggered hover overlays, so the active surface fills the window.
   // Desktop only — on mobile the top bar carries the ONLY route back to

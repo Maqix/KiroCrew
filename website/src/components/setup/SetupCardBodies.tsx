@@ -29,7 +29,7 @@ import {
   type BeaconStatus,
 } from '../PrivacyDisclosure'
 import CronPreviewApprovals from './CronPreviewApprovals'
-import { safeConsentUrl, soulFileName } from './setupCardCopy'
+import { isHomeOffer, safeConsentUrl, soulFileName } from './setupCardCopy'
 
 export interface SetupAction {
   label: string
@@ -42,6 +42,8 @@ export interface SetupActions {
   secondary?: SetupAction
   /** `false` hides "Not now" (the privacy card is mandatory). */
   decline?: boolean
+  /** The words on "Not now" when declining means something specific. */
+  declineLabel?: string
 }
 
 export type SetupFooter = (actions: SetupActions) => React.ReactNode
@@ -815,6 +817,19 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
     )
   }
 
+  // Built, but its own Kiro sign-in never finished (the code ran out, or a
+  // restart cut the wait short): its agent cannot answer, so no Move in yet.
+  if (o.needs_signin === true && !ready) {
+    return (
+      <>
+        {badge}
+        <p className={LEAD} data-testid="setup-card-home-needs-signin">{t('components.setupCard.home_needs_signin')}</p>
+        <StepList steps={steps} testId="setup-card-steps" />
+        {footer({ primary: { label: t('components.setupCard.home_signin_start'), onClick: () => run('commit') } })}
+      </>
+    )
+  }
+
   // Built: offer the move.
   if (ready) {
     return (
@@ -858,9 +873,14 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
       : remoteCommand
         ? { label: t('components.setupCard.home_build_signed_in'), onClick: () => run('commit') }
         : { label: t('components.setupCard.home_aws_signin'), onClick: () => run('aws_signin') }
+  // The first run's own "Where should your crew live?" step: declining it keeps
+  // the crew on this machine, so the decline says so.
+  const offer = isHomeOffer(card)
+  const declineLabel = offer ? t('components.setupCard.home_offer_decline') : undefined
   return (
     <>
       {badge}
+      {offer && <p className={LEAD} data-testid="setup-card-home-offer">{t('components.setupCard.home_offer_lead')}</p>}
       <p className={LEAD}>{str((p.provider as Record<string, unknown> | undefined)?.label) || t('components.setupCard.home_provider_fallback')}</p>
       {monthly !== null && (
         <p className="mt-1 text-[13px] font-medium text-text break-words" data-testid="setup-card-home-cost">
@@ -949,8 +969,8 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
         </div>
       )}
       {footer(creating
-        ? { primary, secondary: { label: t('components.setupCard.home_aws_signup_back'), onClick: () => setCreatingAccount(false) } }
-        : { primary })}
+        ? { primary, secondary: { label: t('components.setupCard.home_aws_signup_back'), onClick: () => setCreatingAccount(false) }, declineLabel }
+        : { primary, declineLabel })}
     </>
   )
 }

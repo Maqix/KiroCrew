@@ -260,3 +260,12 @@
 {"timestamp":"2026-09-28T16:57:27.011028819Z","action":"create","task_id":96,"detail":"PN.12 A new AWS account's home region, not a us-east-1 fallback"}
 {"timestamp":"2026-09-28T17:06:13.827291074Z","action":"create","task_id":97,"detail":"PN.13 Create an AWS account from the home card (signup path)"}
 {"timestamp":"2026-09-28T17:24:39.865833064Z","action":"edit","task_id":97,"detail":"PN.13 Create an AWS account from the home card (signup path)"}
+{"timestamp":"2026-09-28T17:55:27.678677978Z","action":"edit","task_id":89,"detail":"PN.10 The home's own Kiro sign-in, one click (token copy is a later spike)"}
+{"timestamp":"2026-09-28T17:55:27.717478761Z","action":"create","task_id":98,"detail":"PN.15 A failed home card must stop the build it started"}
+{"timestamp":"2026-09-28T18:18:27.833675024Z","action":"create","task_id":99,"detail":"PN.14 A built home that never signed in to Kiro: sign it in before Move in"}
+{"timestamp":"2026-09-28T18:35:51.805761102Z","action":"edit","task_id":96,"detail":"PN.12 A new AWS account's home region, not a us-east-1 fallback"}
+{"timestamp":"2026-09-28T18:35:51.863105192Z","action":"create","task_id":100,"detail":"PN.16 Home size options the owner chooses on the card (Free vs Paid plan)"}
+{"timestamp":"2026-09-28T18:37:13.047782668Z","action":"create","task_id":101,"detail":"P2.18 First-run chat opens full width: nav rail and session list collapsed"}
+{"timestamp":"2026-09-28T18:41:58.396608911Z","action":"move","task_id":101,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-28T18:41:58.396787996Z","action":"handoff","task_id":101,"detail":"P2.18 First-run chat opens full width: nav rail and session list collapsed"}
+{"timestamp":"2026-09-28T18:41:58.396896176Z","action":"release","task_id":101,"detail":"P2.18 First-run chat opens full width: nav rail and session list collapsed"}

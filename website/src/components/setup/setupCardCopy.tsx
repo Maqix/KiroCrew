@@ -41,6 +41,12 @@ const ERROR_KEY = {
   aws_cli_too_old: 'components.setupCard.error_aws_cli_too_old',
   aws_signin_profile_has_keys: 'components.setupCard.error_aws_signin_profile_has_keys',
   launch_already_running: 'components.setupCard.error_launch_already_running',
+  // The home's build and its Kiro sign-in (setup_flow._commit_home, _sign_home_in).
+  home_identity_region_unknown: 'components.setupCard.error_home_identity_region_unknown',
+  home_signin_unavailable: 'components.setupCard.error_home_signin_unavailable',
+  launch_job_not_found: 'components.setupCard.error_home_signin_unavailable',
+  launch_has_no_instance: 'components.setupCard.error_home_signin_unavailable',
+  login_target_unreadable: 'components.setupCard.error_login_target_unreadable',
   // The live move-in's refusals (dashboard/setup_move_in.py). Each leaves the
   // card pending; the failed step's own detail on the card keeps the server's
   // specifics (the tunnel error, the home's refusal code).
@@ -77,6 +83,23 @@ export function errorText(code: string | undefined, serverMessage: string): stri
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 
+/**
+ * The first run's "Where should your crew live?" step: a home card the gateway
+ * shows on its own (`payload.offer`), while it is still the question, i.e.
+ * before anything is built. Once a build starts it is the home itself.
+ */
+export function isHomeOffer(card: SetupCard): boolean {
+  if (card.kind !== 'home' || card.payload?.offer !== true) return false
+  const o = card.outcome ?? {}
+  return !o.job_id && o.ready !== true && o.needs_signin !== true && o.moved !== true
+}
+
+/** The word beside a decided card's title; a declined home step keeps the crew here. */
+export function resultStatusKey(card: SetupCard): string | undefined {
+  if (card.status === 'declined' && isHomeOffer(card)) return 'components.setupCard.home_offer_declined'
+  return STATUS_KEY[card.status as keyof typeof STATUS_KEY]
+}
+
 /** The card's heading, per kind, from its payload. */
 export function cardTitle(card: SetupCard): string {
   const p = card.payload ?? {}
@@ -104,7 +127,9 @@ export function cardTitle(card: SetupCard): string {
     case 'service':
       return i18nT('components.setupCard.title_service')
     case 'home':
-      return i18nT('components.setupCard.title_home')
+      return isHomeOffer(card)
+        ? i18nT('components.setupCard.title_home_offer')
+        : i18nT('components.setupCard.title_home')
     default:
       return i18nT('components.setupCard.title_generic')
   }

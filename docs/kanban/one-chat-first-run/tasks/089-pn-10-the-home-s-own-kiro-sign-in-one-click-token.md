@@ -4,14 +4,14 @@ title: PN.10 The home's own Kiro sign-in, one click (token copy is a later spike
 status: review
 priority: high
 created: 2026-09-28T05:09:29.14318187Z
-updated: 2026-09-28T16:43:52.606301773Z
+updated: 2026-09-28T17:55:27.678429362Z
 tags:
     - parallel-nest
     - auth
     - security
 parent: 58
 claimed_by: aws-signin-card
-claimed_at: 2026-09-28T16:43:52.606140627Z
+claimed_at: 2026-09-28T17:55:27.678282171Z
 class: standard
 ---
 
@@ -27,3 +27,5 @@ Result (in review, uncommitted):
 Unverified: a real kiro-cli device flow on a real home (URL shape taken from parse_login_output fixtures and kiro-cli's printed "Open this URL"), and that a social (Google/GitHub) device flow's page lives on *.kiro.dev. Otherwise it stays a card link.
 
 Later spike (the original plan): one copied token on two machines for a day per identity type; gateway-only read of the harness store and one send over the SSM tunnel (never model, transcript, card, logs, export: SC2/SC4); a separate consent line and 'sign the home out'. Security guidance prefers short-lived, rotated credentials.
+
+Live check 2026-09-28 on a real home (default AWS account, Identity Center sign-in): all five checks passed — one URL opened (the org portal, *.awsapps.com, code in the link), the card showed the same URL and code, one home_signin notice with opened: true, the code never in the gateway log, no second open after 45 s of polls or a gateway restart. Code not approved; stacks, instances and bucket deleted (~$0.10–0.15). Found: kiro-cli whoami's region was dropped, so an Identity Center home's job could not be read back (fixed: parser keeps region, target_from_whoami uses it, commit refuses an un-regioned target, home_identity_region_unknown); and a home whose sign-in was skipped still offered Move in (handed to aws-signin-card).

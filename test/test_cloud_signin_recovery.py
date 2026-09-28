@@ -1106,6 +1106,23 @@ class TestSigninRestartRoute:
         assert resp.status == 202
         assert state.cloud_launch_store.get(job_id).signin_detected is True
 
+    async def test_the_home_card_restarts_through_the_same_path(self, tmp_path):
+        """`restart_signin` is the route's body, so the home card's "Sign the home
+        in to Kiro" (setup_flow) starts the same sign-in and meets the same
+        refusals: here, a second restart while the first still runs."""
+        state, job_id = await self._unsigned_job(tmp_path)
+        state.cloud_launch_engine = TargetEngine(
+            FakeHandle(url="https://x/?user_code=NEW-2", code="NEW-2", signed=True)
+        )
+        job, refusal = await hc.restart_signin(state, job_id)
+        assert refusal is None and job is not None and job.id == job_id
+        assert state.cloud_launch_store.get(job_id).signin_detected is True
+        job, refusal = await hc.restart_signin(state, job_id)
+        assert job is None and refusal is not None
+        assert (refusal.status, refusal.body["code"]) == (409, "signin_already_complete")
+        job, refusal = await hc.restart_signin(state, "launch-not-here")
+        assert job is None and refusal is not None and refusal.status == 404
+
     async def test_the_route_never_re_provisions(self, tmp_path):
         state, job_id = await self._unsigned_job(tmp_path)
         engine = CountingEngine(FakeHandle(url="https://x/?user_code=B", signed=True))

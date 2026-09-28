@@ -289,7 +289,7 @@ async def restore_held(state: "DashboardState") -> int:
     """Deliver the notices a restart interrupted; returns how many were posted.
 
     Called once at startup, after the session restore. Notices held for a chat
-    that is no longer the main chat are dropped. When the main chat is not open or
+    that is not the main chat now are dropped. When the main chat is not open or
     is already running again, they stay held for its next idle moment.
     """
     from kiro_crew.first_run import read_handoff_owed, read_main_slot

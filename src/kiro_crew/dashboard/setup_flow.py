@@ -240,7 +240,10 @@ async def propose(
             "in one line that you can reply again and ask whether to carry on with setup."
         )
     existing = await asyncio.to_thread(sc.list_cards, slot.key)
-    proposable = [c for c in existing if c.kind != sc.KIND_PRIVACY]
+    # The gateway's own steps (privacy, the home step) are not the agent's proposals.
+    proposable = [
+        c for c in existing if c.kind != sc.KIND_PRIVACY and not c.payload.get(HOME_STEP_KEY)
+    ]
     kept_job = any(c.kind == sc.KIND_CRON and c.status == sc.STATUS_COMMITTED for c in existing)
     if not kept_job and len(proposable) >= sc.CARD_BUDGET_BEFORE_FIRST_JOB:
         return (
@@ -590,31 +593,50 @@ async def _commit_privacy(
     card = await _finish(card, sc.STATUS_COMMITTED, outcome={})
     slot = state.get_slot(card.slot)
     if slot is not None:
-        await _offer_home_if_chosen(state, slot, card.session_key)
+        await _offer_home_step(state, slot, card.session_key)
         await start_first_run_turn(state, slot)
     return card
 
 
-async def _offer_home_if_chosen(
-    state: "DashboardState", slot: "_ChatSlot", session_key: str
-) -> None:
-    """Show the home card when the owner chose a cloud home in the terminal.
+#: Payload flag of the home card the gateway shows as the first run's own step.
+HOME_STEP_KEY = "offer"
 
-    The choice lives in the first-run state file, which gates nothing: it only
-    decides whether the card is SHOWN. Building still needs the owner's click on
-    the card, which states the cost first.
+
+async def _offer_home_step(state: "DashboardState", slot: "_ChatSlot", session_key: str) -> None:
+    """The first run's "Where should your crew live?" step, right after privacy.
+
+    A step of its own, not a sentence in the Hello: a question asked only in the
+    agent's prose was missed next to the first card on screen. So the gateway
+    shows a home card every first run, signed in to AWS or not. Signed in, it
+    states the account, region and monthly cost and builds on one click; not
+    signed in, it walks the owner through signing in or creating an AWS account
+    first. "Keep it on this machine" declines it. A ``--home cloud`` answer shows
+    the same card without the step framing; ``--home here|later`` shows none.
+
+    The state file gates nothing: it only decides whether the card is SHOWN.
+    Building still needs the owner's click on the card, which states the cost.
     """
+    from kiro_crew.cloud import local_signin
     from kiro_crew.first_run import read_state
 
     home = read_state().get("home")
-    if not isinstance(home, dict) or home.get("choice") != "cloud":
+    if isinstance(home, dict) and home.get("choice") != "cloud":
         return
+    existing = await asyncio.to_thread(sc.list_cards, slot.key)
+    if any(c.kind == sc.KIND_HOME for c in existing):
+        return
+    chosen = isinstance(home, dict)
     try:
-        settings = sc.build_home(home)
+        wanted: dict[str, Any] = dict(home) if isinstance(home, dict) else {}
+        if not wanted.get("region"):
+            wanted["region"] = local_signin.configured_region(str(wanted.get("profile") or ""))
+        settings = sc.build_home(wanted)
         payload, private = await asyncio.to_thread(_home_payload, settings)
     except sc.CardRejected:
-        logger.warning("first-run home choice is invalid; not offering a home card")
+        logger.warning("first-run home step is invalid; not offering a home card")
         return
+    if not chosen:
+        payload[HOME_STEP_KEY] = True
     card = await asyncio.to_thread(
         lambda: sc.create_card(
             slot=slot.key,
@@ -988,10 +1010,16 @@ async def _commit_service(
 async def _commit_home(
     state: "DashboardState", card: sc.SetupCard, input_: dict[str, Any]
 ) -> sc.SetupCard:
-    """Two decisions on one card: "Build my home", then "Move in"."""
+    """Two decisions on one card: "Build my home", then "Move in".
+
+    Between them, a home whose build finished without its Kiro sign-in is in
+    phase ``signin``: the commit signs it in (:func:`_sign_home_in`).
+    """
     phase = str(card.private.get("phase") or "build")
     if phase == "move":
         return await _move_in(state, card)
+    if phase == "signin":
+        return await _sign_home_in(state, card)
     from kiro_crew.cloud.simulated_engine import SimulatedLaunchEngine, simulation_enabled
     from kiro_crew.dashboard.handlers_cloud import start_launch_job
 
@@ -1011,6 +1039,16 @@ async def _commit_home(
     if simulation_enabled() and getattr(state, "cloud_launch_engine", None) is None:
         state.cloud_launch_engine = SimulatedLaunchEngine()
     login_target = None if card.payload.get("simulated") else await _inherited_login_target()
+    if login_target is not None and login_target.is_identity_center and not login_target.region:
+        # A job carrying this target could never be read back (from_dict refuses
+        # an un-regioned Identity Center target), so the card would fail while
+        # the worker went on building. Refuse before anything is spent.
+        raise sc.CardRejected(
+            "this computer signs in to Kiro through IAM Identity Center, but its "
+            "region could not be read; sign in again with kiro-cli, then press the "
+            "button again",
+            "home_identity_region_unknown",
+        )
     job, refusal = await start_launch_job(
         state,
         provisioner_id="aws_ec2",
@@ -1123,13 +1161,7 @@ async def _watch_home(
                 return
             outcome = _home_outcome(job)
             if job.status == lj.DONE:
-
-                def _ready(c: sc.SetupCard) -> None:
-                    c.private["phase"] = "move"
-                    c.private["instance_id"] = job.instance_id
-
-                await asyncio.to_thread(sc.update_card, card_id, _ready)
-                card = await _finish(card, sc.STATUS_PENDING, outcome={**outcome, "ready": True})
+                card = await _home_built(card, job, outcome)
                 broadcast(state, card)
                 return
             if job.terminal:
@@ -1156,6 +1188,61 @@ async def _watch_home(
         raise
     except Exception:
         logger.exception("home card %s watcher failed", card_id)
+
+
+async def _home_built(card: sc.SetupCard, job: Any, outcome: dict[str, Any]) -> sc.SetupCard:
+    """A finished build: offer Move in, or first the home's own Kiro sign-in.
+
+    A build can finish with its sign-in step skipped: the device code ran out
+    unapproved, or a gateway restart cut the wait short. That home's agent cannot
+    answer, so moving the crew there would strand it; the card stays in phase
+    ``signin`` until the home is signed in.
+    """
+    signed_in = bool(job.signin_detected) or bool(card.payload.get("simulated"))
+    phase = "move" if signed_in else "signin"
+
+    def _mark(c: sc.SetupCard) -> None:
+        c.private["phase"] = phase
+        c.private["instance_id"] = job.instance_id
+
+    await asyncio.to_thread(sc.update_card, card.id, _mark)
+    extra = {"ready": True} if signed_in else {"ready": False, "needs_signin": True}
+    return await _finish(card, sc.STATUS_PENDING, outcome={**outcome, **extra})
+
+
+async def _sign_home_in(state: "DashboardState", card: sc.SetupCard) -> sc.SetupCard:
+    """Start the built home's Kiro sign-in again, then watch it like the build.
+
+    The same restart the Instances hub's "Start sign-in" runs
+    (``handlers_cloud.restart_signin``), with every refusal it has. The page may
+    open in the owner's browser when this click came from this machine (decide
+    has just recorded that on the card).
+    """
+    from kiro_crew.dashboard.handlers_cloud import _store, restart_signin
+    from kiro_crew.dashboard.home_signin import BROWSER_HERE_KEY
+
+    job_id = str(card.private.get("job_id") or "")
+    if not job_id:
+        raise sc.CardRejected(
+            "this home's build is not known here, so it cannot be signed in from this card",
+            "home_signin_unavailable",
+        )
+    job, refusal = await restart_signin(state, job_id)
+    if refusal is not None or job is None:
+        body = refusal.body if refusal is not None else {}
+        code = str(body.get("code") or "launch_refused")
+        if code == "signin_already_complete":
+            # Signed in meanwhile (another tab, the Instances hub): move in.
+            done = await asyncio.to_thread(_store(state).get, job_id)
+            if done is not None:
+                return await _home_built(card, done, _home_outcome(done))
+        raise sc.CardRejected(str(body.get("error") or "the sign-in could not start"), code)
+    may_open = card.private.get(BROWSER_HERE_KEY) is True
+    card = await _finish(card, sc.STATUS_WAITING, outcome=_home_outcome(job))
+    task = asyncio.create_task(_watch_home(state, card.id, job.id, may_open=may_open))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return card
 
 
 #: The move-in steps a home card shows, in order.
@@ -1280,7 +1367,7 @@ async def ensure_first_run_session(state: "DashboardState") -> str | None:
     return slot.key
 
 
-def _kickoff_facts() -> list[str]:
+def _kickoff_facts(slot_key: str = "") -> list[str]:
     facts: list[str] = []
     try:
         plan = _import_plan()
@@ -1307,16 +1394,15 @@ def _kickoff_facts() -> list[str]:
 
         state = read_state()
         home = state.get("home")
-        if isinstance(home, dict) and home.get("choice") == "cloud":
+        card = _home_card_in(slot_key) if slot_key else None
+        if card is not None and card.payload.get(HOME_STEP_KEY):
+            facts.append(_home_step_fact(card))
+        elif isinstance(home, dict) and home.get("choice") == "cloud":
             facts.append(
                 "The user chose a home in the cloud (their AWS account) in the terminal; a "
                 "home card is shown at the top of this chat. Do not wait for it — carry on "
                 "with the setup; offer Move in when the card says the home is ready."
             )
-        elif not isinstance(home, dict):
-            fact = _aws_home_fact()
-            if fact:
-                facts.append(fact)
     except Exception:
         logger.warning("home choice read for the first-run kickoff failed", exc_info=True)
     try:
@@ -1329,37 +1415,36 @@ def _kickoff_facts() -> list[str]:
     return facts
 
 
-def _aws_home_fact() -> str:
-    """The home offer for the Hello, when this machine's AWS CLI is signed in.
+def _home_card_in(slot_key: str) -> "sc.SetupCard | None":
+    for card in sc.list_cards(slot_key):
+        if card.kind == sc.KIND_HOME:
+            return card
+    return None
 
-    Where the crew lives is asked in the chat, never in the terminal: one
-    read-only STS call finds the sign-in, and the fact carries the account's
-    last four digits, the profile's region and the monthly estimate, so the
-    Hello can offer the choice in a sentence. No sign-in, no offer: a home is
-    still one "move me to the cloud" away, and its card handles the sign-in.
-    """
-    from kiro_crew import setup_cards as sc
-    from kiro_crew.cloud import local_signin
-    from kiro_crew.cloud.simulated_engine import simulation_enabled
-    from kiro_crew.cloud.sizes import get_tier
 
-    region = local_signin.configured_region() or sc.HOME_DEFAULT_REGION
-    tier = get_tier(sc.HOME_DEFAULT_SIZE)
-    if simulation_enabled():
-        account = "…0000 (simulated)"
-    else:
-        signin = local_signin.detect()
-        if signin is None:
-            return ""
-        account = signin.account_hint
+def _home_step_fact(card: "sc.SetupCard") -> str:
+    """What the Hello is told about the home step the gateway put on screen."""
+    p = card.payload
+    raw_size = p.get("size")
+    size: dict[str, Any] = raw_size if isinstance(raw_size, dict) else {}
+    cost = f"about ${p.get('monthly_usd')}/month on {size.get('instance_type', '')}, billed by AWS"
+    where = (
+        f"this machine's AWS CLI is signed in (account {p.get('aws_account') or 'unknown'}, "
+        f"region {p.get('region')})"
+        if p.get("aws_signed_in")
+        else "this machine is not signed in to AWS, so the card first walks the user "
+        "through it: installing the AWS CLI if it is missing, creating an AWS account "
+        "if they have none, and signing in"
+    )
     return (
-        f"This machine's AWS CLI is signed in (account {account}, region {region}). "
-        "Where the crew lives is the user's choice and nobody asked yet: in the Hello, "
-        "offer in one sentence to keep it on this machine or to build a home in the "
-        f"cloud in that account (about ${sc.monthly_estimate_usd(tier.key)}/month on "
-        f"{tier.instance_type}, billed by AWS), which keeps jobs running when this "
-        f"machine sleeps. On yes, propose kind: home with region {region}; it builds "
-        "in the background while setup carries on. Staying here needs nothing."
+        'Right after privacy the gateway showed a "Where should your crew live?" card: '
+        f"stay on this machine, or a home in the cloud ({cost}) that keeps jobs running "
+        f"when this machine sleeps; {where}. It is the user's step, on screen. In the "
+        "Hello, point to it in one sentence; do not ask it again in prose and do not "
+        "wait for it. If they pick the cloud and AWS is not set up, guide them through "
+        "the card's steps in the chat and answer questions; once they press Build it "
+        "runs in the background while setup carries on. If they keep it on this "
+        "machine, do not bring it up again during setup."
     )
 
 
@@ -1368,7 +1453,7 @@ async def start_first_run_turn(state: "DashboardState", slot: "_ChatSlot") -> No
     from kiro_crew.dashboard import setup_guardrails
     from kiro_crew.dashboard.state import FIRST_RUN_END, FIRST_RUN_PREFIX
 
-    facts = await asyncio.to_thread(_kickoff_facts)
+    facts = await asyncio.to_thread(_kickoff_facts, slot.key)
     lines = "\n".join(f"- {fact}" for fact in facts) or "- Nothing else was detected."
     text = (
         f"{FIRST_RUN_PREFIX} This is a brand-new Kiro Crew install and this chat is its "
