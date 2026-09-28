@@ -179,6 +179,23 @@ function chipColors(isPicked: boolean) {
     : 'border-border text-muted hover:text-text hover:border-accent/40 bg-bg-elevated'
 }
 
+/**
+ * Hover group shared by the two halves of a split chip. The halves are separate
+ * buttons, so a per-button `hover:border-*` outlined only the half under the
+ * pointer: hovering the ↑ segment lit its top/right/bottom edges while the body
+ * — and the divider, which is the body's right border — stayed dim, reading as a
+ * pill with one piece broken off. The OUTLINE is a property of the whole pill,
+ * so it keys on the wrapper (`group/chip`); which half is armed is carried by
+ * that half's own text/fill change instead.
+ */
+const SPLIT_CHIP_GROUP = 'group/chip'
+
+function splitChipColors(isPicked: boolean) {
+  return isPicked
+    ? 'border-solid border-accent/50 text-accent bg-accent-subtle'
+    : 'border-border text-muted hover:text-text group-hover/chip:border-accent/40 bg-bg-elevated'
+}
+
 /** Standalone chip: the flex item itself, so it owns the width cap (and, in the
  *  scroll layout, `shrink-0` so it does not collapse). Fully rounded. */
 function chipClassName(isPicked: boolean, { shrink0 = false }: { shrink0?: boolean } = {}) {
@@ -194,7 +211,7 @@ function chipClassName(isPicked: boolean, { shrink0 = false }: { shrink0?: boole
  *  future utility whose name merely contains `shrink-0`/`followup-chip`/`rounded-lg`
  *  cannot silently rewrite the wrong token and reintroduce the overlap. */
 function splitMainChipClassName(isPicked: boolean) {
-  return `flex-1 min-w-0 ${CHIP_BASE} rounded-l-lg ${chipColors(isPicked)}`
+  return `flex-1 min-w-0 ${CHIP_BASE} rounded-l-lg ${splitChipColors(isPicked)}`
 }
 
 /**
@@ -312,7 +329,9 @@ function sendSegmentClassName(isPicked: boolean, pending: boolean) {
   return `inline-flex items-center shrink-0 px-1.5 py-1.5 rounded-r-lg ${pending ? 'cursor-default' : 'cursor-pointer'} transition-all border border-l-0 ${
     isPicked
       ? 'border-solid border-accent/50 text-accent bg-accent-subtle hover:bg-accent/20'
-      : 'border-border text-muted hover:text-accent hover:border-accent/40 bg-bg-elevated'
+      // Outline from the wrapper's hover group (see SPLIT_CHIP_GROUP); the
+      // segment's own hover is the accent arrow on a lifted fill.
+      : 'border-border text-muted hover:text-accent hover:bg-bg-hover group-hover/chip:border-accent/40 bg-bg-elevated'
   }`
 }
 
@@ -494,7 +513,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
     // cannot resolve against an indefinite wrapper), leaving a wide empty gap
     // before the next chip. On the flex item the percentage resolves against
     // the strip's definite width.
-    <span className={`inline-flex items-stretch shrink-0 ${CHIP_MAX_WIDTH} ${entrance.className}${stateClass}`} style={entrance.style}>
+    <span className={`${SPLIT_CHIP_GROUP} inline-flex items-stretch shrink-0 ${CHIP_MAX_WIDTH} ${entrance.className}${stateClass}`} style={entrance.style}>
       {mainChip}
       <button
         type="button"

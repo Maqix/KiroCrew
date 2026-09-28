@@ -238,6 +238,32 @@ describe('FollowUpBar', () => {
       render(<FollowUpBar options={['Go']} picked={new Set(['First'])} onSelect={() => {}} onSend={() => {}} quickSend />)
       expect(screen.getByRole('button', { name: 'Send now: Go' })).toBeInTheDocument()
     })
+
+    it('outlines the WHOLE split pill on hover, not just the half under the pointer', () => {
+      // The two halves are separate buttons. A per-button hover:border-* lit
+      // only the hovered half, so hovering ↑ outlined the segment while the
+      // body and the divider stayed dim. The border must key on the wrapper.
+      render(<FollowUpBar options={['Go']} picked={new Set()} onSelect={() => {}} onSend={() => {}} />)
+      const body = screen.getByRole('button', { name: 'Go' })
+      const send = screen.getByRole('button', { name: 'Send now: Go' })
+      expect(body.parentElement).toBe(send.parentElement)
+      expect(body.parentElement!.className.split(/\s+/)).toContain('group/chip')
+      for (const half of [body, send]) {
+        const tokens = half.className.split(/\s+/)
+        expect(tokens).toContain('group-hover/chip:border-accent/40')
+        expect(tokens.filter(t => t.startsWith('hover:border-'))).toEqual([])
+      }
+      // Which half is armed is still distinguishable on its own.
+      expect(send.className.split(/\s+/)).toContain('hover:text-accent')
+      expect(body.className.split(/\s+/)).toContain('hover:text-text')
+    })
+
+    it('keeps the standalone chip on its own hover outline (no split group)', () => {
+      render(<FollowUpBar options={['Go']} picked={new Set()} onSelect={() => {}} />)
+      const tokens = screen.getByRole('button', { name: 'Go' }).className.split(/\s+/)
+      expect(tokens).toContain('hover:border-accent/40')
+      expect(tokens).not.toContain('group-hover/chip:border-accent/40')
+    })
   })
 
   // ─── Quick-send instant-send state preserves no-lag UX ───────────────────
