@@ -252,8 +252,7 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'nav-notifications': 'hooks.useKeyboardShortcuts.notifications_panel',
   'nav-projects': 'hooks.useKeyboardShortcuts.projects_panel',
   'nav-schedule': 'hooks.useKeyboardShortcuts.schedule_panel',
-  // Reused: the same commands as the top-bar arrows, so the reference list and
-  // the buttons cannot drift apart.
+  // Shortcuts-modal rows for the ⌘/Ctrl+←/→ chords.
   'history-back': 'app.nav_back',
   'history-forward': 'app.nav_forward',
   'focus-input': 'hooks.useKeyboardShortcuts.focus_text_input',
@@ -608,9 +607,9 @@ function isTerminalTarget(target: EventTarget | null): boolean {
   return !!el && typeof el.closest === 'function' && !!el.closest('.xterm')
 }
 
-/** The layout condition that hides the top-bar history arrows, read LIVE at
- *  keypress so the handler's document listener never re-registers on resize.
- *  Same breakpoint as `useIsMobile` — one source of truth for "narrow". */
+/** The mobile layout, where drill-ins move by component state and history
+ *  stepping is off. Read LIVE at keypress so the listener never re-registers on
+ *  resize. Same breakpoint as `useIsMobile` — one source of truth for "narrow". */
 function isNarrowViewport(): boolean {
   return typeof window.matchMedia === 'function'
     && window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`).matches
@@ -750,10 +749,11 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     return () => document.removeEventListener('keyup', onKeyUp)
   }, [])
 
-  // Desktop View > Back/Forward. Not gated on the shortcuts toggle: a menu
-  // click is not a keystroke, so turning shortcuts off must not disable it.
+  // Desktop View > Back/Forward. Not gated on the shortcuts toggle (a menu
+  // click is not a keystroke), but narrow-gated like the chord below.
   useEffect(() => {
     return window.electronAPI?.onHistoryStep?.(delta => {
+      if (isNarrowViewport()) return
       if (delta === -1 && canGoBack()) guardedHistoryStep(-1)
       else if (delta === 1 && canGoForward()) guardedHistoryStep(1)
     })
@@ -966,8 +966,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     if (hit !== null) {
       if (!enabled || disabled) return
       const actions: Record<string, () => void> = {
-        // Route-history Back/Forward — the keyboard twin of the top-bar arrows
-        // (#8258), through the same guarded step so NavigationBackGuard's draft
+        // Route-history Back/Forward (#8258) — the keyboard twin of View >
+        // Back/Forward, through the same guarded step so NavigationBackGuard's draft
         // trap applies to both identically. Claimed even with nowhere to go,
         // and claimed on a NARROW viewport as a deliberate no-op: on macOS
         // browsers ⌘←/⌘→ is ALSO native history back/forward, so an unclaimed

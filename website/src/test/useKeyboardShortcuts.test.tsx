@@ -402,11 +402,10 @@ describe('useKeyboardShortcuts — route-history chord', () => {
     term.remove()
   })
 
-  it('claims the chord as a no-op on a narrow viewport, where the arrows are hidden', () => {
-    // The arrows' mobile exclusion (drill-ins navigate by component state, so
-    // a stack walk moves history the visible UI does not reflect) gates the
-    // chord too — but by CLAIMING it and doing nothing, never by unclaiming:
-    // on macOS an unclaimed ⌘← is the browser's own Back, which would pop
+  it('claims the chord as a no-op on a narrow viewport', () => {
+    // Narrow layouts drill in by component state (pushes nothing), so a stack
+    // walk would move history the visible UI does not reflect. Gate by
+    // CLAIMING the chord and doing nothing, never by unclaiming:    // on macOS an unclaimed ⌘← is the browser's own Back, which would pop
     // past the draft guard whenever its trap is unarmed (post-reload) and
     // unmount a dirty editor (the GPT round-4 blocker).
     const original = window.matchMedia
@@ -1652,6 +1651,20 @@ describe('desktop View > Back/Forward menu items', () => {
     const { send } = setup({ shortcutsOff: true })
     send(-1)
     expect(screen.getByTestId('where').textContent).toBe('/chat')
+  })
+
+  it('does nothing on a narrow viewport, same as the chord', () => {
+    window.history.replaceState({ idx: 1 }, '', '/')
+    const original = window.matchMedia
+    window.matchMedia = ((query: string) =>
+      ({ matches: true, media: query, addEventListener: () => {}, removeEventListener: () => {} })) as unknown as typeof window.matchMedia
+    try {
+      const { send } = setup()
+      send(-1)
+      expect(screen.getByTestId('where').textContent).toBe('/settings')
+    } finally {
+      window.matchMedia = original
+    }
   })
 
   it('does nothing when the store says there is nowhere to go', () => {
