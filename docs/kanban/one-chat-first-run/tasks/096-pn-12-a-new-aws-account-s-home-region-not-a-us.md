@@ -1,14 +1,16 @@
 ---
 id: 96
 title: PN.12 A new AWS account's home region, not a us-east-1 fallback
-status: todo
+status: in-progress
 priority: high
 created: 2026-09-28T16:57:27.010360044Z
-updated: 2026-09-28T18:35:51.804773421Z
+updated: 2026-09-28T19:16:07.818661601Z
 tags:
     - parallel-nest
     - aws
     - home
+claimed_by: aws-signin-card
+claimed_at: 2026-09-28T19:16:07.818661519Z
 class: standard
 ---
 

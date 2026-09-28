@@ -1,15 +1,17 @@
 ---
 id: 100
 title: PN.16 Home size options the owner chooses on the card (Free vs Paid plan)
-status: todo
+status: in-progress
 priority: high
 created: 2026-09-28T18:35:51.862167425Z
-updated: 2026-09-28T18:35:51.862167425Z
+updated: 2026-09-28T19:16:07.819396098Z
 tags:
     - parallel-nest
     - aws
     - home
     - frontend
+claimed_by: aws-signin-card
+claimed_at: 2026-09-28T19:16:07.81939604Z
 class: standard
 ---
 

@@ -1,14 +1,25 @@
 #!/bin/sh
 # KiroCrew first-time setup script (public build)
 # Usage: source setup.sh   (bash or zsh), or: bash setup.sh
+#   or straight from GitHub, with no checkout:
+#   curl -fsSL https://raw.githubusercontent.com/kirodotdev/KiroCrew/feat/one-chat-first-run/setup.sh | bash
 #
-# Sets up KiroCrew using only public tooling:
-#   1. Node.js (via ensure-node.sh)
-#   2. Optional tools (git-lfs, ffmpeg for voice)
-#   3. Optional ACP adapter + Kiro CLI prerequisite disclosure
+# Sets up KiroCrew from source using only public tooling, asks nothing, and ends
+# in the first-run chat, where every other choice is made:
+#   0. From GitHub: fetch this branch's source into ~/.local/share/kirocrew/source
+#      (KIROCREW_SOURCE_DIR), then run the setup.sh inside it
+#   1. Python 3.12+
+#   2. Node.js (via ensure-node.sh) and optional tools (git-lfs, ffmpeg for voice)
+#   3. Optional ACP adapter + Kiro CLI prerequisite
 #   4. Build frontend (npm/vite) + backend (pip)
 #   5. PATH config
 #   6. Agent config (kirocrew setup --agent-only)
+#   7. `kirocrew start`: the gateway, and the first-run chat in your browser
+#
+# Options (after `| bash -s --` when piped):
+#   --no-start      stop after step 6
+#   --branch NAME   the branch step 0 fetches (default: the one this file ships on)
+#   --demo [...]    a throwaway demo instead (scripts/demo-first-run.sh; see its --help)
 
 # Resolve script directory (works in bash and zsh, sourced or executed)
 if [ -n "$BASH_SOURCE" ]; then
@@ -18,7 +29,93 @@ elif [ -n "$ZSH_VERSION" ]; then
 else
     _kirocrew_dir="$(pwd)"
 fi
+
+_kc_start=1
+_kc_branch="${KIROCREW_BRANCH:-feat/one-chat-first-run}" # the branch this file ships on
+_kc_demo=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-start) _kc_start=0 ;;
+        --branch) _kc_branch="$2"; shift ;;
+        --branch=*) _kc_branch="${1#*=}" ;;
+        --demo) shift; _kc_demo=1; break ;;
+        *) echo "setup.sh: unknown argument '$1'" >&2; return 2 2>/dev/null || exit 2 ;;
+    esac
+    shift
+done
+
+# Run "$@" with its output in a log, showing a spinner and the time so far;
+# returns the command's status. Works sourced (bash or zsh) or executed.
+_kc_spin() {
+    _kc_label="$1"; _kc_log="$2"; shift 2
+    _kc_mon=0
+    case $- in *m*) _kc_mon=1; set +m ;; esac   # no job-control chatter when sourced
+    ("$@") >"$_kc_log" 2>&1 &
+    _kc_pid=$!
+    _kc_t0=$SECONDS
+    _kc_i=0
+    if [ -t 1 ]; then
+        while kill -0 "$_kc_pid" 2>/dev/null; do
+            case $((_kc_i % 4)) in 0) _kc_f='|' ;; 1) _kc_f='/' ;; 2) _kc_f='-' ;; *) _kc_f='\' ;; esac
+            printf '\r  %s %s  %ss\033[K' "$_kc_f" "$_kc_label" "$((SECONDS - _kc_t0))"
+            _kc_i=$((_kc_i + 1))
+            sleep 0.2
+        done
+        printf '\r\033[K'
+    fi
+    wait "$_kc_pid"
+    _kc_rc=$?
+    [ "$_kc_mon" = 1 ] && set -m
+    if [ "$_kc_rc" = 0 ]; then
+        echo "  ✅ $_kc_label ($((SECONDS - _kc_t0))s)"
+    else
+        echo "  ❌ $_kc_label failed; the last lines of $_kc_log:"
+        tail -n 25 "$_kc_log"
+    fi
+    return "$_kc_rc"
+}
+
+# ── 0. From GitHub: no checkout around this file ──
+if [ ! -d "$_kirocrew_dir/src/kiro_crew" ]; then
+    _kc_src="${KIROCREW_SOURCE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/kirocrew/source}"
+    echo "── Step 0: Source ──"
+    if ! command -v git >/dev/null 2>&1; then
+        echo "  ❌ git is needed. On macOS: xcode-select --install"
+        return 1 2>/dev/null || exit 1
+    fi
+    mkdir -p "$(dirname "$_kc_src")"
+    if [ -d "$_kc_src/.git" ]; then
+        echo "→ Updating Kiro Crew's source to the latest '$_kc_branch' in $_kc_src"
+        _kc_spin "Fetching the latest code" "$_kc_src.git.log" \
+            git -C "$_kc_src" fetch --progress --depth 1 origin "$_kc_branch" \
+            && git -C "$_kc_src" reset --quiet --hard FETCH_HEAD \
+            || { return 1 2>/dev/null || exit 1; }
+    else
+        echo "→ Downloading Kiro Crew (branch '$_kc_branch') into $_kc_src"
+        _kc_spin "Downloading the code" "$_kc_src.git.log" \
+            git clone --progress --depth 1 --branch "$_kc_branch" --single-branch \
+            https://github.com/kirodotdev/KiroCrew.git "$_kc_src" \
+            || { return 1 2>/dev/null || exit 1; }
+    fi
+    echo "  Code at commit $(git -C "$_kc_src" rev-parse --short HEAD); continuing with its setup.sh"
+    echo ""
+    _kc_args=""
+    [ "$_kc_start" = 0 ] && _kc_args="--no-start"
+    if [ -n "$_kc_demo" ]; then
+        exec bash "$_kc_src/setup.sh" --demo "$@"
+    fi
+    # shellcheck disable=SC2086
+    exec bash "$_kc_src/setup.sh" $_kc_args
+fi
 cd "$_kirocrew_dir" || return 1
+
+if [ -n "$_kc_demo" ]; then
+    # A throwaway crew in temporary folders; the demo script explains each step.
+    bash "$_kirocrew_dir/scripts/demo-first-run.sh" "$@"
+    _kc_rc=$?
+    cd - > /dev/null 2>&1
+    return "$_kc_rc" 2>/dev/null || exit "$_kc_rc"
+fi
 
 ACP_NPM_PKG="@agentclientprotocol/claude-agent-acp"
 
@@ -26,6 +123,7 @@ echo "👻 KiroCrew Setup"
 echo ""
 
 # ── Ensure PATH includes common install locations ──
+_KC_ORIG_PATH="$PATH"
 [ -d "$HOME/.local/bin" ] && export PATH="$HOME/.local/bin:$PATH"
 if [ -s "$HOME/.nvm/nvm.sh" ]; then
     export NVM_DIR="$HOME/.nvm"
@@ -173,8 +271,8 @@ else
     echo "  ⚠️  Kiro CLI is required for the default agent."
     echo "       Install it separately from https://kiro.dev/cli/"
 fi
-echo "  Sign in separately with: kiro-cli login"
-echo "  This script does not install Kiro CLI or handle sign-in."
+echo "  This script does not install Kiro CLI. When it is signed out, 'kirocrew start'"
+echo "  (step 7) runs its own sign-in."
 echo ""
 
 # ── 4. Build (npm/vite frontend + pip backend) ──
@@ -183,11 +281,14 @@ echo "── Step 4: Build ──"
 
 # Frontend: vite emits to website/dist; stage into src/kiro_crew/static/dist
 if _check node && [ -d "$_kirocrew_dir/website" ]; then
-    echo "→ Building frontend (website/)..."
-    if (cd "$_kirocrew_dir/website" \
+    echo "→ Building frontend (website/); the first time takes a few minutes..."
+    _kc_build_frontend() {
+        cd "$_kirocrew_dir/website" \
             && { [ -f package-lock.json ] && npm ci --no-audit --no-fund --loglevel=error \
                  || npm install --no-audit --no-fund --loglevel=error; } \
-            && npm run build); then
+            && npm run build
+    }
+    if _kc_spin "Frontend build" "${TMPDIR:-/tmp}/kirocrew-setup-frontend.log" _kc_build_frontend; then
         _dist_src="$_kirocrew_dir/website/dist"
         _dist_dst="$_kirocrew_dir/src/kiro_crew/static/dist"
         if [ -d "$_dist_src" ]; then
@@ -240,7 +341,8 @@ if [ ! -d "$_venv" ] || [ ! -x "$_venv/bin/python" ] \
 fi
 echo "→ Installing kirocrew (pip)..."
 "$_venv/bin/pip" install --upgrade pip setuptools wheel -q 2>/dev/null || true
-if KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$_kirocrew_dir" -q; then
+if _kc_spin "Backend install (pip)" "${TMPDIR:-/tmp}/kirocrew-setup-backend.log" \
+    env KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$_kirocrew_dir" -q; then
     echo "  ✅ Build succeeded"
     # Record install method for tooling that branches on it
     echo "pip" > "$_kirocrew_dir/.install-method"
@@ -269,32 +371,24 @@ echo "→ ~/.local/bin added to PATH"
 
 _path_line="export PATH=\"\$HOME/.local/bin:\$PATH\""
 
-_add_to_rc() {
-    _rc="$1"
-    if [ ! -f "$_rc" ]; then return; fi
-    if grep -qF "$_path_line" "$_rc" 2>/dev/null; then
-        echo "  ✅ Already in $_rc"
-        return
+# No question: add the line once, to the rc of the shell in use, only when
+# ~/.local/bin is not already on the PATH that shell starts with; nothing else
+# in the file is touched. Remove the two "# KiroCrew" lines to undo it.
+case "${SHELL:-}" in
+    */zsh) _kc_rc="$HOME/.zshrc" ;;
+    */bash) _kc_rc="$HOME/.bashrc" ;;
+    *) _kc_rc="" ;;
+esac
+if [ -n "$_kc_rc" ]; then
+    if grep -qF "$_path_line" "$_kc_rc" 2>/dev/null; then
+        echo "  ✅ Already in $_kc_rc"
+    elif case ":${_KC_ORIG_PATH:-}:" in *":$HOME/.local/bin:"*) true ;; *) false ;; esac; then
+        echo "  ✅ ~/.local/bin is already on your PATH"
+    else
+        { echo ""; echo "# KiroCrew"; echo "$_path_line"; } >> "$_kc_rc"
+        echo "  ✅ Added ~/.local/bin to PATH in $_kc_rc (remove the '# KiroCrew' lines to undo)"
     fi
-    # Remove any old KiroCrew PATH entry and replace with current
-    if grep -qF "KiroCrew" "$_rc" 2>/dev/null; then
-        sed -i.bak '/# KiroCrew/d;/KiroCrew.*bin/d;/\.local\/bin/d' "$_rc"
-        rm -f "${_rc}.bak"
-    fi
-    printf "→ Add ~/.local/bin to PATH permanently in %s? [Y/n] " "$_rc"
-    read _answer
-    case "${_answer:-Y}" in
-        [Yy]*)
-            echo "" >> "$_rc"
-            echo "# KiroCrew" >> "$_rc"
-            echo "$_path_line" >> "$_rc"
-            echo "  ✅ Added to $_rc"
-            ;;
-    esac
-}
-
-_add_to_rc "$HOME/.bashrc"
-_add_to_rc "$HOME/.zshrc"
+fi
 echo ""
 
 # ── 6. Install agent config ──
@@ -307,12 +401,21 @@ KIROCREW_PROJECT_DIR="$_kirocrew_dir" kirocrew setup --agent-only \
 echo ""
 echo "👻 Setup complete!"
 echo ""
-echo "  kirocrew doctor     # verify everything"
-echo "  kirocrew gateway    # start dashboard + gateway"
-echo "  kirocrew chat       # interactive chat"
-echo ""
-echo "  Optional — local vector memory (embeddings):"
-echo "    Install ollama (https://ollama.com), then: ollama pull qwen3-embedding:0.6b"
+if [ "$_kc_start" = 1 ]; then
+    # ── 7. Start: the gateway, and the first-run chat in the browser ──
+    echo "── Step 7: Start ──"
+    echo "→ Starting Kiro Crew; your browser opens on the chat, where setup continues."
+    # Under `curl | bash` stdin is this script; give kirocrew the terminal, so
+    # kiro-cli's own sign-in can run there when it is needed.
+    if (exec </dev/tty) 2>/dev/null; then
+        kirocrew start </dev/tty
+    else
+        kirocrew start
+    fi
+else
+    echo "  kirocrew start      # start the gateway and open the chat"
+    echo "  kirocrew doctor     # verify everything"
+fi
 
 # Cleanup
 cd - > /dev/null 2>&1

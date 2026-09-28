@@ -294,8 +294,22 @@ dependency refuses with the same platform message.
 
 ### b. From source (development)
 
-Build the dashboard, install the backend into a local virtualenv (`.venv`), and
-run the gateway straight out of `src/`:
+One command fetches a branch's source, builds it, puts `kirocrew` on your PATH
+and opens the first-run chat, asking nothing on the way:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kirodotdev/KiroCrew/<branch>/setup.sh | bash
+```
+
+The source lands in `~/.local/share/kirocrew/source` (`KIROCREW_SOURCE_DIR`);
+run it again to update. From a checkout, `bash setup.sh` does the same with that
+checkout. `--no-start` stops before opening the chat, and `--demo` runs a
+throwaway demo instead (`scripts/demo-first-run.sh`: temporary folders, a
+simulated cloud home, a sample agent to import, your own MCP servers switched
+off).
+
+By hand: build the dashboard, install the backend into a local virtualenv
+(`.venv`), and run the gateway straight out of `src/`:
 
 ```bash
 make build                                   # npm build + editable backend install into .venv
