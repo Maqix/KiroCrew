@@ -543,3 +543,235 @@ class TestRedactionNotice:
         # response_url only ever carries the notice here.
         await r.on_done()
         await r.close()  # must not raise
+
+
+async def _stream_across_a_seam(head: str, tail: str, cap: int = _SMALL_CAP) -> FakeClient:
+    """Stream a credential whose halves land in two DIFFERENT bubbles.
+
+    This is the ROTATION SEAM straddle, not the intra-frame cap cut: the first
+    bubble is filled so its visible tail ends with *head* and is then SEALED —
+    frozen, never rewritable. The answer keeps growing (a real turn does not stop
+    at a bubble boundary), and *tail* arrives only after the seal, so it opens the
+    continuation bubble. Each bubble is scrubbed alone; the reader's client renders
+    them side by side and rejoins them. The seam was clean when it was chosen (the
+    tail did not exist yet) and the seal made the choice irreversible — the exact
+    shape a credential straddling a rotation describes.
+    """
+    c = FakeClient()
+    r = _capped_renderer(c, cap)
+    # Fill bubble one so its visible tail is exactly *head*, sitting right at the
+    # seam. Leave a little room so *head* is delivered in this bubble, not cut.
+    filler = "x" * (cap - len(head) - 4)
+    await r.on_text_chunk(filler + head)
+    await r._push(force=True)
+    c.dead_streams.add(r._stream_id)  # the platform seals bubble one, for good
+    # The turn continues; the credential's completion arrives now and rolls into a
+    # fresh bubble because the old one is dead.
+    await r.on_text_chunk(tail + " and the answer keeps going after that")
+    await r._push(force=True)
+    await r.on_done()
+    await r.close()
+    return c
+
+
+class TestACredentialCannotStraddleTheRotationSeam:
+    """A credential split across a bubble ROTATION seam is closed.
+
+    Distinct from ``TestTheCapCutsWhereTheReaderCannotRejoin`` — that guards the cut
+    ``safe_split_offset`` makes WITHIN a bubble's frames, where the renderer still
+    controls both sides. Here the cut is the seam between a SEALED bubble (which can
+    never be rewritten) and its continuation, so the only place the completion can
+    be closed is the head of the continuation. Each case is a genuine straddle: the
+    premise assertions confirm neither half is a credential alone, so per-bubble
+    scrubbing cannot see it, and every one is red without the seam grading in
+    ``_render_slice``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_link_split_key_does_not_cross_the_seam(self) -> None:
+        # The acceptance case, at the seam: a Markdown link whose target carries a
+        # comma — the shape no hand-written character class reached across six review
+        # rounds — with its completion in the bubble AFTER the seal.
+        head, tail = "[AKIA](https://ex.test/a,b)", "IOSFODNN7EXAMPLE"
+        c = await _stream_across_a_seam(head, tail)
+
+        on_screen, in_a_copy = _reader_views(c)
+        assert "AKIAIOSFODNN7EXAMPLE" not in on_screen
+        assert "AKIAIOSFODNN7EXAMPLE" not in in_a_copy
+        _assert_nothing_reached_the_reader(c)
+
+    @pytest.mark.parametrize(("head", "tail"), CREDENTIAL_STRADDLE_SHAPES)
+    @pytest.mark.asyncio
+    async def test_no_straddling_shape_crosses_the_seam(self, head: str, tail: str) -> None:
+        # Premise: neither half is a credential ALONE — the reason per-bubble
+        # scrubbing is blind to it, asserted so a fixture that stops straddling on
+        # its own fails loudly rather than passing on a case it does not cover.
+        assert _default_redactor(head) == head, "the head half must be clean alone"
+        assert _default_redactor(tail) == tail, "the tail half must be clean alone"
+
+        c = await _stream_across_a_seam(head, tail)
+
+        _assert_nothing_reached_the_reader(c)
+
+    @pytest.mark.asyncio
+    async def test_trailing_prose_after_the_completion_survives(self) -> None:
+        # The seam grading must redact only the COMPLETING fragment, not the whole
+        # continuation: a blanket drop would lose legitimate answer text and turn a
+        # security guard into data loss (the failure mode the conductor decision
+        # rejected — visible dup beats silent loss, and here we do neither).
+        head, tail = "AKIAIOSF", "ODNN7EXAMPLE"
+        marker_word = "afterwardsuniquetoken"
+        c = FakeClient()
+        r = _capped_renderer(c)
+        filler = "x" * (_SMALL_CAP - len(head) - 4)
+        await r.on_text_chunk(filler + head)
+        await r._push(force=True)
+        c.dead_streams.add(r._stream_id)
+        await r.on_text_chunk(tail + " " + marker_word + " and more")
+        await r._push(force=True)
+        await r.on_done()
+        await r.close()
+
+        on_screen, _copy = _reader_views(c)
+        assert "AKIAIOSFODNN7EXAMPLE" not in on_screen, "the key must not survive the seam"
+        delivered = "".join(f["content"] for f in c.frames) + "".join(p[1] for p in c.pushed)
+        assert marker_word in delivered, "trailing prose past the completion was dropped"
+        _assert_nothing_reached_the_reader(c)
+
+    @pytest.mark.asyncio
+    async def test_a_clean_seam_is_left_untouched(self) -> None:
+        # The allow direction: when the seam severs nothing, the continuation is
+        # delivered verbatim. A guard that redacted every rotation would be a
+        # regression as bad as the leak.
+        head, tail = "the first part of an ordinary", " sentence with no secrets in it"
+        c = await _stream_across_a_seam(head, tail)
+
+        delivered = "".join(f["content"] for f in c.frames) + "".join(p[1] for p in c.pushed)
+        assert "sentence with no secrets in it" in delivered
+        assert "[REDACTED" not in delivered, "a clean seam must not be redacted"
+
+    @pytest.mark.asyncio
+    async def test_a_space_at_the_seam_is_part_of_what_the_reader_sees(self) -> None:
+        # A WeCom rotation cuts ONE continuous answer across two bubbles, so a space
+        # at the seam is visible answer text — "…Bearer" then " abc…" reads as
+        # "Bearer abc…". The shared message-boundary repair strips edge whitespace
+        # (correct when the halves are separate messages the platform trims), so
+        # this continuous-seam case must be graded verbatim, not stripped.
+        head, tail = "Authorization: Bearer", " abcdefghijklmnopqrstuvwxyz0123456789"
+        assert _default_redactor(head) == head, "the head half must be clean alone"
+        assert _default_redactor(tail) == tail, "the tail half must be clean alone"
+
+        c = await _stream_across_a_seam(head, tail)
+
+        _assert_nothing_reached_the_reader(c)
+
+    @pytest.mark.asyncio
+    async def test_a_credential_after_an_unbounded_link_target_is_still_closed(self) -> None:
+        # The soundness case a fixed context window would fail: a Markdown link
+        # whose target is longer than any hand-picked window pushes the
+        # credential-bearing label far back in the seam, so a windowed grade would
+        # scan a span the key's start was never inside and pass vacuously. Grading
+        # the WHOLE delivered seam closes it.
+        head = "[AKIA](https://ex.test/" + "a" * 600 + ",b)"
+        tail = "IOSFODNN7EXAMPLE"
+        c = await _stream_across_a_seam(head, tail, cap=700)
+
+        on_screen, in_a_copy = _reader_views(c)
+        assert "AKIAIOSFODNN7EXAMPLE" not in on_screen
+        assert "AKIAIOSFODNN7EXAMPLE" not in in_a_copy
+        _assert_nothing_reached_the_reader(c)
+
+    @pytest.mark.asyncio
+    async def test_a_key_split_between_reasoning_and_the_answer_is_closed(self) -> None:
+        # A reasoning frame goes into the bubble while the answer is still empty, so
+        # no answer offset (`_carried`) is recorded. The bubble AGES OUT (a >10-min
+        # agentic turn) after that accepted reasoning frame, and the answer opens
+        # with the key's completion, rolling to a fresh bubble with `_carried == 0`.
+        # The seam is not the delivered answer (there is none) but the frozen
+        # reasoning the aged bubble still shows. The model owns both sides of the
+        # reasoning→answer boundary, so this is reachable.
+        import time as _time
+
+        c = FakeClient()
+        r = _capped_renderer(c, cap=200)
+        await r.on_turn_start()
+        await r.on_thinking("thinking, the key is AKIAIOSF")
+        await r._push(force=True)
+        # The bubble ages past the stream lifetime with its reasoning ACCEPTED and
+        # displayed (not refused): the next push rolls to a fresh bubble.
+        r._stream_opened_at = _time.monotonic() - 10_000
+        await r.on_text_chunk("ODNN7EXAMPLE completes it, then more prose")
+        await r._push(force=True)
+        await r.on_done()
+        await r.close()
+
+        def _seen(fc: FakeClient) -> list[str]:
+            order, shown = [], {}
+            for f in fc.frames:
+                if f["stream_id"] not in shown:
+                    order.append(f["stream_id"])
+                shown[f["stream_id"]] = f["content"]
+            seen_bodies = [shown[s] for s in order] + [p[1] for p in fc.pushed]
+            return [_without_think_wrapper(b) for b in seen_bodies]
+
+        for reading in (
+            "".join(canonicalize_display(b) for b in _seen(c)),
+            canonicalize_display("".join(_seen(c))),
+        ):
+            assert "AKIAIOSFODNN7EXAMPLE" not in reading
+            assert _default_redactor(reading) == reading, "the key rejoined on screen"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_reasoning_frame_is_not_taken_as_the_seam(self) -> None:
+        # F1: two reasoning frames — the first ends at the credential prefix, the
+        # second appends prose. WeCom does not confirm which one the reader sees
+        # (an accepted frame need not be ACKed, and a rejection ACK can land late),
+        # so BOTH are possibly-visible candidates. The answer's completion must be
+        # redacted against the first (prefix) candidate no matter which the reader
+        # actually sees — a single-snapshot pick could grade against the second
+        # (prose-ending) candidate, miss the join, and leak the first's prefix.
+        c = FakeClient()
+        r = _capped_renderer(c, cap=200)
+        await r.on_turn_start()
+        await r.on_thinking("reasoning, the key is AKIAIOSF")
+        await r._push(force=True)
+        await r.on_thinking(" and some more reasoning after it")
+        await r._push(force=True)
+        # Both reasoning frames are candidates the fresh bubble is graded against.
+        assert any(
+            "AKIAIOSF" in s and s.endswith("AKIAIOSF") for s in r._shown_reasonings
+        ), "the credential-prefix reasoning frame is retained as a candidate"
+        # The bubble ages out (reasoning displayed, no answer yet); the answer opens
+        # with the completion and rolls to a fresh bubble.
+        import time as _time
+
+        r._stream_opened_at = _time.monotonic() - 10_000
+        await r.on_text_chunk("ODNN7EXAMPLE and then ordinary prose")
+        await r._push(force=True)
+
+        answer_frames = [f["content"] for f in c.frames if f["stream_id"] == r._stream_id]
+        assert answer_frames, "the answer frame was sent"
+        # Whichever reasoning the reader sees, the answer head is redacted so no
+        # candidate rejoins the key.
+        for candidate in (
+            "reasoning, the key is AKIAIOSF",
+            "reasoning, the key is AKIAIOSF and some more reasoning after it",
+        ):
+            assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(
+                candidate + answer_frames[-1]
+            ), "the key rejoined across the reasoning seam"
+
+    @pytest.mark.asyncio
+    async def test_retained_reasoning_candidates_are_bounded(self) -> None:
+        # A long accumulating-reasoning turn sends many reasoning frames. The
+        # candidate list must not grow without limit — one full copy per frame is
+        # unbounded retention. It is capped to the most-recent window.
+        from kiro_crew.wecom.renderer import _MAX_REASONING_CANDIDATES
+
+        c = FakeClient()
+        r = _capped_renderer(c, cap=200)
+        await r.on_turn_start()
+        for i in range(_MAX_REASONING_CANDIDATES * 3):
+            await r.on_thinking(f" step {i}")
+            await r._push(force=True)
+        assert len(r._shown_reasonings) <= _MAX_REASONING_CANDIDATES, "retention is unbounded"
