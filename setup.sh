@@ -21,13 +21,17 @@
 #   --branch NAME   the branch step 0 fetches (default: the one this file ships on)
 #   --demo [...]    a throwaway demo instead (scripts/demo-first-run.sh; see its --help)
 
-# Resolve script directory (works in bash and zsh, sourced or executed)
-if [ -n "$BASH_SOURCE" ]; then
+# Resolve script directory (works in bash and zsh, sourced or executed). Piped
+# from curl there is no file, so no directory: the folder the command was typed
+# in is never taken for a checkout, and step 0 fetches the source instead.
+if [ -n "$BASH_SOURCE" ] && [ -f "$BASH_SOURCE" ]; then
     _kirocrew_dir="$(cd "$(dirname "$BASH_SOURCE")" && pwd)"
 elif [ -n "$ZSH_VERSION" ]; then
     _kirocrew_dir="$(cd "$(dirname "${(%):-%x}")" && pwd)"
+elif [ -f "$0" ] && [ "${0##*/}" = setup.sh ]; then
+    _kirocrew_dir="$(cd "$(dirname "$0")" && pwd)"
 else
-    _kirocrew_dir="$(pwd)"
+    _kirocrew_dir=""
 fi
 
 _kc_start=1
@@ -76,7 +80,9 @@ _kc_spin() {
 }
 
 # ── 0. From GitHub: no checkout around this file ──
-if [ ! -d "$_kirocrew_dir/src/kiro_crew" ]; then
+# Also for --demo from a checkout too old to carry the demo script.
+if [ -z "$_kirocrew_dir" ] || [ ! -d "$_kirocrew_dir/src/kiro_crew" ] \
+    || { [ -n "$_kc_demo" ] && [ ! -f "$_kirocrew_dir/scripts/demo-first-run.sh" ]; }; then
     _kc_src="${KIROCREW_SOURCE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/kirocrew/source}"
     echo "── Step 0: Source ──"
     if ! command -v git >/dev/null 2>&1; then
