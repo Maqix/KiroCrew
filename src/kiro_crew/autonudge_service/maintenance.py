@@ -36,14 +36,25 @@ if TYPE_CHECKING:
 async def _await_future_deferring_cancellation(
     future: "asyncio.Future[Any]",
 ) -> tuple[Any, bool]:
-    """Join *future* and report cancellation only after its result is known."""
+    "Join *future* and report cancellation only after its result is known."
     cancelled = False
     while not future.done():
         try:
             await asyncio.shield(future)
         except asyncio.CancelledError:
             cancelled = True
-    return future.result(), cancelled
+        except Exception:
+            # Retain the joined error until cancellation precedence is known.
+            break
+    task = asyncio.current_task()
+    cancelled = cancelled or bool(task is not None and task.cancelling())
+    try:
+        result = future.result()
+    except BaseException as error:
+        if cancelled:
+            raise asyncio.CancelledError from error
+        raise
+    return result, cancelled
 
 
 def _maintenance_lock(base_dir: Path) -> asyncio.Lock:
