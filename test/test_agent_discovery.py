@@ -26,6 +26,7 @@ from kiro_crew.agent_discovery import (
     AmbiguousAgentSpecError,
     clear_list_agents_cache,
     clear_project_agent_cache,
+    guest_agent_is_project_shadowed,
     list_agents,
     project_agent_files,
     project_agent_name,
@@ -142,6 +143,48 @@ class TestProjectScopeDiscovery:
         spec.write_text(json.dumps({}))
         assert project_agent_name(spec) == "legacy"
 
+
+class TestGuestAgentProjectShadowGuard:
+    """``guest_agent_is_project_shadowed`` reports whether a guest agent name
+    resolves to a PROJECT-scoped spec kiro-cli would run before the trusted
+    user-level one. The spawn paths refuse a True answer, because the projection
+    copies a shadowing spec's grants verbatim for a non-owner turn.
+    """
+
+    def test_project_scoped_guest_is_flagged(self, fake_home, tmp_path):
+        """A ``<project>/.kiro`` spec of the guest name shadows the user-level one."""
+        d = _agents_dir(fake_home)
+        (d / "kirocrew-slack-guest.json").write_text(json.dumps({"name": "kirocrew-slack-guest"}))
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "kirocrew-slack-guest.json").write_text(
+            json.dumps({"name": "kirocrew-slack-guest"})
+        )
+        clear_list_agents_cache()
+        assert guest_agent_is_project_shadowed("kirocrew-slack-guest", str(proj)) is True
+
+    def test_user_level_guest_is_not_flagged(self, fake_home, tmp_path):
+        """A guest resolving to its GLOBAL spec (no project shadow) is safe."""
+        d = _agents_dir(fake_home)
+        (d / "kirocrew-slack-guest.json").write_text(json.dumps({"name": "kirocrew-slack-guest"}))
+        proj = tmp_path / "repo"
+        _project_agents_dir(proj)  # empty project scope
+        clear_list_agents_cache()
+        assert guest_agent_is_project_shadowed("kirocrew-slack-guest", str(proj)) is False
+
+    def test_no_project_dir_is_not_flagged(self, fake_home):
+        """No project cwd means no shadow is possible."""
+        _agents_dir(fake_home)
+        clear_list_agents_cache()
+        assert guest_agent_is_project_shadowed("kirocrew-slack-guest", None) is False
+
+    def test_unknown_guest_name_is_not_flagged(self, fake_home, tmp_path):
+        """A name that resolves to no row at all is not a shadow."""
+        _agents_dir(fake_home)
+        proj = tmp_path / "repo"
+        _project_agents_dir(proj)
+        clear_list_agents_cache()
+        assert guest_agent_is_project_shadowed("kirocrew-slack-guest", str(proj)) is False
+
     def test_sensitive_project_dir_yields_no_agents(self, tmp_path, monkeypatch):
         """A project path the security gate rejects must not be scanned at all."""
         monkeypatch.setattr(
@@ -204,9 +247,9 @@ class TestProjectScopeDiscovery:
         names = [a.name for a in list_agents(agents_dir=d, project_dir=str(protected))]
 
         assert names == ["user-level"]
-        assert [e["outcome"] for e in sel_events] == ["denied"], (
-            f"one refusal owes exactly one denial row: {sel_events}"
-        )
+        assert [e["outcome"] for e in sel_events] == [
+            "denied"
+        ], f"one refusal owes exactly one denial row: {sel_events}"
 
     def test_list_agents_decides_project_sensitivity_exactly_once(
         self, fake_home, tmp_path, monkeypatch
@@ -394,9 +437,9 @@ class TestProjectAgentNameCache:
         clear_project_agent_cache()
 
         assert project_agent_names(str(protected)) == frozenset()
-        assert sel_events and sel_events[0]["outcome"] == "denied", (
-            f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
-        )
+        assert (
+            sel_events and sel_events[0]["outcome"] == "denied"
+        ), f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
 
     def test_decides_project_sensitivity_exactly_once(self, tmp_path, monkeypatch):
         """The sibling entry point decides once too, for the same reason.
@@ -714,8 +757,11 @@ class TestSpecModelCoercion:
         # are excluded by NAME, not skipped silently: the lists render as chips
         # (one element each) and `kirocrew_owned` is the bool provenance flag —
         # everything else must be a plain string or React error #31 returns.
-        assert all(isinstance(v, str) for k, v in info.to_dict().items() if k not in
-                   ("skills", "mcp_servers", "kirocrew_owned"))
+        assert all(
+            isinstance(v, str)
+            for k, v in info.to_dict().items()
+            if k not in ("skills", "mcp_servers", "kirocrew_owned")
+        )
         assert isinstance(info.to_dict()["kirocrew_owned"], bool)
 
     def test_list_fields_drop_only_the_unusable_elements(self) -> None:
@@ -972,14 +1018,10 @@ class TestListAgentsCache:
         clear_list_agents_cache()
         d = tmp_path / "agents"
         d.mkdir()
-        (d / "a.json").write_text(
-            json.dumps({"name": "a", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "a.json").write_text(json.dumps({"name": "a", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a"}
 
-        (d / "b.json").write_text(
-            json.dumps({"name": "b", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "b.json").write_text(json.dumps({"name": "b", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a", "b"}
 
     def test_cache_invalidates_on_remove(self, tmp_path: Path) -> None:
@@ -987,12 +1029,8 @@ class TestListAgentsCache:
         clear_list_agents_cache()
         d = tmp_path / "agents"
         d.mkdir()
-        (d / "a.json").write_text(
-            json.dumps({"name": "a", "model": "auto"}), encoding="utf-8"
-        )
-        (d / "b.json").write_text(
-            json.dumps({"name": "b", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "a.json").write_text(json.dumps({"name": "a", "model": "auto"}), encoding="utf-8")
+        (d / "b.json").write_text(json.dumps({"name": "b", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a", "b"}
 
         (d / "b.json").unlink()
@@ -1011,9 +1049,9 @@ class TestListAgentsCache:
         # Bump mtime forward deterministically so the signature is guaranteed newer.
         st = f.stat()
         os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
-        assert [a.name for a in list_agents(agents_dir=d)] == ["v2"], (
-            "an in-place edit must invalidate the cache"
-        )
+        assert [a.name for a in list_agents(agents_dir=d)] == [
+            "v2"
+        ], "an in-place edit must invalidate the cache"
 
     def test_clear_cache_forces_rescan(self, tmp_path: Path) -> None:
         """clear_list_agents_cache() forces a fresh scan even when the signature

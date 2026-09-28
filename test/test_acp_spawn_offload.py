@@ -1151,3 +1151,164 @@ class TestRuntimeRootTrackingOffLoop:
 
         assert order == ["worker-done", "kill"]
         kill.assert_awaited_once()
+
+
+class TestGuestSpawnRefusedWhenProjectionUnavailable:
+    """The default-resource fence for a guest spec lives ONLY inside the
+    projected append (skill_projection, keyed on NO_DEFAULT_RESOURCE_AGENT_NAMES).
+    When ``prepare_native_skill_projection`` returns ``None`` -- the documented
+    ``KIROCREW_NATIVE_SKILL_PROJECTION=0`` kill switch, or a settings-/alias-lock
+    ``OSError`` -- the spawn would otherwise fall back to the AUTHORED guest
+    name, which kiro-cli mounts with its native defaults (the owner's global +
+    workspace steering and ``AGENTS.md``). That loads the owner's own
+    instructions into a turn a non-owner reads, and the fence is exactly what is
+    absent on that path. A guest turn must be REFUSED rather than degraded to
+    owner defaults; an owner agent on the same ``None`` path is unaffected.
+    """
+
+    @staticmethod
+    def _client_spawn_patches(client_mod, mock_proc):
+        return (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch.object(client_mod, "ensure_agent_materialized"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                return_value=(["/usr/bin/kiro-cli", "acp"], None),
+            ),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=mock_proc,
+            ),
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
+            patch.object(client_mod, "_get_child_pids", return_value=[]),
+        )
+
+    @pytest.mark.asyncio
+    async def test_guest_agent_is_refused_when_projection_is_none(self, tmp_path) -> None:
+        import contextlib
+
+        from kiro_crew.acp import skill_projection
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.agent_files import NO_DEFAULT_RESOURCE_AGENT_NAMES
+
+        mock_proc = MagicMock()
+        mock_proc.pid = _UNALLOCATABLE_PID
+        mock_proc.returncode = None
+
+        for guest in sorted(NO_DEFAULT_RESOURCE_AGENT_NAMES):
+            client = AcpClient(work_dir=tmp_path / "ws", session_key="k", agent=guest)
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(
+                    patch.object(
+                        skill_projection, "prepare_native_skill_projection", return_value=None
+                    )
+                )
+                for p in self._client_spawn_patches(client_mod, mock_proc):
+                    stack.enter_context(p)
+                with pytest.raises(AcpError) as excinfo:
+                    await client._spawn()
+            await _stop_stderr_drain(client)
+            assert guest in str(excinfo.value)
+            assert "projection" in str(excinfo.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_owner_agent_still_spawns_when_projection_is_none(self, tmp_path) -> None:
+        """Load-bearing control: the refusal is GUEST-specific. An owner agent
+        hitting the same ``None`` projection path spawns normally -- its native
+        defaults ARE the owner's own instructions, so there is nothing to fence.
+        """
+        import contextlib
+
+        from kiro_crew.acp import skill_projection
+        from kiro_crew.acp.client import CLIENT_NAME
+
+        mock_proc = MagicMock()
+        mock_proc.pid = _UNALLOCATABLE_PID
+        mock_proc.returncode = None
+
+        client = AcpClient(work_dir=tmp_path / "ws", session_key="k", agent=CLIENT_NAME)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch.object(skill_projection, "prepare_native_skill_projection", return_value=None)
+            )
+            for p in self._client_spawn_patches(client_mod, mock_proc):
+                stack.enter_context(p)
+            await client._spawn()
+        await _stop_stderr_drain(client)
+        assert client._process is mock_proc
+
+    @pytest.mark.asyncio
+    async def test_guest_agent_is_refused_when_project_shadows_the_spec(self, tmp_path) -> None:
+        """A projection SUCCEEDS, but the guest name resolves to a PROJECT-scoped
+        spec (a ``<project>/.kiro`` file kiro-cli resolves before the user-level
+        one). Its grants would be copied verbatim for a non-owner turn past the
+        guest tool gate, so the spawn is refused even though the fence path exists.
+        """
+        import contextlib
+
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.agent_files import NO_DEFAULT_RESOURCE_AGENT_NAMES
+
+        mock_proc = MagicMock()
+        mock_proc.pid = _UNALLOCATABLE_PID
+        mock_proc.returncode = None
+
+        for guest in sorted(NO_DEFAULT_RESOURCE_AGENT_NAMES):
+            client = AcpClient(work_dir=tmp_path / "ws", session_key="k", agent=guest)
+            with contextlib.ExitStack() as stack:
+                # projection is left at the autouse fixture's real (non-None) value.
+                stack.enter_context(
+                    patch.object(
+                        discovery_mod, "guest_agent_is_project_shadowed", return_value=True
+                    )
+                )
+                for p in self._client_spawn_patches(client_mod, mock_proc):
+                    stack.enter_context(p)
+                with pytest.raises(AcpError) as excinfo:
+                    await client._spawn()
+            await _stop_stderr_drain(client)
+            assert guest in str(excinfo.value)
+            assert "shadow" in str(excinfo.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_guest_agent_spawns_when_spec_is_not_project_shadowed(self, tmp_path) -> None:
+        """Control: a guest whose name resolves to its GLOBAL (user-level) spec is
+        not shadowed, so the spawn proceeds -- the refusal is scoped to shadowing,
+        not to every guest turn.
+        """
+        import contextlib
+
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.acp import skill_projection
+        from kiro_crew.agent_files import SLACK_GUEST_AGENT_NAME
+
+        mock_proc = MagicMock()
+        mock_proc.pid = _UNALLOCATABLE_PID
+        mock_proc.returncode = None
+
+        # A projection that DOES cover the guest agent, so the projected --agent
+        # lookup below resolves (the autouse fixture only maps ``kirocrew``).
+        guest_projection = skill_projection.NativeSkillProjection(
+            {SLACK_GUEST_AGENT_NAME: f"{SLACK_GUEST_AGENT_NAME}-skill-view-test"}
+        )
+
+        client = AcpClient(work_dir=tmp_path / "ws", session_key="k", agent=SLACK_GUEST_AGENT_NAME)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch.object(
+                    skill_projection,
+                    "prepare_native_skill_projection",
+                    return_value=guest_projection,
+                )
+            )
+            stack.enter_context(
+                patch.object(discovery_mod, "guest_agent_is_project_shadowed", return_value=False)
+            )
+            for p in self._client_spawn_patches(client_mod, mock_proc):
+                stack.enter_context(p)
+            await client._spawn()
+        await _stop_stderr_drain(client)
+        assert client._process is mock_proc

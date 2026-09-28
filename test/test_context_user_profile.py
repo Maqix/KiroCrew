@@ -202,3 +202,36 @@ class TestUserProfileSection:
         ctx = _builder(tmp_path).build_session_context(session_key="dashboard:main")
         assert ctx.index("[CURRENT AGENT]") < ctx.index("[USER PROFILE]")
         assert ctx.index("[USER PROFILE]") < ctx.index("[WORKSPACE IDENTITY]")
+
+
+class TestGuestProfileSuppression:
+    """The [USER PROFILE] block describes the OWNER (role + technical comfort
+    from the owner's onboarding) and is built from owner-global config. A Slack
+    guest turn scopes session key, memory store, hooks and the tool gate, but
+    context assembly is owner-global, so without suppression an allow-listed
+    non-owner would read the owner's role and technical level out of its own
+    prompt. Suppression is keyed on the SELF-DERIVED guest session key, so no
+    caller can omit a flag and resolve it back to the owner.
+    """
+
+    def test_guest_session_suppresses_profile(self, tmp_path):
+        from kiro_crew.messaging.link import guest_session_key
+
+        _seed_profile("developer", "codes")
+        gkey = guest_session_key("U0GUEST", "1700000000.000100")
+        ctx = _builder(tmp_path).build_session_context(session_key=gkey)
+        assert "[USER PROFILE]" not in ctx
+        assert "software developer" not in ctx
+
+    def test_owner_slack_session_still_gets_profile(self, tmp_path):
+        """Load-bearing control: suppression is GUEST-specific, not "any Slack
+        key". An owner's own Slack session key (non-guest) still renders the
+        block, so a blanket suppression of every slack session would redden this.
+        """
+        from kiro_crew.messaging.link import SLACK_NAMESPACE
+
+        _seed_profile("developer", "codes")
+        owner_key = f"{SLACK_NAMESPACE}:C0CHAN-1700000000.000100"
+        ctx = _builder(tmp_path).build_session_context(session_key=owner_key)
+        assert "[USER PROFILE]" in ctx
+        assert "software developer" in ctx

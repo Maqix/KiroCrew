@@ -70,6 +70,7 @@ from kiro_crew.members import (
     slug_for_name,
 )
 from kiro_crew.memory import MemoryStore
+from kiro_crew.messaging.link import is_guest_session_key
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.quick_prompts import expand_quick_prompt
 from kiro_crew.security import (
@@ -4270,7 +4271,22 @@ class ContextBuilder:
         # the sub-agent reads the scope as framing rather than discovering a gap.
         append_required(_build_context_scope_section(context_groups))
 
-        if _group_included(effective_groups, CONTEXT_GROUP_LESSONS):
+        # The [USER PROFILE] block describes the OWNER — role and technical
+        # comfort collected by the owner's onboarding — and is built from the
+        # owner-global config, so it must never reach a guest turn: an
+        # allow-listed non-owner would read the owner's role and technical level
+        # out of its own prompt. The guest arm scopes session key, memory store,
+        # hooks and tool gate but not context assembly, and this section is the
+        # one owner-global fact that assembly injects. Suppress it for a guest.
+        #
+        # Keyed on the SESSION KEY, not a passed guest flag: a guest session key
+        # is self-derived (``guest-<user>-<thread>``) and every guest path — the
+        # inbound gate, the interactions replay, the compaction replay — keys the
+        # session the same way, so an absent flag can never resolve this to the
+        # owner. That is the failure mode a distributed ``guest_user`` default
+        # carries; deriving from the intrinsic key removes it here.
+        _is_guest_turn = bool(session_key) and is_guest_session_key(str(session_key))
+        if _group_included(effective_groups, CONTEXT_GROUP_LESSONS) and not _is_guest_turn:
             profile_ctx = _build_user_profile_section(_cfg)
             if profile_ctx:
                 parts.append(profile_ctx)

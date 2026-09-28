@@ -1396,6 +1396,32 @@ def agent_skill_globs(
     return []
 
 
+def guest_agent_is_project_shadowed(agent: str, project_dir: str | Path | None) -> bool:
+    """True when *agent* resolves to a PROJECT-scoped spec in *project_dir*.
+
+    kiro-cli resolves ``--agent`` against its cwd first, and Kiro Crew spawns it
+    with the session's project dir as that cwd, so a ``<project>/.kiro/agents/<name>.json``
+    (or ``<project>/.kiro/<name>.agent-spec.json``) SHADOWS the trusted user-level
+    spec of the same name (:func:`list_agents`). For an ordinary agent that mirrors
+    kiro-cli and is fine. For a GUEST agent it is not: the projection copies the
+    winning spec's grants verbatim, and a project-scoped spec is authored wherever
+    the guest's working directory points -- so a shadowing spec hands a non-owner
+    turn whatever tools and resources that file declares, bypassing the guest tool
+    gate (a pre-approved tool emits no permission request) and its SEL record. The
+    caller refuses a guest spawn on a True answer.
+
+    Answers only about scope, not trust in the spec's contents: a guest agent that
+    resolves to its GLOBAL (user-level) spec is False. A refused/sensitive
+    ``project_dir`` contributes no rows, so the guest resolves user-level and this
+    is False. Read off the discovery worker, never the event loop.
+    """
+    if not agent or not project_dir:
+        return False
+    rows = list_agents(agents_dir=None, project_dir=str(project_dir))
+    winner = next((row for row in rows if row.name == agent), None)
+    return winner is not None and winner.scope == SCOPE_PROJECT
+
+
 # This is called on the discovery/expansion worker, never on the event loop.
 def session_skill_globs(
     session_key: str, fallback_agent: str, *, project_dir: str | Path | None = None

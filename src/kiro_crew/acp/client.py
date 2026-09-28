@@ -9970,6 +9970,52 @@ class AcpClient:
             self._native_skill_projection = await asyncio.to_thread(
                 prepare_native_skill_projection, self._work_dir, per_session_element=False
             )
+            # The default-resource fence for a guest spec lives ONLY inside the
+            # projected append (skill_projection.prepare_native_skill_projection,
+            # NO_DEFAULT_RESOURCE_AGENT_NAMES). When preparation returns None --
+            # the documented KIROCREW_NATIVE_SKILL_PROJECTION=0 kill switch, or a
+            # lock OSError -- the spawn below would fall back to the AUTHORED
+            # guest name, which kiro-cli mounts with its native defaults: the
+            # owner's global steering, the workspace steering and AGENTS.md. That
+            # loads the owner's own instructions into a turn a non-owner reads,
+            # and the fence is exactly the thing that is absent on this path. A
+            # guest turn must never spawn unfenced, so refuse rather than degrade
+            # to owner defaults; an owner agent on the same None path is
+            # unaffected (its defaults ARE the owner's own instructions).
+            from kiro_crew.agent_files import NO_DEFAULT_RESOURCE_AGENT_NAMES
+
+            if self._agent in NO_DEFAULT_RESOURCE_AGENT_NAMES:
+                if self._native_skill_projection is None:
+                    raise AcpError(
+                        "Guest agent "
+                        f"{self._agent!r} cannot spawn: native skill projection is "
+                        "unavailable (disabled via KIROCREW_NATIVE_SKILL_PROJECTION "
+                        "or a settings-lock failure), so the guest-resource fence "
+                        "that withholds the owner's steering and AGENTS.md is not in "
+                        "effect. Refusing rather than answering a non-owner with the "
+                        "owner's instructions inherited."
+                    )
+                # kiro-cli resolves --agent against its cwd first, and this spawn
+                # passes the session's project dir as that cwd, so a
+                # <project>/.kiro guest spec SHADOWS the trusted user-level one and
+                # the projection copies its grants verbatim -- handing a non-owner
+                # turn whatever tools that project-authored file declares, past the
+                # guest tool gate (a pre-approved tool raises no permission request)
+                # and its SEL record. Refuse a guest whose name resolves project-
+                # scoped; an owner agent is never checked here. Off-loop: the
+                # resolver stats the project agents dir.
+                from kiro_crew.agent_discovery import guest_agent_is_project_shadowed
+
+                if await asyncio.to_thread(
+                    guest_agent_is_project_shadowed, self._agent, self._work_dir
+                ):
+                    raise AcpError(
+                        "Guest agent "
+                        f"{self._agent!r} cannot spawn: a project-scoped spec of "
+                        "that name shadows the trusted user-level guest spec, and "
+                        "its grants would be honoured verbatim for a non-owner turn "
+                        "past the guest tool gate. Refusing the shadowed spec."
+                    )
             argv = [
                 kiro_bin,
                 KIRO_CLI_SUBCMD,
