@@ -207,6 +207,7 @@ from kiro_crew.session_lifecycle import (
     SessionLifecycleState,
     TornDown,
 )
+from kiro_crew.session_live_cap import resolve_max_live_sessions
 from kiro_crew.session_map import _kiro_sessions_dir  # noqa: F401
 from kiro_crew.session_map import (
     MIRROR_OPT_OUT_FLAG,
@@ -779,6 +780,20 @@ _AGENT_MODEL_CACHE_TTL = 30.0
 
 # Persistent session keys — never expired by idle cleanup
 _PERSISTENT_KEYS = frozenset({BACKGROUND_KEY, HEARTBEAT_KEY})
+
+
+def _counts_toward_live_cap(key: str) -> bool:
+    """Whether *key* is a chat ``session.max_live_sessions`` counts and may release.
+
+    A chat here is a conversation that resumes: released, it comes back through
+    ``session/load`` on its next message, as an idle-expired one does. So the
+    persistent background keys and every stateless namespace are outside it --
+    sub-agents, task steps, cron fires, workflow workers, crew channel agents,
+    side and reply-thread chats -- each bounded by its own cap or lifetime, and
+    none with a transcript to resume.
+    """
+    return key not in _PERSISTENT_KEYS and not key.startswith(_STATELESS_PREFIXES)
+
 
 # Sentinel model values that mean "let kiro-cli resolve from agent JSON".
 # When the global agent.model config is one of these, get_or_create() skips
@@ -1366,6 +1381,14 @@ class SessionManager:
             has_attached_subagents=lambda key: self._has_attached_subagents(key),
             # Same reason, different owner: the gateway installs this one.
             has_pending_injection=lambda key: self._has_pending_injection(key),
+            counts_toward_live_cap=lambda key: _counts_toward_live_cap(key),
+            # Resolved per call like the sub-agent probe: the dashboard installs it.
+            keeps_live=lambda key: self._keeps_live(key),
+            starts_in_flight=lambda: [
+                key
+                for key, tokens in self._registry_state().allocation_reservations.items()
+                if tokens
+            ],
         )
 
     def _cleanup_boundary(self) -> SessionCleanup:
@@ -1870,6 +1893,13 @@ class SessionManager:
         # Installed by the gateway once it owns this manager (set_injection_probe);
         # None means "no gateway, so no completion injection can be in flight".
         self._injection_probe: "Callable[[str], bool] | None" = None
+        # Installed by the dashboard (set_keep_live_probe); None means no chat is
+        # held open by a user, so only busy sessions are safe from the live cap.
+        self._keep_live_probe: "Callable[[str], bool | Awaitable[bool]] | None" = None
+        # One make-room at a time, so two chats opening together do not both
+        # count the same free place or release the same idle chat.
+        self._live_cap_lock = asyncio.Lock()
+        self._live_cap_logged: int | None = None
         self._allocation_state = SessionRegistryState(
             start_sem=asyncio.Semaphore(_MAX_CONCURRENT_COLD_STARTS)
         )
@@ -2449,6 +2479,7 @@ class SessionManager:
             # start_pool left it to its first use; start it as the background
             # agent, as start_pool would have, not as a caller's default agent.
             await self._ensure_background()
+        await self._make_room_for(key, refusable=speculative and not speculative_resume)
         return await self._allocation_boundary().get_or_create(
             key,
             agent=agent,
@@ -2463,6 +2494,62 @@ class SessionManager:
             _won_race_retries=_won_race_retries,
             **extra_factory_kwargs,
         )
+
+    def _live_session_cap(self) -> int:
+        """The live chat cap in force, read off the current ``_cfg`` at each use.
+
+        Point-of-use, so a ``session.max_live_sessions`` write is in force on the
+        next chat that opens without an applier. Logged once per value.
+        """
+        configured = getattr(self._cfg.session, "max_live_sessions", 0)
+        cap = resolve_max_live_sessions(configured)
+        if cap != self._live_cap_logged:
+            self._live_cap_logged = cap
+            logger.info(
+                "Live chat cap = %d (session.max_live_sessions=%r, host memory %d MiB)",
+                cap,
+                configured,
+                platform_compat.host_total_mib(),
+            )
+        return cap
+
+    async def _make_room_for(self, key: str, *, refusable: bool = False) -> None:
+        """Hold live chats to the cap before *key* cold-starts one of its own.
+
+        A no-op unless *key* is a capped chat with no session yet. *refusable* is
+        a speculative spawn that may not resume: when *key* has a conversation to
+        resume, the allocation refuses it (``SpeculativeResumeRefused``), so no
+        chat is released for it. Never refuses the chat: a failure to make room
+        is logged and the chat opens.
+        """
+        try:
+            folded = self._fold_key(key)
+            if not _counts_toward_live_cap(folded) or folded in self._sessions or self._closing:
+                return
+            if refusable and self._session_map.has_hint(folded):
+                return
+            async with self._live_cap_lock:
+                await self._cleanup_boundary().make_room(folded, self._live_session_cap())
+        except Exception:
+            logger.warning(
+                "Live chat cap: making room for %s failed; opening it", key, exc_info=True
+            )
+
+    def set_keep_live_probe(self, fn: "Callable[[str], bool | Awaitable[bool]] | None") -> None:
+        """Install the "is the user holding *key* open?" predicate the live cap asks.
+
+        The dashboard answers it: the main chat, and a chat with a question card
+        or a tool approval waiting on the user, keep their process however long
+        they sit idle. The answer may be awaitable. ``None`` uninstalls it.
+        """
+        self._keep_live_probe = fn
+
+    def _keeps_live(self, key: str) -> bool | Awaitable[bool]:
+        """Answer the installed keep-live probe, or False when none is installed."""
+        probe = self._keep_live_probe
+        if probe is None:
+            return False
+        return probe(key)
 
     async def reset(
         self,

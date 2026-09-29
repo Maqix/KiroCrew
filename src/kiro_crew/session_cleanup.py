@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import Awaitable, Callable, Iterable, MutableMapping
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -122,6 +122,20 @@ def _no_pending_injection(key: str) -> bool:
     return False
 
 
+def _not_a_capped_chat(key: str) -> bool:
+    """Default live-cap population: a manager that names none releases nothing."""
+    return False
+
+
+def _nothing_held_open(key: str) -> bool:
+    """Default keep-live probe: a manager with no dashboard holds no chat open."""
+    return False
+
+
+def _no_starts_in_flight() -> tuple[str, ...]:
+    return ()
+
+
 @dataclass(slots=True)
 class CleanupState:
     """Mutable state exclusively owned by :class:`SessionCleanup`."""
@@ -212,6 +226,19 @@ class CleanupDeps:
     # and defaults to "nothing injecting" so a manager without a gateway keeps
     # its existing behaviour.
     has_pending_injection: Callable[[str], bool] = _no_pending_injection
+    # The live chat cap's population (``session.max_live_sessions``): whether
+    # *key* is a chat that resumes on its next message, and so may be counted and
+    # released. Defaults to "none is" so a manager that does not name it keeps
+    # every session.
+    counts_toward_live_cap: Callable[[str], bool] = _not_a_capped_chat
+    # Whether the user is holding *key* open -- the main chat, or a chat with a
+    # question card or tool approval waiting on them. Never released for the cap.
+    # May answer an AWAITABLE: the dashboard reads the main chat off-loop.
+    keeps_live: Callable[[str], bool | Awaitable[bool]] = _nothing_held_open
+    # Keys with a claim or cold start in flight, registered or not. A start that
+    # has not registered yet holds no ``_sessions`` entry but will hold a
+    # process, so the cap counts it.
+    starts_in_flight: Callable[[], Iterable[str]] = _no_starts_in_flight
 
 
 class SessionCleanup:
@@ -1322,3 +1349,128 @@ class SessionCleanup:
                     self._deps.get_session_idle_expired_event(),
                     {"turn_active": turn_active, "orphaned": bool(is_orphan)},
                 )
+
+    async def make_room(self, incoming: str, cap: int) -> int:
+        """Release least-recently-used idle chats so opening *incoming* stays within *cap*.
+
+        Returns how many were released. What is counted is every capped chat
+        that holds a session or has a start in flight, plus *incoming* itself.
+        Only a session no turn holds is a candidate, oldest ``last_used`` first,
+        and each one elected is asked the idle sweep's questions again before
+        it goes (:meth:`_release_for_cap`). The release itself is the idle
+        sweep's: ``on_session_expire``, then ``reset`` pinned to the
+        incarnation judged, so the conversation stays on disk and resumes
+        through ``session/load`` on its next message.
+
+        Never refuses: when fewer chats could go than the cap asks for,
+        *incoming* opens anyway and the shortfall is logged.
+        """
+        # The scan takes no registry lock. It is synchronous on the loop, so no
+        # coroutine interleaves with it, a count off by a registration in
+        # progress only moves a soft cap by one, and every act below goes
+        # through ``reset``, which re-validates under that lock. Taking it here
+        # would put one more acquisition on every chat's first allocation.
+        counts = self._deps.counts_toward_live_cap
+        live = [
+            (key, session)
+            for key, session in self._owner._sessions.items()
+            if key != incoming and counts(key)
+        ]
+        registered = {key for key, _ in live}
+        starting = {
+            key
+            for key in self._deps.starts_in_flight()
+            if key != incoming and key not in registered and counts(key)
+        }
+        # ``last_used`` travels with its session: a turn that starts and ends
+        # inside a later await bumps it, and that is use, not idleness.
+        idle = sorted(
+            ((key, s, s.last_used) for key, s in live if not s.semaphore.locked()),
+            key=lambda row: row[2],
+        )
+        occupied = len(live) + len(starting)
+        over = occupied + 1 - cap
+        if over <= 0:
+            return 0
+        released = 0
+        for key, scanned, last_used in idle:
+            if released >= over:
+                break
+            if await self._release_for_cap(key, scanned, last_used):
+                released += 1
+        if released < over:
+            self._deps.logger.warning(
+                "Live chat cap: %d chats live or starting against a cap of %d and "
+                "only %d could be released; opening %s anyway (the rest are busy, "
+                "waiting on the user, or the main chat)",
+                occupied,
+                cap,
+                released,
+                incoming,
+            )
+        return released
+
+    async def _release_for_cap(self, key: str, scanned: SessionEntry, last_used: float) -> bool:
+        """Release one idle chat for the live cap, re-judging it first. True when it went."""
+        if await self._held_open(key):
+            self._deps.logger.debug("Live chat cap: %s is held open by the user - kept", key)
+            return False
+        if await self._has_attached_subagents(key):
+            self._deps.logger.info("Live chat cap: %s still has sub-agent work - kept", key)
+            return False
+        # Both probes may suspend, so what the scan concluded is asked again
+        # here, synchronously, as the last reads before the act: an injection
+        # that began in the await, another incarnation under the key, a turn
+        # holding the permit, or one that came and went.
+        if (
+            self._injection_pending(key)
+            or self._owner._sessions.get(key) is not scanned
+            or scanned.semaphore.locked()
+            or scanned.last_used != last_used
+        ):
+            self._deps.logger.info("Live chat cap: %s was used mid-check - kept", key)
+            return False
+        self._deps.logger.warning(
+            "Live chat cap: releasing idle chat %s; it resumes on its next message", key
+        )
+        if self._owner.on_session_expire:
+            try:
+                self._deps.sel_factory().log_api_access(
+                    caller="session_manager",
+                    operation="consolidate_session_expire",
+                    outcome="allowed",
+                    source="live_cap",
+                    resources=key,
+                )
+                self._owner.on_session_expire(key)
+            except Exception:
+                self._deps.logger.debug(
+                    "on_session_expire (or SEL) failed for %s", key, exc_info=True
+                )
+        # Not ``ends_conversation``, for the idle sweep's reason: this recycles a
+        # process and the conversation resumes, so its sub-agent runs are left
+        # to deliver into it.
+        reset_done = await self._owner.reset(
+            key,
+            expect_session=scanned,
+            skip_if_busy=True,
+            skip_if_injecting=True,
+        )
+        if not reset_done:
+            self._deps.logger.info(
+                "Live chat cap: %s not reset (busy, or the key changed hands) - kept", key
+            )
+            return False
+        self._deps.stats_factory().inc_session_cleaned()
+        return True
+
+    async def _held_open(self, key: str) -> bool:
+        """Fail-closed read of the keep-live probe: one that cannot answer keeps the chat."""
+        try:
+            answer = self._deps.keeps_live(key)
+            if isinstance(answer, Awaitable):
+                answer = await answer
+            return bool(answer)
+        except Exception:
+            self._deps.logger.debug("Keep-live probe failed for %s; keeping it", key, exc_info=True)
+            return True

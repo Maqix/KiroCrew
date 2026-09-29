@@ -1299,7 +1299,9 @@ document validates. Otherwise it does three things, in order:
   NEW sessions see the new defaults. `reload_provider_factory` (which retires
   sessions built by the old factory) is not on this path.
   `session.eager_spawn` is deliberately absent: it is read live per spawn in
-  `chat_runner`, so draining the pool for it would be pure churn.
+  `chat_runner`, so draining the pool for it would be pure churn. So is
+  `session.max_live_sessions`, read off `_cfg` each time a chat opens (see
+  "Live chat cap").
 - **Re-clamp the watchdog windows on every live handle** when the change touches
   `watchdog.*`, `agent.chat_turn_timeout_secs`, or any
   `agents.<name>.watchdog_*` key — see
@@ -3961,8 +3963,8 @@ Tests: `test/test_session_health.py`, `test/test_sessions_health_cache.py`,
 
 | Session | Key Pattern | Lifetime | Process |
 |---------|-------------|----------|---------|
-| User chat | `slack:{thread_ts}` (legacy bare `{thread_ts}` folded) | Idle timeout (60 min) | Own kiro-cli |
-| Dashboard tab | `dashboard:{slot_key}` | Idle timeout (60 min) | Own kiro-cli (from warm pool) |
+| User chat | `slack:{thread_ts}` (legacy bare `{thread_ts}` folded) | Idle timeout (60 min), or released by the live chat cap | Own kiro-cli |
+| Dashboard tab | `dashboard:{slot_key}` | Idle timeout (60 min), or released by the live chat cap | Own kiro-cli (from warm pool) |
 | Cron job | `cron:{job_id}` | One-shot (reset after) | Own kiro-cli (from warm pool) |
 | Background | `_bg` | Entire runtime (recycled at 70%) | Shared kiro-cli |
 | Heartbeat | `_bg` | Shared | Shared kiro-cli |
@@ -3987,6 +3989,78 @@ subprocess cleanup on cancellation or failure.
 to `max_parallel_steps` (default 2) via `asyncio.Semaphore`. Cold starts
 are staggered by 3s. A system load guard pauses spawning when CPU load
 exceeds 85% of available cores.
+
+## Live chat cap (`session.max_live_sessions`)
+
+A live chat is a kiro-cli child plus the MCP servers its spec starts, measured
+at ~0.39 GB on a small cloud home, and the idle sweep is the only thing that
+retires one. So the number of chats holding a process was unbounded inside the
+timeout, and a 2 GB home (cloud.md, Lite) ran out of memory with three or four
+open. Sub-agents already had a memory-sized cap (`compute_max_subagents`); this
+is the same kind of cap for chats.
+
+**The cap.** `session.max_live_sessions`, default `0` = auto; a positive value
+is the cap as written (loader clamps to `[0, MAX_LIVE_SESSIONS_MAX]`). Auto is
+`session_live_cap.auto_max_live_sessions`: `(total RAM - 1536 MiB reserve) //
+400 MiB per chat`, clamped to `[2, 64]`, where the reserve is the OS, the gateway
+with its embedding runtime and the background runtime. That gives 2 on a 2 GB
+home, 5 on 4 GB, 15 on 8 GB, about 35 on a 16 GB laptop and 64 from 32 GB up, so
+a normal laptop keeps today's behaviour. An unreadable total answers the
+ceiling. It is sized from TOTAL memory, not the available-memory reading the
+sub-agent cap uses: that one sizes a burst against what is free when it is
+resolved, while this count holds for the gateway's life, and a snapshot of
+available memory has the live chats already subtracted and, on a laptop,
+swings with whatever else is open. The value is read off `_cfg` at each use
+(`SessionManager._live_session_cap`), so a write is in force on the next chat
+that opens; no applier, no `restart=True`. It is logged once per value.
+
+**Who counts.** `_counts_toward_live_cap`: every registered session key that is
+neither in `_PERSISTENT_KEYS` (`_bg`, `_hb`) nor under `_STATELESS_PREFIXES`
+(sub-agents, task steps, cron fires, workflow workers, crew `channel:` agents,
+side and reply-thread chats). Those have their own bounds or lifetimes, and none
+has a transcript to resume, so they are neither counted nor released. A key with
+an allocation reservation but no session yet (a cold start in flight) counts too.
+
+**When it acts.** `SessionManager.get_or_create` calls `_make_room_for(key)`
+before the allocation boundary, and it is a no-op unless the folded key is a
+capped chat with no session yet. An eager spawn counts like any open, except one
+the allocation will refuse (`speculative` without `speculative_resume` on a key
+the session map holds, `SpeculativeResumeRefused`): no chat is released for a
+spawn that will not happen. Under `_live_cap_lock` (one make-room at a time,
+so two opens do not count the same free place) it runs
+`SessionCleanup.make_room(key, cap)`: when the counted chats plus the new one
+exceed the cap, it releases the least recently used chats whose permit is free,
+oldest `last_used` first, until the new one fits. The scan itself takes no
+registry lock: it is synchronous on the loop, and every release goes through
+`reset`, which re-validates under that lock, so a chat's first allocation pays
+no extra `_lock` acquisition.
+
+**What is never released.** Each candidate is asked, in order: the keep-live
+probe (`CleanupDeps.keeps_live`, installed by
+`chat_utils.wire_session_keep_live_probe` from both `server.py` start paths
+through `set_keep_live_probe`: the main chat from `first_run.read_main_slot`,
+read off-loop, and a chat with a question card or a coordinator approval
+pending), then the idle sweep's own work probe (`_has_attached_subagents`, which
+asks the completion-injection counter first). Both fail closed: a probe that
+raises keeps the chat. Because both may suspend, the injection counter, the
+incarnation (`_sessions.get(key) is scanned`), the permit and `last_used` are
+re-read synchronously as the last reads before the act. A chat with a turn in
+flight, including one parked on a blocking tool approval, holds its permit and
+is never a candidate.
+
+**The release is the idle expiry's.** SEL `consolidate_session_expire` with
+source `live_cap`, `on_session_expire` (history consolidation), then
+`reset(key, expect_session=scanned, skip_if_busy=True, skip_if_injecting=True)`
+with no `clear_conversation` and no `ends_conversation`: the session-map entry
+survives, so the chat resumes through `session/load` on its next message, and
+its sub-agent runs keep a conversation to deliver into.
+
+**Never refuses.** When fewer chats could go than the cap asks for, the new one
+opens anyway and a WARNING names the shortfall. Any exception in making room is
+logged and the chat opens. The cap is therefore soft: a burst of opens can pass
+it by the chats that were busy or held.
+
+Tests: `test/test_session_live_cap.py`.
 
 ## Compaction Race Handling
 

@@ -63,6 +63,7 @@ from kiro_crew.dashboard import (
 )
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
+    wire_session_keep_live_probe,
     wire_session_subagent_probe,
 )
 from kiro_crew.dashboard.crash_dump_store import (
@@ -4962,6 +4963,8 @@ async def start_dashboard(
     # The RSS ceiling must not recycle a parent whose sub-agents are still
     # running on its runtime; the manager cannot see them without this probe.
     wire_session_subagent_probe(state)
+    # The live chat cap must not release the main chat or one waiting on the user.
+    wire_session_keep_live_probe(state)
     # Visible notice in a channel that just lost its session-resume binding
     state.wire_session_unbind_listener()
     # Crew-log class record for a binding that just COMMITTED, taken before anything
@@ -6433,6 +6436,8 @@ async def start_api_server(
     # The RSS ceiling must not recycle a parent whose sub-agents are still
     # running on its runtime; the manager cannot see them without this probe.
     wire_session_subagent_probe(state)
+    # The live chat cap must not release the main chat or one waiting on the user.
+    wire_session_keep_live_probe(state)
     # Visible notice in a channel that just lost its session-resume binding
     state.wire_session_unbind_listener()
     # Crew-log class record for a binding that just COMMITTED, taken before anything

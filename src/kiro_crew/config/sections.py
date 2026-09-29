@@ -108,6 +108,10 @@ CONTEXT_WARN_MARGIN_PCT = 10.0
 # the parse fallback. A literal in either place lets the two disagree, which is
 # invisible on disk — this constant is the only place the value is written.
 DEFAULT_POOL_SIZE = 0
+# session.max_live_sessions — 0 sizes the live chat cap from host memory
+# (session_live_cap.auto_max_live_sessions). Named for the same two-path reason
+# as DEFAULT_POOL_SIZE.
+DEFAULT_MAX_LIVE_SESSIONS = 0
 DEFAULT_MAX_PARALLEL_STEPS = (
     0  # 0 = auto: derive from agent.subagent_auto_max via compute_max_subagents
 )
@@ -1984,6 +1988,18 @@ class SessionConfig:
             "starts. Saves that process's memory on a small machine; the first "
             "background job after a start waits for its handshake.",
             restart=True,
+        ),
+    )
+    max_live_sessions: int = field(
+        default=DEFAULT_MAX_LIVE_SESSIONS,
+        metadata=_meta(
+            "Max Live Chat Sessions",
+            "How many chat conversations keep a running process at once. Opening "
+            "one more first stops the least recently used idle chat, which picks "
+            "up where it left off on its next message. 0 sizes the cap from this "
+            "machine's memory (2 on a 2 GB machine, about 35 on 16 GB). A chat "
+            "with a turn running or waiting on you, and the main chat, are never "
+            "stopped; when every chat is one of those, the new one opens anyway.",
         ),
     )
     archive_retention_days: int = field(
@@ -4703,6 +4719,9 @@ EXTRACTION_POOL_SIZE_MAX = 10
 # "every bound is shared with the write gate" claim stays true.
 EMPTY_RESPONSE_MAX_CONTINUES_MIN = 1
 EMPTY_RESPONSE_MAX_CONTINUES_MAX = 10
+# session.max_live_sessions. A high value is the uncapped behaviour rather than
+# a resource risk, so the ceiling only keeps a typo from loading verbatim.
+MAX_LIVE_SESSIONS_MAX = 512
 # knowledge.* budgets. These share a floor of 0, but 0 is MEANINGFUL for several
 # of them (a zero budget disables that sweep), so the floor is deliberately not
 # enforced by clamping a negative up to 0 -- see `_safe_nonnegative_int`, which

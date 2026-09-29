@@ -1457,6 +1457,7 @@
         "pool_ttl_secs": 1800,
         "eager_spawn": true,
         "lazy_background": false,
+        "max_live_sessions": 0,
         "archive_retention_days": 30,
         "watchdog_rss_max_mb": 1536
       }
@@ -1587,6 +1588,20 @@
       "enumValues": null,
       "defaultValue": false,
       "requiresRestart": true
+    },
+    {
+      "path": "session.max_live_sessions",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max Live Chat Sessions",
+      "help": "How many chat conversations keep a running process at once. Opening one more first stops the least recently used idle chat, which picks up where it left off on its next message. 0 sizes the cap from this machine's memory (2 on a 2 GB machine, about 35 on 16 GB). A chat with a turn running or waiting on you, and the main chat, are never stopped; when every chat is one of those, the new one opens anyway.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "session.archive_retention_days",

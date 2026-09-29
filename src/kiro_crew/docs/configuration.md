@@ -262,6 +262,7 @@ Set a registered value with, for example,
 | `session.pool_ttl_secs` | Max age in seconds for pooled processes, discarded at claim time. 0 disables | `1800` |
 | `session.eager_spawn` | Create a chat session when its slot is created, switched, or retargeted instead of waiting for the first message | `true` |
 | `session.lazy_background` | Start the shared background session (titles, summaries, memory upkeep) the first time it is needed instead of when the gateway starts; saves its memory on a small machine. Needs a restart | `false` |
+| `session.max_live_sessions` | How many chats keep a running process at once. Opening one more first stops the least recently used idle chat, which picks up where it left off on its next message. `0` sizes it from the machine's memory: 2 on 2 GB, 5 on 4 GB, about 35 on 16 GB, at most 64. A chat with a turn running or waiting on you, and the main chat, are never stopped, and a new chat always opens | `0` (auto) |
 | `session.archive_retention_days` | Days to keep compacted/rotated session archives before auto-cleanup. `-1` disables cleanup | `30` |
 | `session.watchdog_rss_max_mb` | Recycle an idle session when its process tree resident memory exceeds this many MiB, so a runaway session tree is bounded by default. 0 disables. A session with a turn in flight is never recycled. `kirocrew status` and `kirocrew doctor` show the ceiling next to the gateway's own resident memory | `1536` |
 

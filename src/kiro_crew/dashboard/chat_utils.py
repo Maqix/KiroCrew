@@ -1330,6 +1330,36 @@ def wire_session_subagent_probe(state: DashboardState) -> None:
     state.sessions.set_subagent_probe(_probe)
 
 
+def wire_session_keep_live_probe(state: DashboardState) -> None:
+    """Hand ``SessionManager`` the probe its live chat cap asks before releasing a chat.
+
+    The cap (``session.max_live_sessions``) releases the least recently used idle
+    chat, and "idle" to the manager means only that no turn holds its permit. A
+    chat can be that and still be waiting on the user: a question card is a
+    finished turn, and the main chat is where the product opens. Those keep their
+    process. The main chat is read from the first-run state file, so the probe is
+    a coroutine and reads it off-loop.
+    """
+
+    async def _probe(session_key: str) -> bool:
+        slot_key = dashboard_slot_key(session_key)
+        slot = state.get_slot(slot_key) if slot_key else None
+        if slot is not None and (
+            slot._question_pending or state.pending_coordinator_approvals(slot.key)
+        ):
+            return True
+        from kiro_crew.first_run import read_main_slot
+
+        main = await asyncio.to_thread(read_main_slot)
+        if not main:
+            return False
+        main_slot = state.get_slot(main)
+        main_key = effective_session_key(main_slot) if main_slot is not None else ""
+        return session_key in (main_key, f"dashboard:{main}")
+
+    state.sessions.set_keep_live_probe(_probe)
+
+
 def slack_options_slot(state: DashboardState, session_key: str) -> _ChatSlot | None:
     """The slot holding *session_key*'s Slack OPTIONS state, if one exists.
 
