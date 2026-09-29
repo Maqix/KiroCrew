@@ -53,7 +53,7 @@ cannot disagree with what was sent.
 | 7 | `[UI LANGUAGE]` | `_build_ui_language_section`, the configured language | only when set explicitly |
 | 8 | `[CONTEXT SCOPE]` | `_build_context_scope_section` | a parent withheld a group (§3) |
 | 9 | `[USER PROFILE]` | onboarding answers in config | non-empty, `lessons` group |
-| 9a | `[AGENT PERSONA]` / `[USER NOTES]` | `data_home()/persona/SOUL.md` / `USER.md`, approved through a setup card (`context.py` `_build_persona_files_section`) | non-empty, `lessons` group, the `kirocrew` agent only |
+| 9a | `[AGENT PERSONA]` / `[USER NOTES]` | `data_home()/persona/SOUL.md` / `USER.md`, approved through a setup card, each capped at 3000 characters (`context.py` `_build_persona_files_section`) | non-empty, `lessons` group, the primary agents only (`kirocrew`, `kirocrew-main`) |
 | 10 | `[WORKSPACE IDENTITY]` | `workspace_dir_for` | `kirocrew` agent only |
 | 11 | `[DOCUMENTATION]` | `_build_docs_section`, the packaged docs dir | `kirocrew` agent, `project` group |
 | 12 | `[Steering resources]` | `_load_steering_resources` → `file://*.md` in `~/.kiro/agents/kirocrew.json` | **Claude Code backend**, `kirocrew` agent, `project` group |

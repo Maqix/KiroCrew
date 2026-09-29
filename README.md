@@ -77,8 +77,13 @@ browser, without cloning the repository or building the frontend:
 curl -fsSL https://download.crew.kiro.dev/start.sh | sh
 ```
 
-`start.sh` runs the `cli.sh` installer unchanged and then `kirocrew start`. To
-install without starting anything, run `cli.sh` itself:
+`start.sh` runs the `cli.sh` installer unchanged and then `kirocrew start`. It
+asks nothing in the terminal: the browser opens on a first-run chat where the
+agent sets things up with you through cards you click, including where your crew
+lives (this machine, or a home it builds in your own AWS account). On Windows,
+`irm https://download.crew.kiro.dev/start.ps1 | iex` does the same with the
+signed desktop installer. To install without starting anything, run `cli.sh`
+itself:
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
@@ -133,6 +138,11 @@ kirocrew setup
 kirocrew doctor
 kirocrew gateway
 ```
+
+Or build and start in one command, asking nothing: `bash setup.sh` from the
+checkout builds it, puts `kirocrew` on your PATH and opens the first-run chat.
+The [install guide](docs/guides/install.md#b-from-source-development) covers
+running it straight from GitHub and its `--demo` mode.
 
 ## Why Kiro Crew
 

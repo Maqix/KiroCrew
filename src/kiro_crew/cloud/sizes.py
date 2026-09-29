@@ -39,9 +39,9 @@ does not raise it. Effective parallel sub-agents per tier:
 We default to **arm64 / Graviton** (cheaper per GB; both Kiro Crew and ``kiro-cli``
 ship aarch64 Linux builds), with an x86_64 lane for users who need it.
 
-Prices are illustrative on-demand USD/hour and are surfaced only as "approximate"
-in the CLI — never used for anything but display, and the dashboard shows no
-dollar figure at all (it links the AWS Pricing Calculator instead).
+Prices are for display only, always shown as "about": ``approx_usd_per_hr`` feeds
+the CLI's approximate figure, and the home card's monthly estimates come from the
+per-region on-demand table below. Nothing bills or budgets from them.
 """
 
 from __future__ import annotations

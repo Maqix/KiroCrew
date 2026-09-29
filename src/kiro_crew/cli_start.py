@@ -157,8 +157,8 @@ def _choose_home(args: argparse.Namespace) -> None:
     """Record ``--home`` for the first run, when a script passed it. Asks nothing.
 
     Where the crew lives is a question for the first-run chat, not the terminal:
-    the chat offers a home in the cloud when this machine's AWS CLI is signed in,
-    and the home card states the cost and takes the owner's click. ``--home``
+    its home step offers a home in the cloud on every first run, and the home
+    card states the cost and takes the owner's click. ``--home``
     only lets a script answer ahead of time; a cloud answer makes the chat open
     with the home card on screen.
     """

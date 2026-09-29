@@ -38,7 +38,10 @@ curl -fsSL https://download.crew.kiro.dev/start.sh | sh
 it checks that kiro-cli is installed and signed in, starts the gateway in the
 background and opens the chat in your browser. On a host with no browser it
 prints the sign-in link instead. It passes `cli.sh`'s flags through and adds
-`--no-browser`, `--foreground` and `--skip-install`.
+`--no-browser`, `--foreground` and `--skip-install`. It asks nothing: setup
+happens in the chat (see [Your first chat](#your-first-chat)). On Windows,
+`irm https://download.crew.kiro.dev/start.ps1 | iex` does the same with the
+signed desktop installer.
 
 ### Prebuilt wheel from the release CDN
 
@@ -68,6 +71,14 @@ carries only `kirocrew` and pip still needs PyPI to resolve its dependencies.
 ```bash
 git clone https://github.com/kirodotdev/KiroCrew.git
 cd KiroCrew
+bash setup.sh
+```
+
+`setup.sh` builds the dashboard and the backend into a `.venv`, puts `kirocrew`
+on your PATH and ends in `kirocrew start`, asking nothing. `--no-start` stops
+before the chat opens. To do the same by hand:
+
+```bash
 cd website && npm install && npm run build && cd ..
 pip install -e ".[voice]"       # [voice] adds the optional speech-to-text extras
 ```
@@ -88,13 +99,37 @@ kiro-cli login
 On the first dashboard launch, the Set up Kiro page walks through installing the
 CLI and completing sign-in.
 
-## First-Time Setup
+## Your first chat
+
+On a fresh install, `kirocrew start` opens a first-run chat in which the agent
+sets Kiro Crew up with you. Every change it wants is a card you click; nothing
+changes until you do.
+
+1. **Privacy** comes first, before the agent says anything.
+2. **Where your crew lives.** Keep it on this machine, or build a home in the
+   cloud in your own AWS account. The card lists the sizes your account can
+   build, cheapest first, with a monthly cost for your region, and you pick
+   one; it can sign you in to AWS, or link AWS's sign-up if you have no
+   account. The home builds in the background and asks for its own one-click
+   Kiro sign-in; when it is ready, **Move in** hands the crew and this chat
+   over.
+3. **The rest of setup** is a conversation: the agent offers to bring over
+   another agent it found on this machine, connects one service such as GitHub,
+   and runs a first job once so you see its output before you keep it.
+
+Keeping that first job makes this chat your **main chat**: the product opens
+on it, it can see and start your other chats, and for a week it posts at most
+one short tip a day. Paste a token into any chat and it is moved into the vault
+before the agent sees it.
+
+## First-Time Setup in the terminal
 
 ```bash
 kirocrew setup
 ```
 
-This interactive wizard detects `kiro-cli` on your PATH, saves the project
+The terminal alternative to the first-run chat. This interactive wizard detects
+`kiro-cli` on your PATH, saves the project
 directory so Kiro Crew works from any working directory, installs the agent
 config to `~/.kiro/agents/kirocrew.json`, and walks through the workspace
 directory, timezone, dashboard URL, and the `http://kirocrew.localhost:5476`

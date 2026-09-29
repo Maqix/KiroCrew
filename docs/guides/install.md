@@ -303,10 +303,18 @@ curl -fsSL https://raw.githubusercontent.com/kirodotdev/KiroCrew/<branch>/setup.
 
 The source lands in `~/.local/share/kirocrew/source` (`KIROCREW_SOURCE_DIR`);
 run it again to update. From a checkout, `bash setup.sh` does the same with that
-checkout. `--no-start` stops before opening the chat, and `--demo` runs a
-throwaway demo instead (`scripts/demo-first-run.sh`: temporary folders, a
-simulated cloud home, a sample agent to import, your own MCP servers switched
-off).
+checkout. It needs git and Python 3.12 or newer (it provisions Python through
+mise when mise is installed), installs Node through `ensure-node.sh` when it is
+missing, and does not install kiro-cli: `kirocrew start` runs kiro-cli's own
+sign-in when it is signed out. It adds `~/.local/bin` to your shell's rc file
+only when that directory is not already on your PATH, and touches no other rc
+line. A plain gateway already running on this crew's port is restarted so it
+runs the new build; an installed service is left alone. From GitHub it skips
+the optional tools (git-lfs, ffmpeg for voice, the extra agent adapter);
+`--with-extras` installs them. `--no-start` stops before opening the chat, and
+`--demo` runs a throwaway demo instead (`scripts/demo-first-run.sh`: temporary
+folders, a simulated cloud home, a sample agent to import, your own MCP servers
+switched off).
 
 By hand: build the dashboard, install the backend into a local virtualenv
 (`.venv`), and run the gateway straight out of `src/`:
@@ -576,16 +584,32 @@ install kiro-cli for you: when it is missing it prints <https://kiro.dev/cli/>
 and exits 3) and signed in (on a terminal a signed-out kiro-cli runs its own
 `kiro-cli login` straight away, the device-code variant on a headless host),
 reuses a gateway that is already running or starts one in the background, and
-opens the dashboard in your browser — on the first-run chat when the gateway has
-created one for a fresh install, otherwise on the dashboard itself. Every other
-choice is made in that chat: when the AWS CLI on this machine is already signed
-in, the first message offers a home in the cloud in that account, with its
-monthly cost, and a yes builds it in the background while setup carries on
-(`--home here|cloud|later` lets a script answer ahead of time). `--foreground`
-keeps the gateway in that terminal (Ctrl-C stops it), `--no-browser` prints the
-sign-in link instead of opening it, and `--no-input` never runs the sign-in. Stop a background gateway with
-`kirocrew stop`; keep it running across logouts and reboots with
-`kirocrew service install`.
+opens the dashboard in your browser — on your main chat once you have one, on
+the first-run chat for a fresh install, otherwise on the dashboard itself.
+`--foreground` keeps the gateway in that terminal (Ctrl-C stops it),
+`--no-browser` prints the sign-in link instead of opening it, and `--no-input`
+never runs the sign-in. Stop a background gateway with `kirocrew stop`; keep it
+running across logouts and reboots with `kirocrew service install`.
+
+Every other choice is made in the first-run chat, through cards you click:
+
+1. **Privacy.** The disclosure comes first, before the agent says anything.
+2. **Where your crew lives.** A "Where should your crew live?" card: keep it on
+   this machine, or a home in the cloud in your own AWS account. The card lists
+   the sizes your account can build, cheapest first, with what each runs and
+   costs a month in your region, and you pick one. When the AWS CLI is not
+   signed in, the card signs you in (`aws login`, AWS CLI 2.32 or newer) and
+   links AWS's own sign-up if you have no account. The home builds in the
+   background while setup carries on, then asks for its own one-click Kiro
+   sign-in, and the card offers **Move in** when it is ready. A script can
+   answer ahead of time with `--home here|cloud|later`.
+3. **Setup, in the conversation.** The agent offers to bring over another agent
+   it found on this machine, connects one developer service, runs a first job
+   once as a preview and schedules it when you keep it. Keeping that job turns
+   the chat into your main chat, where you work from then on.
+
+The whole flow, and what each card commits, is in
+[first-run](../system-specs/modules/first-run.md).
 
 The same steps by hand: install Kiro CLI from <https://kiro.dev/cli/> and sign
 in for the default agent:

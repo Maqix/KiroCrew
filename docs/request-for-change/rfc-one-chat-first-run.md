@@ -3,9 +3,9 @@ title: One-chat first run — from one command to a delivered job in a single co
 status: draft
 author: zedmor
 created: 2026-09-27
-last-audited: 2026-09-27
-audited-at: 20ed6a1dc7
-revision: 3
+last-audited: 2026-09-29
+audited-at: d91c296db
+revision: 4
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -15,10 +15,16 @@ superseded-by: []
 
 # RFC: One-chat first run — from one command to a delivered job in a single conversation
 
-- **Status.** Draft, revision 3, open for review. A working prototype of v1
+- **Status.** Draft, revision 4, open for review. A working prototype of v1
   exists on the author's branch to make the review concrete; it lands only
-  after this document is accepted. Checked at `20ed6a1dc7` (main, 2026-09-27);
-  citations name files and symbols, not line numbers.
+  after this document is accepted. §2 describes main at `20ed6a1dc7`
+  (2026-09-27); every other section was checked against the prototype at
+  `d91c296db` (2026-09-29). Citations name files and symbols, not line numbers.
+- **What changed in revision 4.** Building and testing the prototype changed
+  the approach in a dozen places, listed with the reason for each in
+  [What changed since revision 3](#what-changed-since-revision-3). The sections
+  below describe the approach as built; a plan the build replaced is marked
+  *Superseded*, with the reason, where it stood.
 - **What changed from revision 1.** Revision 1 proposed the whole "self-building
   crew" in a single RFC. A product critique (Appendix C) split it into two bets:
   - **v1 (this RFC):** a first run that is one conversation, for developers and
@@ -27,9 +33,9 @@ superseded-by: []
     builds its own connectors and follows you to every device. This part goes
     to follow-up RFCs, each gated on evidence.
 - **What changed in revision 3.** A team review (Appendix D) added the
-  **parallel home**: in the Egg the user may pick "my AWS account", and the home
-  is built in the background while the first run proceeds locally, so it never
-  lengthens onboarding (§5.7, §6.8). Building the prototype also simplified the
+  **parallel home**: the user may pick "my AWS account" (on a step card in the
+  chat since revision 4), and the home is built in the background while the
+  first run proceeds locally, so it never lengthens onboarding (§5.7, §6.8). Building the prototype also simplified the
   tool surface to one `setup_card` directive tool plus `setup_status` (§6.4).
   The same revision adds the **main chat** (§6.9) and folds in a reading of
   Muse's agent-side documentation and skills (Appendix F): hosted-assistant
@@ -49,6 +55,100 @@ superseded-by: []
     (open PR #13031): the north-star nest work builds on these.
   - Open PRs: #13888 (first-run harness picker), #11263 (onboarding branding
     seams) and #10162 (remote A2A subagents).
+  - [first-run](../system-specs/modules/first-run.md): the owning system spec,
+    the contract the prototype's code keeps.
+
+## What changed since revision 3
+
+Revision 3 was written as the prototype was starting. Building it, running it
+on laptops and on real AWS homes, and watching testers use it changed these
+parts of the approach. The sections they touch describe the new approach; this list
+says what changed and why.
+
+1. **The terminal asks nothing, as built.** Revision 3 said so, but the first
+   prototype of `kirocrew start` still asked in the terminal where the crew
+   lives, probed AWS for it, and asked yes/no before a Kiro sign-in. All three
+   are gone: a signed-out kiro-cli runs its own sign-in straight away, because
+   the chat cannot start without it, and every other choice is made in the
+   chat. *Why:* a terminal question is exactly the separate surface this RFC set
+   out to remove, and it sits in front of the first reply.
+   `--home here|cloud|later` stays for scripts. (§5.1, §6.1)
+2. **`setup.sh` is the one-command install from source.** `curl …/setup.sh |
+   bash` (or `bash setup.sh` in a checkout) fetches the source, builds it, puts
+   `kirocrew` on PATH and ends in `kirocrew start`, asking nothing; `--demo` runs
+   a throwaway demo with a simulated home. *Why:* `start.sh` installs a published
+   release, so until one carries the first run, testers had no one-command way in.
+   (§6.1)
+3. **The home is a step card of its own, right after privacy.** Revision 3 had
+   the Hello ask where the crew lives, in one sentence, and only when the AWS CLI
+   was already signed in. A tester missed that sentence next to the first card
+   on screen, so the gateway now shows a "Where should your crew live?" card on
+   every first run, signed in to AWS or not, and the Hello only points to it. It is the gateway's step, so it is outside the
+   agent's card budget and does not hold other cards back. (§5.2, §5.7, §6.8)
+4. **AWS sign-in and account creation happen from the card.** "Sign in to AWS"
+   runs the AWS CLI's own `aws login` as a child of the gateway, and "Create an
+   AWS account" opens AWS's sign-up page in a new tab. *Why:* revision 3's plan
+   (its Phase 2b) put the AWS sign-in and the cost consent in the terminal,
+   which item 1 rules out, and many people who want a home have no AWS account
+   yet. (§6.8 rule 2, Appendix E)
+5. **The plan and the region are read, read-only, and the owner can pick the
+   region.** Accounts from AWS's newest sign-up work in one region only, chosen
+   by country, so a us-east-1 default failed for them. The card now finds the
+   account's region, reads its plan (Free or paid) and never changes either;
+   when no region answers, it shows a region picker. (§6.8 rule 2)
+6. **Measured sizes replace the one fixed tier.** Revision 3 offered one tier
+   at about $101 a month. The card now offers Lite, Economy, Small, Starter and
+   Standard, cheapest first, priced for the card's region, with the plan
+   deciding which appear; the owner picks. *Why:* about $100 a month is a hard
+   sell next to a free hosted assistant, the Free plan refuses that instance
+   type, and measurement showed smaller homes work. (§6.8, Q8, Q10)
+7. **The home ships a prebuilt dashboard, and Lite runs a slimmed profile.** The
+   on-box dashboard build (a 2.6 GB peak) was what ruled out small instances, so
+   a home launched from source now receives the dashboard already built. Lite's
+   profile turns off meaning-based memory search and local dictation, starts
+   the background session on first use, opens no chat before its first message
+   and releases idle chats after 15 minutes. On real AWS a Lite home was ready for its sign-in in 441 s and idled
+   at about 0.5 GB of its 1.8 GB. (§6.8, Q8)
+8. **Live chat sessions are capped by memory.** Every open chat keeps a harness
+   process alive, about 0.4 GB each with its tool servers, and nothing bounded
+   how many. `session.max_live_sessions` now sizes a cap from total memory (2 on
+   a 2 GB home) and releases the least recently used idle chat, which resumes on
+   its next message. (§6.8)
+9. **The home signs in to Kiro on its own, in one click.** In the first
+   prototype the home's device code waited for a person during the build, and
+   in a recorded demo nobody approved it, so the home was ready but could not
+   answer. Copying this computer's sign-in was considered and rejected
+   (2026-09-28, the user): a rotating refresh token shared by two machines can
+   sign the local kiro-cli out. So the home keeps its own sign-in and its
+   approval page opens once, with the code filled in. A home whose sign-in never
+   finished is not offered Move in; the card signs it in first. (§6.8 rule 5,
+   Q15)
+10. **A home card stops a build it can no longer follow.** On a real run the
+    card's watcher lost the job file while the worker kept creating billed AWS
+    resources. Now three unreadable reads in a row, or a crashed watcher, cancel
+    the launch (its stack rolls back) and fail the card. (§6.8 rule 1)
+11. **Setup actions are a registry, checked by a parity test.** A card kind was
+    spread over the card store, about fifty branches in the flow, the tool
+    schema, the governance catalog, the dashboard and the skill, and nothing
+    caught a missed layer. Each kind is now one module; the tool's schema is
+    generated from the registry, and a parity test names the file a new kind
+    forgot. The test found a real gap on its first run: the channel card had
+    never been described to the agent. (§6.4)
+12. **The first-run chat opens full width, and generic tips wait.** Testers on
+    laptops found the first-run chat crowded, so it opens with the nav collapsed
+    to its rail and the session list hidden (the user's own toggles still win).
+    A generic dashboard tip banner popped up over the home card, so generic tips
+    are held until the first run ends. (§6.2)
+13. **The main chat hears when a handed-off chat finishes.** "I'll post the
+    findings here" was a promise nothing kept. The gateway now posts one notice
+    in the main chat when such a chat finishes a turn, or ends one on an error,
+    and a notice held across a gateway restart is still delivered. (§6.9)
+
+Smaller corrections: the channel card wires Telegram only (§5.3); SOUL.md and
+USER.md are capped at 3000 characters each (§6.5); the persona evals script
+the user rather than simulate one (§8); the first-run background model role and
+per-job pre-filters of §6.7 are not built yet; and Phase 2b's "AWS sign-in and
+cost consent in the terminal" moved into the card (§9).
 
 ## 1. Summary
 
@@ -69,9 +169,12 @@ This RFC proposes a **one-chat first run**:
 curl -fsSL https://download.crew.kiro.dev/start.sh | sh
 ```
 
-It installs Kiro Crew through `cli.sh`'s signed path, gets a harness ready,
-starts the gateway and opens a chat. The first-run desktop app lands in the
-same chat. There, the agent:
+It installs Kiro Crew through `cli.sh`'s signed path, checks the harness,
+starts the gateway and opens a chat, asking nothing on the way. From source,
+`setup.sh` does the same in one command (§6.1), and the first-run desktop app
+lands in the same chat. The chat opens with the privacy disclosure and then one
+step card: where the crew lives, on this machine or in a home in the user's own
+AWS account that builds in the background (§5.7). Then the agent:
 
 - finds what you already have: a Hermes or OpenClaw agent, kiro-cli
   configuration, repositories;
@@ -93,8 +196,11 @@ Three positions carry the design:
    payload, and the user's click commits it. The model's text never does.
 2. **Value before infrastructure.** The first useful output comes from the
    user's own data, within the first session and inside ten minutes, not "the
-   next morning". A permanent home is offered when the user feels the need for
-   one, not before.
+   next morning". A permanent home never stands in the way of it: it is one step
+   card the user can decline with a click, and choosing it builds in the
+   background while setup carries on (§5.7). Revision 3 offered the home only
+   later, when the user felt the need; testers missed a later offer, so it is
+   now asked once, up front, and never waited on.
 3. **Reuse, don't rebuild.** Almost every part already exists:
    - the signed wheel install;
    - onboarding import from Hermes, OpenClaw, Claude, Codex and Gemini;
@@ -196,10 +302,10 @@ Our comparable bar is **time to first value**, not time to first chat.
   and "watch this repo" work from any later chat, through the same tools.
 - **G7. Nothing gets weaker.** No default is loosened, the sandbox scope is not
   widened, and no security-relevant change is committed by the model alone.
-- **G8. A home without waiting.** A user who picks "my AWS account" in the Egg
-  gets a permanent home built in the background. Choosing it adds no time to
-  G1 or G2: the chat starts locally at once, and the home is offered to move
-  into only when it is ready.
+- **G8. A home without waiting.** A user who picks a home in the cloud on the
+  home step card gets a permanent home in their own AWS account, built in the
+  background. Choosing it adds no time to G1 or G2: the chat starts locally at
+  once, and the home is offered to move into only when it is ready.
 
 ## 4. Non-goals (v1)
 
@@ -230,40 +336,49 @@ These are out of scope entirely:
  privacy     build runs in the background)
 ```
 
-Only the Egg is fixed. After that, the agent *recommends* the order. The user
-can skip, reorder or stop, and a later chat picks up where this one left off.
+Only the Egg and the home step are fixed; both are the gateway's, not the
+model's. After that, the agent *recommends* the order. The user can skip,
+reorder or stop, and a later chat picks up where this one left off.
 
 ### 5.1 Egg: the part with no model
 
-start.sh runs these steps and asks nothing: every choice after the command is
-made in the web chat. The one terminal step left is the harness's own sign-in on
-a signed-out machine, which runs without a yes/no because the chat cannot start
-without it (it opens the browser, or prints a device code on a headless host).
-Where the crew lives is a step of its own in the chat, right after privacy (§5.7);
-`--home here|cloud|later` lets a script answer ahead of time.
+The Egg asks nothing: every choice after the command is made in the web chat.
+start.sh installs, then execs `kirocrew start` (`src/kiro_crew/cli_start.py`),
+which runs steps 2 to 4. The one terminal step left is the harness's own sign-in
+on a signed-out machine, which runs without a yes/no because the chat cannot
+start without it (it opens the browser, or prints a device code on a headless
+host). Where the crew lives is a step of its own in the chat, right after
+privacy (§5.7); `--home here|cloud|later` lets a script answer ahead of time.
 
-1. **Install as `cli.sh` does.** It uses the same signed manifest, the same
-   pinned trust root and the same managed Python (§6.1).
-2. **Make a harness ready.**
-   - If kiro-cli or another selectable harness is present and signed in, it is
-     used as is.
-   - Otherwise start.sh offers the pinned kiro-cli that the desktop build
-     already verifies (`packaging/kiro-cli-version`,
-     `packaging/kiro-cli-sha256`), and whether it may do so is Q2. It then runs
-     the harness's own device-code sign-in, which works over SSH and on
-     headless hosts.
-3. **Start the gateway.** It runs in the foreground; `--service` also installs
-   the service.
-4. **Open the chat.** start.sh mints a one-time sign-in URL (the `kirocrew token`
-   path in `src/kiro_crew/cli_server.py`) and opens the browser on the first-run
-   session. On a headless host it prints the URL and a QR code, so the user can
-   finish on another device.
+1. **Install as `cli.sh` does.** start.sh downloads the live `cli.sh` and runs
+   it unchanged, so the signed manifest, the pinned trust root and the managed
+   Python are `cli.sh`'s own (§6.1).
+2. **Check the harness.**
+   - If kiro-cli or another selectable harness is installed, it is used as is.
+     A signed-out kiro-cli runs its own sign-in at once (`kiro-cli login`, or
+     its device-code variant over SSH or on a headless host).
+   - A missing harness prints its official install guidance, names any other
+     selectable harness that is installed, and exits 3. Kiro Crew installs no
+     harness itself (Q2).
+   - *Superseded for the prototype:* start.sh offering the pinned kiro-cli the
+     desktop build verifies. That needs the maintainer decision and the
+     distribution-terms check Q2 asks for, so the prototype installs nothing.
+3. **Start the gateway.** A gateway already serving is reused, and an installed
+   service is left to its service manager. Otherwise the gateway starts in the
+   background (`--foreground` keeps it in the terminal). *Superseded:* a
+   `--service` flag; staying on is the service card (§5.5), offered in the chat.
+4. **Open the chat.** `kirocrew start` mints a sign-in URL the way
+   `kirocrew token` does (`src/kiro_crew/cli_server.py`) and opens the browser
+   on the main chat, or on the first-run chat on a fresh install. On a host with
+   no browser it prints the URL with a QR code another device can scan, or an
+   `ssh -L` command when the dashboard listens on loopback only.
 5. **Show the privacy disclosure as the first card**, before the first model
    turn. It uses the same strings and the same `privacy_acked` flag as
    `PrivacyChapter.tsx`. A disclosure is not the model's to paraphrase.
 
 The desktop app's first run skips steps 1–3, because it already bundles the
-backend and kiro-cli, and lands in the same session.
+backend and kiro-cli, and lands in the same session. From source, `setup.sh`
+builds the checkout and ends in the same `kirocrew start` (§6.1).
 
 ### 5.2 Hello
 
@@ -275,21 +390,24 @@ what it found. For example:
 > called? Here are three ideas.
 
 It points in one sentence to the home step already on screen (§5.7) and does not
-ask it again in prose. The prototype first asked it only in that sentence; a tester
-never noticed it next to the import card, so it became a card of its own.
+ask it again in prose. *Superseded:* the Hello offering the home itself. The
+prototype first asked only in that sentence; a tester never noticed it next to
+the import card, so it became a card of its own.
 
 It asks four things in passing: a name, a reply language, the timezone
 (pre-filled from the OS) and the tone. It asks whether the user writes code and
-maps the answer onto `user_technical_level`. It asks nothing else yet.
+maps the answer onto `user_technical_level`. It asks nothing else yet. The
+answers are saved through one `profile` card once they are known (§6.3).
 Proactivity, interruption limits and quiet hours start from defaults, which
 SOUL.md records and the user adjusts later ("stop pinging me after 7pm").
 
 ### 5.3 Bring and connect
 
-- **Import.** The agent calls `import_scan` and shows a preview card of what
-  would come over. Imported crons are adapted: delivery is re-pointed,
-  duplicates are merged into existing watches, and host-specific jobs are
-  dropped with the reason stated.
+- **Import.** The gateway scans for other agents before the first turn, and the
+  agent shows an import card of what would come over. Imported crons arrive
+  disabled and are adapted, not copied: the agent re-points delivery, merges
+  duplicates into existing watches, drops host-specific jobs with the reason
+  stated, and proposes each job it keeps as a cron card (§5.4).
 - **From a hosted assistant.** A switcher from ChatGPT, Claude or Gemini has no
   files to scan. The agent hands over a short prompt to paste there; the user
   reviews the answer, removes what they would rather not share and pastes the
@@ -301,9 +419,11 @@ SOUL.md records and the user adjusts later ("stop pinging me after 7pm").
   or Sentry, from the curated registry, through a **connect card** (the existing
   mint consent flow). As soon as the service is connected, the agent says what
   it can now do, in concrete terms.
-- **One channel, optionally.** Telegram, Slack or Discord through a credential
-  card for the bot token, plus a `/pair 4821` message that allowlists the
-  user's own ID without asking them to look it up.
+- **One channel, optionally.** Telegram through a channel card: the bot token is
+  typed into the card, never into the chat, and a `/pair 4821` message to the
+  bot allowlists the user's own ID without asking them to look it up. Slack and
+  Discord keep their Settings panels for now; each would be one more setup
+  action (§6.4).
 
 ### 5.4 Preview now, then keep it
 
@@ -314,7 +434,9 @@ PR watch on a repository (the existing babysit-pr-watch), or an imported job.
 **Each job runs once, immediately, as a preview.** The cron card shows that
 output, the schedule and the delivery target, and offers **Keep it**. The user
 keeps what was useful. Value arrives in the first session instead of sixteen
-hours later.
+hours later. A tool call the preview needs a person for is answered on the card
+itself, and keeping the job grants nothing standing: the card says the job will
+ask again on every run.
 
 ### 5.5 Stay on
 
@@ -337,24 +459,29 @@ no new credentials and no new egress:
 - writing a small **dashboard app** for the user's data.
 
 The first run offers one of these once a job has been kept ("Want a page that
-shows this every morning?").
+shows this every morning?"). In the prototype the skill is offered by a
+first-week tip (§5.8); the dashboard-app offer is not built yet.
 
 ### 5.7 The home, built while you talk
 
 Right after privacy, every first run shows a deterministic **"Where should your
-crew live?"** card: stay on this machine (one click), or a home in the cloud in the
-owner's AWS account at the stated monthly cost. When the AWS CLI is signed in it
-names the account's last four digits and the region and builds on one click; when
-it is not, the same card walks the owner through it first: install the AWS CLI if
-it is missing, create an AWS account if they have none, sign in (§6.8 rule 2), and
-the agent guides them through those steps in the chat. Once they press Build, the
-card stays in the chat and shows the build's progress.
+crew live?"** card, whether or not AWS is signed in on this machine: keep it on
+this machine (one click), or a home in the cloud in the owner's own AWS account.
+The card lists the sizes the account's plan can build, cheapest first, each
+with what it runs and its monthly cost in the card's region, and the owner picks
+one. When the AWS CLI is signed in the card names the account's last four
+digits, its region and its plan; when it is not, the same card walks the owner
+through it first: install the AWS CLI if it is missing, create an AWS account if
+they have none, sign in (§6.8 rule 2), and the agent guides them through those
+steps in the chat. Once they press Build, the card stays in the chat and shows
+the build's progress, then the home's own one-click Kiro sign-in (§6.8 rule 5).
 Nothing waits on it: name, import, connect and the preview job all happen
-locally meanwhile. When the home is healthy the card turns into **Move in**:
-one click hands the crew over (memory, schedules, settings, SOUL.md and USER.md,
-and this chat) and the same conversation continues from the home. If the user
-closes the laptop mid-build, the build carries on; the card picks up where it
-was on the next start.
+locally meanwhile. When the home is healthy and signed in, the card turns into
+**Move in**: one click hands the crew over (memory, schedules, settings, SOUL.md
+and USER.md, and this chat) and the same conversation continues from the home.
+The build runs in AWS and in the gateway, not in the browser, so closing the tab
+or letting the laptop sleep does not stop it; a gateway restart mid-build is not
+resumed yet (the card is left waiting, an open item for Phase 2b).
 
 ### 5.8 The first week: small steps, not a longer first run
 
@@ -365,9 +492,9 @@ days, not inside the first conversation. For Kiro Crew:
 - The gateway posts at most one short note a day in the main chat for the
   first seven days, choosing the most useful thing still unset (a connection,
   staying on, a channel, a second job, SOUL.md, a skill written from a repeated
-  request). The note is a fixed system notice, not a model turn, so it costs no
-  quota. It does not post on a day the user has not used the main chat, and only
-  in the daytime.
+  request), so at most six notes. The note is a fixed system notice, not a model
+  turn, so it costs no quota. It does not post on a day the user has not used the
+  main chat, and only in the daytime.
 - The note suggests and asks; it never raises a card. A card needs a turn a
   person started (SC8), so the user's reply is what brings the card.
 - The user can stop it with a word ("no more tips"), and it stops by itself
@@ -381,36 +508,53 @@ days, not inside the first conversation. For Kiro Crew:
 
 start.sh is not a second installer. It shares `cli.sh`'s trust root: the pinned
 manifest key, the signed-manifest verification and the managed Python. Two
-copies of a trust root drift apart. Q1 chooses between two shapes:
+copies of a trust root drift apart. Revision 3 left the shape to Q1 (generate
+start.sh from `cli.sh` at publish time, or `cli.sh --first-run` behind a thin
+wrapper). The prototype took a third shape, which keeps `cli.sh` byte for byte:
+start.sh downloads the live, unmodified `cli.sh` from the same origin, runs it
+with `cli.sh`'s own flags, then execs `kirocrew start`. The same
+`publish-installer.yml` workflow publishes both, start.sh only after the
+`cli.sh` it depends on is verified live.
 
-- generate start.sh from `cli.sh` at publish time;
-- add `--first-run` to `cli.sh` and make start.sh a thin wrapper, uploaded by the
-  same `publish-installer.yml` workflow.
+The one-command paths, all asking nothing and all ending in `kirocrew start`:
 
-The modes:
-
-| Mode | Invoked as | Does |
+| Path | Invoked as | Does |
 |---|---|---|
-| interactive | `start.sh` | install → harness → gateway → browser → first-run session |
-| plain | `cli.sh` | exactly what it does today, byte for byte |
+| release | `start.sh` | `cli.sh` unchanged → `kirocrew start` (harness → gateway → browser → first-run chat) |
+| release, Windows | `start.ps1` | the signed desktop installer, silently → its bundled `kirocrew start` |
+| source | `setup.sh` | fetch or use a checkout → build the dashboard and backend → `kirocrew` on PATH → `kirocrew start` |
+| plain | `cli.sh` | exactly what it does today, byte for byte, and starts nothing |
 
 A PowerShell counterpart, start.ps1, sits beside `install.ps1`. Windows has no
 `cli.sh`, so its trust root is the Authenticode signature of the desktop
 installer and the publisher the desktop updater already pins; the prototype
 installs that signed installer silently and then runs its bundled
-`kirocrew start`. start.sh
-declares its install shape for
+`kirocrew start`, handing it the desktop install's own bundled kiro-cli (Q14).
+start.sh and start.ps1 declare their install shape for
 [rfc-update-architecture.md](rfc-update-architecture.md): the update engine
-treats it as `wheel`, and the heartbeat reports it under a distinct
-install-path value (§8).
+treats them as the shape they installed (`wheel`, `nsis`), and the heartbeat
+reports a distinct install-path value, `start`, read from an `install-origin`
+marker they leave in the data home (§8).
+
+`setup.sh` is the path from source, added while building the prototype: until a
+release carries the first run, `start.sh` cannot reach it. Piped from GitHub
+(`curl …/setup.sh | bash`) it fetches the branch it ships on into
+`~/.local/share/kirocrew/source`; run from a checkout it uses that checkout. It
+builds the dashboard and the backend, adds `~/.local/bin` to the shell's PATH
+only when it is missing, restarts a stale gateway on this crew's port (never an
+installed service) and ends in `kirocrew start`. `--no-start` stops before the
+chat, and `--demo` runs `scripts/demo-first-run.sh` instead: a throwaway crew in
+temporary folders with a simulated home, a sample agent to import and the
+user's own MCP servers switched off.
 
 ### 6.2 The first-run session and its state
 
 - The gateway creates the first-run session on first start, when
-  `dashboard.onboarded` is false and no session exists. An install that has
-  already been onboarded never gets one.
-- First-run state (stages done, choices, what import found) is kept in a state
-  file under the data home, not in `config.json`.
+  `dashboard.onboarded` and `dashboard.privacy_acked` are false and no session
+  exists. An install that has already been onboarded never gets one.
+- First-run state (the first-run chat, stages done, the main chat, the
+  first-week bookkeeping, held hand-off notices, a script's home answer) is kept
+  in a state file under the data home, not in `config.json`.
 - **First-run state gates nothing (SC6).** It changes what the agent suggests
   next and nothing else. `privacy_acked` remains a config flag that only the
   privacy card's handler writes.
@@ -421,6 +565,13 @@ install-path value (§8).
 - The first run names the *primary* agent (`bot_name`). Meet CrewMates (screen
   08) still creates *additional* crewmates, and the first run can offer "want a
   teammate for X?" through the same `POST /api/agents`.
+- **The first-run chat gets the room.** Found with testers on laptops: on a
+  desktop-width load that opens on the first-run chat, the nav starts collapsed
+  to its rail and the session list hidden, decided once per load and never
+  saved, so the user's own toggles still win. Until graduation the dashboard
+  also holds its generic feature tips in every chat, because a tip banner popped
+  up over the home card; the setup cards and notices are the only guidance, and
+  the user's own tips opt-out still wins.
 
 ### 6.3 Cards
 
@@ -448,27 +599,42 @@ owner-only websocket event. The browser renders the card from
 decided card is reported back to the agent as a `[Setup card result]` envelope
 turn. A card never replaces a PreToolUse approval; it sits on top of one.
 
+The prototype's kinds (the contract for each is in
+[first-run](../system-specs/modules/first-run.md#kinds)):
+
 | Card | For | Commits |
 |---|---|---|
-| choice | name, language, tone, which job | a value returned to the model |
-| preview | SOUL.md, USER.md, profile, import | a file or config write, through the config appliers |
-| connect | a curated provider | the connections mint consent flow (`src/kiro_crew/connections/mint.py`) |
-| credential capture | a bot token or API key | a vault entry; the model receives only `secret://NAME` |
-| pair | a channel | a one-time pairing code |
-| cron | a job with its preview output | a job through the existing cron service |
-| service | stay on | `kirocrew service install` |
+| `privacy` | the disclosure, shown by the gateway alone | the `privacy_acked` flag, then the first model turn |
+| `profile` | name, language, timezone, technical level, role | config keys, through the config appliers |
+| `soul` | SOUL.md or USER.md, shown in full | the persona file |
+| `import` | what another agent on this machine would bring | the Import chapter's own import |
+| `connect` | a curated provider | the connections mint consent flow (`src/kiro_crew/connections/mint.py`) |
+| `credential` | an API key | a vault entry; the model receives only `secret://NAME` |
+| `channel` | a Telegram bot | its token, then a one-time `/pair` code |
+| `cron` | a job with its preview output | a job through the existing cron service |
+| `service` | stay on | `kirocrew service install` |
+| `home` | a home in the owner's AWS account (§6.8) | the build, the home's sign-in, then Move in |
+
+*Superseded:* the revision-3 `choice` card for plain values. Name, language
+and tone are asked in the agent's prose and saved through one `profile` card,
+so a value the model only reads needs no card of its own.
 
 **Guardrails.**
 
 - **Card budget.** The first run shows at most eight cards before the first kept
   job. Every card beyond the first three must justify itself against the
-  funnel data (§8).
-- **Stakes look different.** Credential, service and connect cards look
-  different from choice cards and never auto-advance. Claude Code users approve
-  about 93% of permission prompts, so high-stakes cards must not look like
-  "Next".
-- **Classic escape.** Every card offers "use classic setup", which opens the
-  matching chapter or Settings panel.
+  funnel data (§8). The gateway's own steps (privacy and the home step) do not
+  count.
+- **One decision at a time.** While a card waits for the owner, the agent's
+  next proposal is refused, so cards never stack up and bury each other. The
+  home card is exempt both ways, because its build runs in the background by
+  design.
+- **Stakes look different.** Connect, credential, channel, service and home
+  cards look different from the others and never auto-advance. Claude Code
+  users approve about 93% of permission prompts, so high-stakes cards must not
+  look like "Next".
+- **Classic escape.** Every card that has a classic counterpart offers "use
+  classic setup", which opens the matching chapter or Settings panel.
 - **Stall watchdog.** If a first-run turn makes no progress for 90 seconds, or
   the kickoff turn ends without a reply, the gateway posts a deterministic
   notice with Try again and "use classic setup". It reads the existing
@@ -487,12 +653,30 @@ session directive, and every card is governed by one new `SCOPE_CATALOG` row,
 
 | Tool | Does | Notes |
 |---|---|---|
-| `setup_card` | proposes one card; `kind` is one of profile, soul, import, connect, credential, channel, cron, service | one tool rather than one per kind: every core tool's schema rides on every request, and the kinds share one lifecycle |
+| `setup_card` | proposes one card; `kind` is one of profile, soul, import, connect, credential, channel, cron, service, home | one tool rather than one per kind: every core tool's schema rides on every request, and the kinds share one lifecycle |
 | `setup_status` | reads this session's cards and the first-run stages | lets the agent verify an outcome instead of trusting chat text |
 
 Cards are a dashboard surface, like `ask_question`, so neither tool has a CLI
 twin; the CLI already has a command for each underlying action (`kirocrew cron`,
-`kirocrew service install`, the vault commands).
+`kirocrew service install`, the vault commands, `kirocrew cloud launch`).
+
+**Setup actions are a registry.** Each kind is one module under
+`src/kiro_crew/setup_actions/` that declares its tool arguments and their
+check, how the gateway builds the card, what a click commits, any decisions
+beside commit and decline (the home card's AWS sign-in and region, the cron
+card's preview), and the flags the flow reads instead of branching on the kind
+(gateway-only, outside the budget, exempt from one-at-a-time). The
+`setup_card` schema and description are generated from it, and the dashboard
+draws cards through a matching registry with a safe fallback for a kind it
+does not know. *Why:* in the first prototype a kind was spread over about
+fifty branches in seven layers, and nothing caught a missed one. A parity test
+now fails, naming the file to edit, when a kind misses its governance scope,
+its dashboard entry, its copy or its skill row; it found one gap on its first
+run (the channel card had never been described to the agent). What a card
+must pass is not an action's to change: provenance (SC8), governance and the
+hash-bound click (SC1) stay in the flow, and an action can add a check but not
+remove one. How to add one:
+[first-run](../system-specs/modules/first-run.md#adding-a-setup-action).
 
 **Who may propose (SC8).** A setup card may be raised only in a turn a person
 started: a typed message, or a turn that exists because the owner clicked a
@@ -508,37 +692,45 @@ file plays no part in this decision (SC6).
 
 - **SOUL.md** holds name, voice, reply language, defaults for proactivity and
   quiet hours, and anything the agent must never do. **USER.md** holds what the
-  agent knows about the user. It supersedes the two-field `[USER PROFILE]` block
-  but still carries `user_role` and `user_technical_level`.
-- **Both are small by design.** Each is capped (4 KB is proposed) and reaches
-  the model through the context-block path
-  ([context-management](../architecture/context-management.md)).
+  agent knows about the user. It is meant to supersede the two-field
+  `[USER PROFILE]` block while still carrying `user_role` and
+  `user_technical_level`; in the prototype both blocks render.
+- **Where they live.** The primary agent's files are
+  `<data home>/persona/SOUL.md` and `USER.md`. They reach the model as the
+  `[AGENT PERSONA]` and `[USER NOTES]` context blocks, for the primary agent only
+  (the default agent and the main chat's spec), through the context-block path
+  ([context-management](../architecture/context-management.md)). A crewmate keeps
+  its own per-member SOUL.md, and a theme's persona stays its own block (Q4).
+- **Both are small by design.** Each is capped at 3000 characters, and forged
+  block markers inside them are neutralized.
 - **They grow from corrections.** When the user says "shorter, please" or "no
-  messages on weekends", the agent proposes a one-line SOUL.md diff through a
-  preview card.
-- **Writes happen only through a preview card, the user's own edits, or a
-  Settings editor.** An injected instruction that writes itself into SOUL.md
-  would persist forever, so whether SOUL.md should be read-only to in-sandbox
-  code is Q3. That would be a new seal, and seals are the operator's decision.
+  messages on weekends", the agent proposes a one-line SOUL.md change through a
+  `soul` card, which shows the whole new text beside the old.
+- **Writes happen only through a `soul` card or the user's own edits.** An
+  injected instruction that writes itself into SOUL.md would persist forever,
+  so whether SOUL.md should be read-only to in-sandbox code is Q3. That would be
+  a new seal, and seals are the operator's decision; the prototype adds none.
 - **Imported souls stay data.** `onboarding_import` already drops the persona
   role from a foreign SOUL.md or USER.md. The first run shows the imported text
-  as a *suggestion* inside the preview card.
+  as a *suggestion* inside the card.
 - **Compatibility is a feature.** SOUL.md and USER.md follow the OpenClaw shape,
   which is exactly what makes switching cheap.
 
 ### 6.6 Secrets that users paste anyway
 
 Users will paste tokens into the chat whatever the card says. When a user
-message contains a value that matches a known credential shape — the same
-detectors the log redaction uses (`src/kiro_crew/log_redaction.py`) — the
-gateway does three things before the turn reaches the model:
+message contains a value that matches a known credential shape — the shared
+credential detectors (`src/kiro_crew/security/redaction.py`) — the gateway does
+three things before the message is stored or reaches the model:
 
-1. moves the value into the vault under a proposed name;
+1. moves the value into the vault under a name derived from the detector;
 2. replaces it in the transcript with `secret://NAME`;
 3. posts a deterministic notice: "That looked like a GitHub token. I stored it
    in the vault and removed it from this chat."
 
-This is SC2's missing half.
+AWS keys and private keys are removed and never stored: AWS credentials stay in
+the AWS CLI's own profile (SC4), and a private key belongs in the user's own key
+store. This is SC2's missing half.
 
 ### 6.7 Quota awareness
 
@@ -555,7 +747,11 @@ within a week, and Kiro Free is 50 credits. To prevent that:
   happened and what still works, and no new card is proposed until a turn
   succeeds again.
 
-Phase 0 measures the real burn (test 1, §9).
+The prototype has the last one, plus two bounds that cost no model call: a
+first-run job runs at most hourly, and every gateway notice (guardrails,
+first-week tips, hand-off notes) is a fixed system message rather than a model
+turn. The background role and the per-job pre-filters are not built yet. Phase
+0 measures the real burn (test 1, §9).
 
 ### 6.8 The home, built in the background
 
@@ -565,50 +761,69 @@ first run any longer. Five rules shape it:
 1. **The first run never waits for it.** The chat starts locally at once. The
    build is a background job, observed through a status file under the data
    home, the way the embedding models already download without interrupting.
-2. **Money and credentials are the user's, and the user says yes.** Before the
-   first turn the gateway asks the AWS CLI who it signs in as (one read-only
-   `sts get-caller-identity`, `src/kiro_crew/cloud/local_signin.py`); a signed-in
-   machine is offered a home in the Hello, which names the account's last four
-   digits, the profile's region and the monthly estimate. Nothing is asked in the
-   terminal. Without a sign-in, the home card offers the AWS CLI's own browser
-   sign-in, `aws login` (OAuth 2.0 with PKCE, AWS CLI 2.32+, short-lived
-   credentials refreshed for up to 12 hours): its "Sign in to AWS" button runs
-   `aws login` as a child of the gateway, which opens the sign-in page in the
-   owner's browser, and the card turns back into "Build my home" once AWS answers
-   for the profile. That works only when the browser and the gateway share a
-   machine, because the CLI takes the sign-in's redirect on this machine's
-   loopback; a remote or headless gateway's card shows `aws login --remote` to run
-   in a terminal there instead. IAM Identity Center (`aws sso login`) is only
-   named for users who already sign in that way: it needs an organization, and
-   creating one ends a new account's Free plan. Kiro Crew never stores or sees
-   AWS credentials (SC4); the aws CLI resolves them from the user's profile
-   exactly as `src/kiro_crew/cloud/` does today. Accounts made through AWS's
-   newest sign-up are pinned to one region by country, so once AWS answers the
-   card finds the account's own region with one read-only
-   `ec2 describe-availability-zones` per region: the profile's region first,
-   then us-east-2, eu-north-1 and ap-southeast-2, taking the first that answers;
-   there is no us-east-1 fallback. When none answers, the card asks: "AWS didn't
-   say which region this account uses. Pick the one shown in your AWS console."
-   The owner's pick is checked on the server, probed read-only, and the card is
-   shown again for it under a new hash. It also reads the account's plan (read-only
-   `freetier get-account-plan-state`: FREE or PAID, the Free plan's remaining
-   credits; an account older than the plans is PAID) and never changes it. The
-   home card states the size options with what each runs, costs and needs, the
-   region and an estimated monthly cost; the owner picks the size, and building
-   needs their click. The Free plan's EC2 launches free-tier types only, so on
-   it only Lite and Starter build, and a paid-plan size is refused with AWS's
-   upgrade page; the EC2 vCPU quota is read before the launch. A user
-   without an AWS account asks for a home and the card walks them through the
-   signup: "Create an AWS account" opens AWS's own sign-up page in a new tab
-   (never framed or proxied, so Kiro Crew collects nothing), and when this
-   machine's Kiro sign-in is AWS Builder ID it is the Builder ID sign-up, with
-   no new password. The card then waits, untimed, for "I've created it — sign
-   in", which runs the sign-in above, and says when the AWS CLI 2.32+ it needs
-   is missing, linking AWS's install page. Since September 2026 that signup
-   takes a Google, GitHub or Apple login and, for most people, no card, but it
-   cannot be automated (Q9). The Hello does not offer a home to a machine with
-   no AWS sign-in yet: new signup accounts are pinned to one region by country,
-   which the offer would have to name first.
+   A build the card can no longer follow is stopped, not left running: found on
+   a real run, where the card's watcher lost the job file while the worker went
+   on creating billed resources. Three unreadable reads in a row, or a crashed
+   watcher, set the launch's own cancel (its stack rolls back at the next
+   checkpoint) and fail the card. The watcher lives in the gateway, so a gateway
+   restart mid-build is not resumed yet: the launch job is reaped as the
+   Instances hub reaps any orphaned launch, and the card is left waiting.
+2. **Money and credentials are the user's, and the user says yes.** Nothing is
+   asked in the terminal, and nothing is built without the owner's click on a
+   card that states the cost.
+   - **The home step.** Right after privacy the gateway shows the home card on
+     every first run (§5.7), with one read-only reachability check against the
+     AWS profile. Signed in, it names the account's last four digits; signed
+     out, it offers sign-in and account creation. "Keep it on this machine"
+     declines it, and a home stays one "move me to the cloud" away in any later
+     chat. *Superseded:* offering a home in the Hello only when the AWS CLI was
+     already signed in (a tester missed that sentence; see
+     [What changed](#what-changed-since-revision-3), item 3).
+   - **Signing in to AWS from the card.** "Sign in to AWS" runs the AWS CLI's
+     own browser sign-in, `aws login` (OAuth 2.0 with PKCE, AWS CLI 2.32+,
+     short-lived credentials refreshed for up to 12 hours), as a child of the
+     gateway with every standard stream closed. It opens the sign-in page in the
+     owner's browser, waits up to ten minutes as the AWS CLI itself does, and the
+     card turns back into "Build my home" once AWS answers for the profile. That
+     works only when the browser and the gateway share a machine, because the
+     CLI takes the sign-in's redirect on this machine's loopback; a remote or
+     headless gateway's card shows `aws login --remote` to run in a terminal
+     there instead. IAM Identity Center (`aws sso login`) is only named for users
+     who already sign in that way: it needs an organization, and creating one
+     ends a new account's Free plan. Kiro Crew never stores or sees AWS
+     credentials (SC4); the aws CLI resolves them from the user's profile exactly
+     as `src/kiro_crew/cloud/` does today.
+   - **No AWS account yet.** "Create an AWS account" opens AWS's own sign-up
+     page in a new tab (never framed or proxied, so Kiro Crew collects nothing),
+     and when this machine's Kiro sign-in is AWS Builder ID it is the Builder ID
+     sign-up, with no new password. The card then waits, untimed, for "I've
+     created it — sign in", which runs the sign-in above, and says when the AWS
+     CLI 2.32+ it needs is missing, linking AWS's install page. Since September
+     2026 that signup takes a Google, GitHub or Apple login and, for most people,
+     no card, but it cannot be automated (Q9).
+   - **The account's region, read.** Accounts made through AWS's newest sign-up
+     work in one region only, chosen by country, so a us-east-1 default failed
+     for them. Once AWS answers, the card finds the account's region with one
+     read-only `ec2 describe-availability-zones` per region: the region the card
+     starts from (the profile's, else us-east-1), then the profile's, then
+     us-east-2, eu-north-1 and ap-southeast-2, moving on only when a region
+     refuses. A region is used only when it answers. When none answers, the card
+     asks: "AWS didn't say which region this account uses. Pick the one shown in
+     your AWS console." The pick is checked on the server against the regions a
+     home can be built in, probed read-only, and the card is shown again for it
+     under a new hash, with that region's prices.
+   - **The plan, read.** The card reads the account's plan (read-only
+     `freetier get-account-plan-state`: FREE or PAID, and the Free plan's
+     remaining credits; an account older than the plans is PAID) and never
+     changes it. The plan decides which sizes the card lists (below); a plan not
+     known yet gets the Free plan's list, since a new account starts on it.
+   - **The Build click.** It carries the size the owner picked. The gateway
+     refuses a size the card did not offer, a paid-plan size on the Free plan
+     (linking AWS's plans page) and a size above the account's EC2 vCPU quota
+     (read before anything is spent), and gives a spend-limit failure its own
+     message. Every refusal is on the card before anything is built.
+   - *Superseded:* the terminal AWS sign-in and cost consent of Phase 2b as
+     revision 3 planned it; both are on the card.
 3. **One provider seam.** The build goes through the existing
    `RemoteProvisioner` seam (`src/kiro_crew/platform/interfaces.py`). The public
    build's provider is "your own AWS account" on the existing launch engine
@@ -631,10 +846,10 @@ first run any longer. Five rules shape it:
    [first-run](../system-specs/modules/first-run.md#moving-in).
 
 5. **Signing the home in: its own sign-in, one click.** The prototype's home
-   signs in to Kiro with its own device code, which a person must approve while
-   the build is running; in the recorded demo nobody did, so the home was ready
-   but its agent could not answer. The home keeps its OWN sign-in, and the
-   approval is made one click:
+   signs in to Kiro with its own device code, for the same kind of identity this
+   computer uses, which a person must approve while the build is running; in the
+   recorded demo nobody did, so the home was ready but its agent could not
+   answer. The home keeps its OWN sign-in, and the approval is made one click:
    - **Decision (2026-09-28, the user).** Own sign-in with one click, not a copy
      of this computer's token. Copying puts one long-lived refresh token on two
      machines, and Kiro's refresh answer may rotate it (`refreshToken?` in
@@ -656,13 +871,21 @@ first run any longer. Five rules shape it:
      Center) and shows rotation does not sign either one out (Q15).
    - **Sign-out.** Signing out here does not sign the home out, and signing the
      home out does not sign this computer out.
+   - **No Move in without it.** A build can finish with its sign-in skipped
+     (the code ran out unapproved). Found on a real home: its card still offered
+     Move in to a home whose agent could not answer. Now such a card offers
+     "Sign the home in to Kiro" first, with a fresh code, and Move in only once
+     the home is signed in.
 
 Plain words, honest numbers: the non-technical path says "a home in the cloud"
 rather than naming instance types, but the cost card always names who bills the
 user and roughly how much. The sizes on the card come from measurement (Q8) and
-lead with the cheapest. Both plans start with Lite (`t4g.small`, 2 GB, about
-$14/month), a slimmed home whose card line says what it gives up: memory search
-is keyword-only, there is no dictation, the first reply after a quiet spell is
+lead with the cheapest; the owner picks one, and the agent explains the options
+when asked but never picks. *Superseded:* one fixed tier (`t4g.xlarge`, about
+$101/month), a hard sell next to a free hosted assistant and a type the Free
+plan refuses. Both plans start with Lite (`t4g.small`, 2 GB, about $14/month), a
+slimmed home whose card line says what it gives up: memory search is
+keyword-only, there is no dictation, the first reply after a quiet spell is
 slower, and it runs a few things at once. On the paid plan Economy follows
 (`t4g.medium`, 4 GB, about $26/month, everything on), then Small (`t4g.large`,
 8 GB, about $51/month), preselected, then Standard (`t4g.xlarge`, 16 GB, about
@@ -671,8 +894,37 @@ $101/month); on a new account's Free plan Starter follows (`m7i-flex.large`,
 plan runs, with Standard marked as needing the paid plan. Every price is the
 card's region's: us-east-1 and a new account's three home regions are priced from
 AWS's public on-demand price list (Sydney runs about a quarter above Virginia), a
-region outside those shows the us-east-1 figure, and each is "about". Whether
-Starter joins the paid plan's list is decided with those regional prices.
+region outside those shows the us-east-1 figure, and each is "about". Starter
+joins the paid plan's list only where it is no dearer than Small, which at those
+prices is nowhere.
+
+Three things make the sizes below 8 GB work, each found by measuring:
+
+- **The dashboard arrives built.** Building the dashboard on the box is a
+  2.6 GB peak and most of a first boot, and it is what ruled out small
+  instances. A home launched from a source checkout receives the dashboard the
+  launcher already built (when it is no older than the frontend sources) and
+  installs no Node. A home launched from a packaged install still clones the
+  public source and builds the dashboard on the box, slowly on the small sizes;
+  installing the home from the signed release wheel instead is open work for
+  Phase 2b.
+- **Lite runs a slimmed profile.** The size picks a profile the home's template
+  applies to the home's own config and service unit, so no other install's
+  defaults change: Lite runs no embedding model (memory search is keyword-only)
+  and no local speech-to-text, starts its background session on first use,
+  spawns no chat before its first message, and ends a chat idle for 15 minutes;
+  Economy keeps everything and ends idle chats after 30. Verified on real AWS: a
+  Lite home was ready for its Kiro sign-in in 441 s and idled at about 0.5 GB of
+  its 1.8 GB. A chat turn on it is not measured yet, because that home's sign-in
+  was not approved.
+- **Live chats are capped by memory.** Each open chat keeps a harness process
+  and its tool servers alive, about 0.4 GB, and only the idle timeout retired
+  one. `session.max_live_sessions` (auto by default: total memory less a
+  reserve, 0.4 GB per chat, from 2 on a 2 GB home to 64) releases the least
+  recently used idle chat before one more opens, the same way idle expiry does,
+  so it resumes on its next message. A chat running a turn or waiting on the
+  user, one with sub-agent work attached, and the main chat are never released,
+  and a new chat always opens.
 
 A simulated launch engine walks the same progress steps without AWS, so the
 experience can be reviewed and tested before anyone spends money; it is labelled
@@ -723,13 +975,16 @@ run all of them from.
   main chat when such a chat ends a turn and is idle ("… finished. Ask me here
   for what it found."), with Open and Ask for the result, or, when the turn
   ended on an error with no reply, a warning with Open only. A turn someone
-  stopped posts nothing. A notice due while the main chat is busy waits for its
-  turn or plan to end and survives a restart. It is not a model turn, so it
+  stopped posts nothing, and a plan counts as finished only when it ends, not
+  when it pauses for the user. A notice due while the main chat is busy waits
+  for its turn or plan to end, and it is kept in the first-run state file, so a
+  gateway restart in between still delivers it. It is not a model turn, so it
   costs no quota and raises no card (SC8); the user's question is the turn that
   reads the result (MC.9).
 - **The main chat stays.** In Muse it cannot be deleted; side chats can be
-  archived. Kiro Crew's agent never closes it (a skill rule); whether the
-  dashboard should refuse to delete it is Q11.
+  archived. Kiro Crew's agent never closes it (a skill rule), the live chat cap
+  never releases it (§6.8), and whether the dashboard should refuse to delete it
+  is Q11.
 - **Channels keep their own chats.** A Slack or Discord conversation stays in
   its own session and is never mirrored into the main chat; the overview lists
   it like any other chat.
@@ -737,8 +992,10 @@ run all of them from.
   scheduled task and "Add subgoal" on a goal do not open forms; they draft a
   chat message for the user to send. The same pattern lets the jobs page, the
   sessions list and the connections page hand a change to the main chat without
-  a new form, and the change then goes through the usual card (a follow-up UI
-  item, MC.6).
+  a new form, and the change then goes through the usual card (MC.6). In the
+  prototype, "Ask in main chat" on a job and "Ask about this chat in main chat"
+  on a session pre-fill the main chat's composer, unsent; the connections page
+  is still to come.
 - **What "main" is not.** It is not a permission. The main-chat marker lives in
   the first-run state file (presentation only, SC6): it decides where the
   product opens and whether the overview is attached, never what a turn may do.
@@ -776,6 +1033,11 @@ authority does not block it. It does block agent-built connectors (§10.3).
 (SC7, host-key pinning for a machine the user brings over SSH, stays with that
 north-star work in §10.)
 
+The prototype pins SC1 to SC6 and SC8 with the tests named in
+[first-run](../system-specs/modules/first-run.md#invariants), and the setup-action
+registry adds one more: for every registered kind, a commit and every claimed
+decision run only with the shown hash and never past a governance denial.
+
 ## 8. Measuring it
 
 | Metric | Definition | Initial target (recalibrate after Phase 0) |
@@ -801,12 +1063,15 @@ choose to share, plus recruited test sessions.
 skills: a persona ("a first-time user, warm but impatient, taps to connect
 accounts when prompted"), an objective, a mocked world and a rubric line
 saying what passes. The first run gets the same treatment before each release:
-a model plays the user from a persona file against a gateway on the simulated
-engine, and a rubric checks what is checkable: cards before the first kept job,
-minutes to the first preview, no card outside a person-started turn, no request
-to paste a secret, no invented link. The Playwright driver used for the
-prototype's demos is the start of it. Evals stand in for neither Phase 0's
-interviews nor the moderated sessions; they catch regressions between them.
+a persona plays the user against an isolated gateway on the simulated engine,
+and a rubric checks what is checkable: cards before the first kept job,
+minutes to a kept job, no card of a kind after the user declined it, no request
+to paste a secret, no invented link, a pasted token stored only as a
+`secret://` reference. The prototype has this as `evals/crew-setup/`: its
+personas are scripted (the same replies and clicks every run, so two runs
+differ only by the agent), and a model playing the user from the persona text is
+the next step. Evals stand in for neither Phase 0's interviews nor the
+moderated sessions; they catch regressions between them.
 
 **Kill criteria.** After four weeks on Stable with n ≥ 30 first runs, v1 is
 rethought if any of these hold:
@@ -824,12 +1089,22 @@ reshaped, not extended.
 | Phase | Appetite | Ships | Exit | Depends on |
 |---|---|---|---|---|
 | **0 Discover** | 2 weeks | The four tests below; the baseline funnel today on clean Ubuntu 24.04, macOS 15 and Windows 11; the choice of the v1 connector family | Numbers recorded here. Test 1 passes or its fix is scoped. | — |
-| **1 Egg** | 2 weeks | start.sh on `cli.sh`'s trust root and start.ps1 on the signed desktop installer's; the harness step; gateway, one-time URL, browser or QR; privacy card first; the desktop first run lands in the session; the heartbeat install-path value | G1 on the three clean machines; `cli.sh` unchanged | 0; Q1, Q2 |
-| **2 First run v1** | 6 weeks | Cards with guardrails; the first-run session and state; `crew-setup`; the §6.4 tools; import first; one connector family; one channel with `/pair`; preview-now jobs; the service card; pasted-secret redaction; quota handling | SC1, SC2, SC3, SC6 and SC8 tested; G2–G5 met in moderated sessions (n ≥ 10) | 1; Q3, Q4, Q5 |
-| **2b Parallel home** | 4 weeks | The Egg's home choice; AWS CLI sign-in and the cost consent in the terminal; the background build through the provisioner seam with a status file; the home card; Move in (export, import, session transfer); the simulated engine | SC4 and SC5 tested; choosing the home adds nothing to G1/G2 at p50; a move-in keeps the chat and its transcript | 1 (can run beside 2); Q8, Q9 |
+| **1 Egg** | 2 weeks | start.sh on `cli.sh`'s trust root and start.ps1 on the signed desktop installer's, both asking nothing; `setup.sh` from source; the harness step; gateway, sign-in URL, browser or QR; privacy card first; the desktop first run lands in the session; the heartbeat install-path value | G1 on the three clean machines; `cli.sh` unchanged | 0; Q1, Q2 |
+| **2 First run v1** | 6 weeks | Cards with guardrails, as a registry of setup actions with its parity test; the first-run session and state, its layout and the tip hold; `crew-setup`; the §6.4 tools; import first; one connector family; one channel with `/pair`; preview-now jobs; the service card; pasted-secret redaction; quota handling | SC1, SC2, SC3, SC6 and SC8 tested; G2–G5 met in moderated sessions (n ≥ 10) | 1; Q3, Q4, Q5 |
+| **2b Parallel home** | 4 weeks | The home step card; AWS sign-in and account creation from the card; the account's plan and region, read-only, with a region picker; measured sizes priced per region; the prebuilt dashboard, the slimmed Lite profile and the live chat cap; the background build through the provisioner seam with a status file, stopped when the card cannot follow it; the home's own one-click Kiro sign-in; Move in (export, import, session transfer); the simulated engine | SC4 and SC5 tested; choosing the home adds nothing to G1/G2 at p50; a move-in keeps the chat and its transcript | 1 (can run beside 2); Q8, Q9 |
 | **2c Main chat** | 2 weeks | Graduation from the first run; the landing target; the `[CREW OVERVIEW]` block; the delegation section of `crew-setup`; a "make this my main chat" affordance for existing installs | The first run ends as the main chat; the overview stays under its cap; opening the dashboard with no session named lands on it | 2 |
 | **2d First week** | 2 weeks | The §5.8 note job; hosted-assistant import (§5.3); the persona evals (§8) wired to the simulated engine | The note job never raises a card and stops on request; the evals run on every release candidate | 2c |
 | **3 Learn** | 4 weeks on Stable | Nothing new: measure against §8 | Kill criteria checked; the north-star gates (§10) read | 2 |
+
+**Where the prototype stands.** Phases 1, 2, 2b, 2c and 2d exist on the
+author's branch as a prototype for review, not as merged work, and none of the
+exits above has been measured. Verified by hand on Linux, with real AWS for
+the Lite home, the home sign-in page and the region reads. Still to do before
+any exit: a real end-to-end run with a person who approves the home's sign-in
+and moves in; macOS and Windows runs of the one-command installs; resuming a
+home build across a gateway restart; installing a home from the signed release
+wheel rather than from source; the background model role and job pre-filters
+of §6.7; and every Phase 0 test.
 
 **Phase 0 tests** (riskiest first):
 
@@ -886,16 +1161,23 @@ from it.
 
 ### 10.2 EC2, for developers
 
+*Largely absorbed into v1.* Revision 3's parallel home (§6.8) offers the EC2
+home on every first run's home step, not only behind
+`user_technical_level = codes`, and the measurement this step asked for is done:
+the card's sizes start at about $14/month instead of the $98 tier below. What
+this step still holds is the no-credentials console quick-create path. The
+revision-1 plan, kept for the record:
+
 - **Gate:** nest adoption above 15% of activated crews.
 - It is shown only behind `user_technical_level = codes`.
 - It reuses the launch engine (`run_launch` in `src/kiro_crew/cloud/launch_job.py`)
   and the CloudFormation template, which already provides SSM access, an
   encrypted EBS root, an instance role, IMDSv2 and no inbound port 22 unless
   `AllowSshCidr` is set.
-- A cost card is shown before anything happens. Today's cheapest tier is
-  `t4g.xlarge` at about $98/month and the recommended one about $238/month
-  (`src/kiro_crew/cloud/sizes.py`), so this RFC measures whether a smaller tier
-  fits.
+- A cost card is shown before anything happens. At revision 1 the cheapest tier
+  was `t4g.xlarge` at about $98/month and the recommended one about $238/month
+  (`src/kiro_crew/cloud/sizes.py`), so this RFC measured whether a smaller tier
+  fits (Q8).
 - A no-credentials console quick-create path depends on #13031.
 
 ### 10.3 Agent-built connectors
@@ -989,7 +1271,12 @@ with one-step promotion) belong beside it.
   keep working unchanged.
 - An already-onboarded install never gets a first-run session, and `/onboarding`
   still opens the chapters.
-- Every new config key defaults to today's behaviour.
+- Every new config key defaults to today's behaviour, with one bounded
+  exception: `session.max_live_sessions` defaults to a cap sized from memory,
+  which is 2 on a 2 GB home but about 35 on a 16 GB laptop and 64 from 32 GB, so
+  an ordinary laptop keeps every chat it realistically opens. A released chat
+  loses nothing; its next message resumes it. The slimmed Lite profile is
+  written into a small home's own config and never changes a default.
 - The heartbeat gains one value in an existing closed set, and no new field.
 
 ## 12. Alternatives considered
@@ -1010,72 +1297,90 @@ with one-step promotion) belong beside it.
 
 ## 13. Open questions
 
+Each question says whether it is still **open**, has a **prototype answer**
+(what the branch does, pending review), or is **answered** (a decision a person
+made, with its date).
+
 - **Q1.** Is start.sh generated from `cli.sh` at publish time, or is it
   `cli.sh --first-run` behind a thin wrapper? Either way there must be one trust
-  root. *Prototype answer:* neither — start.sh downloads the live, unmodified
+  root. *Prototype answer:* neither. start.sh downloads the live, unmodified
   `cli.sh` from the same origin, runs it (it verifies the signed manifest), then
   execs `kirocrew start`. `cli.sh` stays byte-identical, which is Phase 1's exit
-  criterion.
+  criterion (§6.1).
 - **Q2.** May the installer install a pinned, verified kiro-cli? PR #13888 lists
   "install or authenticate a harness from inside Kiro Crew" as a non-goal. The
   desktop bundle already ships a pinned kiro-cli. This needs a maintainer
-  decision and a check of kiro-cli's distribution terms. *Prototype answer:* it
-  does not — `kirocrew start` prints the official install guidance and exits 3
-  when the harness is missing, and offers kiro-cli's own sign-in command (device
-  flow on a headless host) when it is installed but signed out.
+  decision and a check of kiro-cli's distribution terms. *Open; the prototype
+  installs nothing:* `kirocrew start` prints the official install guidance and
+  exits 3 when the harness is missing, and runs kiro-cli's own sign-in (the
+  device flow on a headless host) when it is installed but signed out. On
+  Windows it uses the copy the desktop app already installed (Q14).
 - **Q3.** Should SOUL.md be read-only to in-sandbox code, to close the
   persistent-injection path? That would be a new seal, and seals are the
-  operator's call.
+  operator's call. *Open;* the prototype adds no seal. The persona files are
+  written only through a `soul` card or the user's own edits, and their text is
+  neutralized and capped before it reaches the model (§6.5).
 - **Q4.** Where do the primary agent's SOUL.md and USER.md live, and how do they
-  compose with per-crewmate SOUL.md files and a theme's persona.md?
+  compose with per-crewmate SOUL.md files and a theme's persona.md? *Prototype
+  answer:* in `<data home>/persona/`, reaching only the primary agent (the
+  default agent and the main chat's spec) as their own context blocks. A
+  crewmate keeps its own SOUL.md, and a theme's persona stays a separate block
+  (§6.5). Proactive preferences (Appendix F, row 6) would fit USER.md.
 - **Q5.** Is "the chapters no longer auto-open for first-run installs" covered by
-  rfc-crewmates-launch, or does it need its own recorded decision?
-- **Q6.** Which connector family goes first, GitHub or Linear/Atlassian? Phase 0
-  decides.
-- **Q8.** The smallest instance a home runs on well, and its honest monthly
-  cost. Today's cheapest tier is `t4g.xlarge` at about $98/month
-  (`src/kiro_crew/cloud/sizes.py`); a home that only runs the gateway and the
-  harness is likely far smaller. Measure before offering it. *Prototype
-  measurement:* an idle gateway with one open chat uses about 0.6 GB (the gateway
-  about 0.2 GB, one kiro-cli chat process about 0.25 GB), and each further open
-  chat adds about 0.25 GB. What rules out a 2 GB instance today is not the
-  runtime but the install: the home builds the dashboard on the box, and that
-  build is given a 6 GB heap. A home installed from the prebuilt wheel `cli.sh`
-  ships would not build anything, so the smallest tier depends on the home
-  installing the release artifact rather than building from source.
-  *Measured with a real kiro-cli (2026-09-28):* the idle gateway is 1.3 GB, each
-  open chat adds about 0.5 GB and stays alive after its last turn, three chats
-  plus a sub-agent peak at 3.7 GB, and the on-box dashboard build peaks at
-  2.6 GB. *Answer:* 8 GB. On the paid plan the card leads with Small,
-  `t4g.large` (arm64, 2 vCPU, 8 GB, about $49/month plus disk in us-east-1); on
-  the Free plan with Starter, `m7i-flex.large` (x86_64, 2 vCPU, 8 GB, about
-  $70–87/month by region), the smallest type that plan allows that fits;
-  Standard, `t4g.xlarge` (16 GB), is on both. *Follow-up spike:* a slimmed home
-  fits in less. With the dashboard shipped prebuilt (no on-box build), embeddings
-  off, the background session started on first use, no eager chat spawn and a
-  15-minute idle timeout, the idle home is about 0.55 GB and one chat turn about
-  1.7 GB. So Lite, `t4g.small` (2 GB, Free-plan eligible, about $14/month with
-  its disk), and Economy, `t4g.medium` (4 GB, everything on, about $26/month),
-  join as data: two tiers, their plan lists, and a `HomeProfile` the template
-  applies to the home's own config and unit.
-- **Q10.** Honest free-plan wording. A new account's Free plan (up to $200 in
-  credits, no charge unless upgraded, closes after six months) covers only
-  small instances such as `t4g.small` (~$18/month); today's smallest home tier
-  is not eligible (~$101/month on the paid plan). "Free for six months" is true
-  only if Q8's measurement finds a 2 GB home workable. *Answer:* a full home is
-  not, so the card says Starter is paid from the Free plan's credits and names
-  about how many weeks the remaining credits cover, never "free". The slimmed
-  Lite home is, and its card line says the same of it: about 30 weeks of $100.
-- **Q9.** AWS account creation cannot be automated. How much of the signup can
-  the Egg smooth (a direct link, a checklist, resuming after signup), and at
-  what point does the managed provider (§10.7) replace it?
+  rfc-crewmates-launch, or does it need its own recorded decision? *Open;* the
+  prototype behaves that way (the dashboard reads the first-run chat and keeps
+  the chapters closed, and `/onboarding` still opens them), so the decision is
+  what is missing, not the code.
+- **Q6.** Which connector family goes first, GitHub or Linear/Atlassian? *Open;*
+  Phase 0 decides. The prototype's skill leads with GitHub and names the others.
 - **Q7.** Vocabulary. Revision 1 used hatch, egg and nest. "Hatch" is Meta's
   internal codename for Muse and also OpenClaw's onboarding verb ("hatch your
   bot"). This revision proposes plain UI labels ("Setup", "Home") and keeps
-  "Egg" only as a design term here. Is that settled?
+  "Egg" only as a design term here. Is that settled? *Open;* the prototype's
+  labels are plain ("Welcome to Kiro Crew", "Where should your crew live?",
+  "Your home in the cloud", "Move in").
+- **Q8.** The smallest instance a home runs on well, and its honest monthly
+  cost. *Answered by measurement (2026-09-28).* Measured with a real kiro-cli:
+  the idle gateway is 1.3 GB (the embedding runtime and model are about 0.75 GB
+  of it), each open chat adds about 0.4–0.5 GB and stays alive after its last
+  turn, three chats plus a sub-agent peak at 3.7 GB, and the on-box dashboard
+  build peaks at 2.6 GB. An earlier estimate without a real kiro-cli (0.6 GB
+  with one chat open) was far too low. So a full home needs 8 GB: Small
+  (`t4g.large`, about $51/month with its disk in us-east-1) on the paid plan,
+  Starter (`m7i-flex.large`, about $72–90/month by region) on the Free plan,
+  whose EC2 allows free-tier types only. A slimmed home fits in less: with the
+  dashboard shipped prebuilt, embeddings off, the background session started on
+  first use, no eager chat and a 15-minute idle timeout, the idle home is about
+  0.55 GB and one chat turn about 1.7 GB. That gives Lite (`t4g.small`, 2 GB,
+  Free-plan eligible, about $14/month) and Economy (`t4g.medium`, 4 GB,
+  everything on, about $26/month), added as data: two tiers, their plan lists,
+  and a profile the template applies to the home's own config and unit. A real
+  Lite home idled at about 0.5 GB of its 1.8 GB. Not measured yet: a chat turn
+  on a real Lite home, arm64 figures for the other sizes, and burst credits on
+  the `t4g` types under sustained work.
+- **Q9.** AWS account creation cannot be automated. How much of the signup can
+  the Egg smooth (a direct link, a checklist, resuming after signup), and at
+  what point does the managed provider (§10.7) replace it? *Prototype answer
+  for the first half:* the home card links AWS's own sign-up (the Builder ID one
+  when Kiro signs in with Builder ID), waits untimed for "I've created it — sign
+  in", signs in from the card, then reads the new account's region and plan
+  (§6.8 rule 2). *Open:* when the managed provider replaces it.
+- **Q10.** Honest free-plan wording. A new account's Free plan (up to $200 in
+  credits, no charge unless upgraded, closes after six months) covers only
+  free-tier types such as `t4g.small` (about $14/month); a full home on the paid
+  plan's sizes is not eligible. "Free for six months" is true only if a 2 GB
+  home is workable. *Answered:* a full home is not, so the card says Starter is
+  paid from the Free plan's credits and names about how many weeks the
+  remaining credits cover, never "free". The slimmed Lite home is, and its card
+  line says the same of it: about 30 weeks of $100.
 - **Q11.** Should the dashboard refuse to delete the main chat, as Muse does, or
   only warn? Refusing makes "main" a small behaviour and not only presentation
-  (SC6 still holds: it gates a delete, never what a turn may do).
+  (SC6 still holds: it gates a delete, never what a turn may do). *Open;* in
+  the prototype the agent never closes it and the live chat cap never releases
+  it, but the dashboard deletes it like any chat.
+- **Q12.** The first-week notes (§5.8): one a day for seven days, or fewer?
+  *Prototype answer:* one a day, at most six (one per unset thing), and they
+  cost no quota, because each is a fixed notice rather than a model turn.
 - **Q13.** How does the main chat get the session tools: a `kirocrew-main` spec
   that graduation switches the chat to (the default agent's tools plus the
   conductor's `kirocrew-dashboard` grants), or the default agent mounting
@@ -1087,9 +1392,9 @@ with one-step promotion) belong beside it.
   adds is there too) and adds `@kirocrew-dashboard`, with `session_create` and
   `session_read_message` granted and `session_send` / `session_stop` left to the
   approval gate. The same spawn-path freshness check as `kirocrew-worker` keeps
-  it in step with the default, and the code that treated every agent other than
-  `kirocrew` as custom now asks `is_primary_agent`, so the main chat keeps
-  SOUL.md, USER.md and the skills.
+  it in step with the default, and the code that treats the default agent
+  specially asks `is_primary_agent`, so the main chat keeps SOUL.md, USER.md and
+  the skills.
 - **Q14.** On Windows, `start.ps1` runs the desktop app's bundled `kirocrew`
   outside the app, so it does not see the app's bundled kiro-cli and reports the
   harness missing on a machine that has only that copy. Should it point at the
@@ -1097,7 +1402,8 @@ with one-step promotion) belong beside it.
   of the terminal flow? Tied to Q2. *Prototype answer:* point at it. `start.ps1`
   hands the install's bundled kiro-cli to `kirocrew start` exactly as the app's
   launcher hands it to the gateway, only after it answers `--version`. Nothing
-  new is installed, so Q2 stays open for machines without the app.
+  new is installed, so Q2 stays open for machines without the app. Not yet run
+  on real Windows.
 - **Q15.** Copying this computer's Kiro sign-in to the home (§6.8 rule 5):
   does a copied refresh token survive two machines refreshing it, for Builder
   ID, social and Identity Center sign-ins? And do Kiro's terms allow one
@@ -1106,9 +1412,6 @@ with one-step promotion) belong beside it.
   click (the page opens with the code prefilled). The copy stays a later spike,
   because a rotating refresh token shared by two machines risks signing the
   local kiro-cli out.
-- **Q12.** The first-week notes (§5.8): one a day for seven days, or fewer?
-  *Prototype answer:* one a day, at most six (one per unset thing), and they
-  cost no quota, because each is a fixed notice rather than a model turn.
 
 ## Appendix A: Muse, condensed, with the security mapping
 

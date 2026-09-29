@@ -211,7 +211,7 @@ list in registration order, so the commands a new install needs — `gateway`,
 | `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D) |
 | `kirocrew chat --model X` | Override model for this session |
 | `kirocrew gateway` | Start the Kiro Crew server (dashboard + messaging channels) |
-| `kirocrew start [--port N] [--no-browser] [--foreground] [--no-input] [--skip-harness-check] [--home here\|cloud\|later]` | Check the agent harness, reuse or start a gateway (detached, or in this terminal with `--foreground`), and open the first-run chat in the browser — see [Start Command](#start-command). |
+| `kirocrew start [--port N] [--no-browser] [--foreground] [--no-input] [--skip-harness-check] [--home here\|cloud\|later] [--aws-region R] [--aws-profile P]` | Check the agent harness, reuse or start a gateway (detached, or in this terminal with `--foreground`), and open the first-run chat in the browser — see [Start Command](#start-command). |
 | `kirocrew gateway --slack-only` | Start without dashboard or SSH tunnel instructions |
 | `kirocrew gateway --no-crons` | Start without cron scheduler (use when another instance handles crons) |
 | `kirocrew gateway --no-tunnel` | Never publish a tunnel: refuses to start or provision one for the life of the process, whatever `tunnel.enabled` says. SCOPED TO TUNNELS — it does not change where the dashboard binds, so a config that widens `dashboard.url` off loopback still does, with token auth as the control there; do not read `publish_disabled()` as "no published surface of any kind". Reach the instance on the loopback port it binds (`ssh -L` from another host). A Dev Fleet pod boots with this whenever its own checkout declares the flag — the pod's argv is built by the control plane but executed by the target worktree's gateway, so `pod.runtime.target_supports_flag` probes that checkout first and DROPS the flag when it is absent (passing it would make argparse exit 2, which the unit's `Restart=on-failure`/`RestartSec=5` turns into a 5s restart loop). Such a checkout keeps the tunnel behaviour it had before this flag existed and is not given the guarantee — see `security.md` for why no config-side substitute is applied. |
@@ -992,7 +992,7 @@ keeps running the install the user typed, not a worktree someone made live.
 | `KIROCREW_WORKSPACE` | Override workspace root directory |
 
 For local dev:
-- **macOS/Linux**: `bin/kirocrew` (POSIX shell wrapper); `source setup.sh` adds `bin/` to PATH
+- **macOS/Linux**: `bin/kirocrew` (POSIX shell wrapper); `setup.sh` instead links `~/.local/bin/kirocrew` to its `.venv` and puts `~/.local/bin` on PATH (see [Setup Scripts](#setup-scripts-first-time-bootstrap))
 
 The wrapper sets `KIROCREW_PROJECT_DIR` and routes to the right runtime based on install type:
 
@@ -1001,22 +1001,55 @@ The wrapper sets `KIROCREW_PROJECT_DIR` and routes to the right runtime based on
 
 ## Setup Scripts (First-Time Bootstrap)
 
-`setup.sh` (macOS/Linux) auto-installs all dependencies from scratch using public tooling only.
+`setup.sh` (macOS/Linux) is the one-command install from source: it asks nothing
+and ends in the first-run chat, the from-source counterpart of `start.sh`
+([rfc-one-chat-first-run](../../request-for-change/rfc-one-chat-first-run.md)
+§6.1). It runs sourced (bash or zsh) or executed, and straight from GitHub:
 
-> **Note:** Windows is not supported.
+```bash
+curl -fsSL https://raw.githubusercontent.com/kirodotdev/KiroCrew/<branch>/setup.sh | bash
+bash setup.sh [--no-start] [--with-extras] [--branch NAME] [--demo ...]
+```
 
-**Install order:**
-1. Node.js (via `ensure-node.sh`)
-2. Optional tools (git-lfs, ffmpeg for voice)
-3. kiro-cli (`npm i -g`)
-4. kiro-cli login (guided authentication)
-5. Frontend build (`npm install && npm run build`)
-6. Backend build (`pip install -e .`)
-7. PATH setup + shell profile persistence
-8. `kirocrew setup --agent-only` (install kiro-cli agent config)
-9. Optional Slack credential configuration (`kirocrew setup --slack`)
+> **Note:** Windows is not supported; `start.ps1` and `make.ps1` are the Windows
+> paths.
 
-Each step checks if the tool is already installed and skips if present.
+**Steps, in order:**
+
+0. **Source.** With no checkout around the file (piped from `curl`, where the
+   current folder is never taken for one), it fetches `--branch` (default: the
+   branch the file ships on, `KIROCREW_BRANCH`) into
+   `${KIROCREW_SOURCE_DIR:-~/.local/share/kirocrew/source}` with a shallow clone,
+   or updates that clone, and runs the `setup.sh` inside it. From GitHub the
+   optional tools are skipped unless `--with-extras` is passed.
+1. **Python** 3.12+, provisioned through `ensure-python.sh` only when `mise` is
+   already installed; otherwise it stops with the install link.
+2. **Dependencies.** Node through `ensure-node.sh`; git-lfs and ffmpeg (for
+   voice) unless skipped.
+3. **Agent backends.** The optional Claude ACP adapter unless skipped. kiro-cli
+   is reported, never installed; `kirocrew start` runs its sign-in.
+4. **Build.** The frontend (`npm ci`, `npm run build`, staged into
+   `src/kiro_crew/static/dist`) and the backend (`pip install --prefer-binary -e .`
+   into `.venv`, under a umask that keeps the venv non-group-writable; on macOS
+   the wheels' native libraries are re-signed ad hoc), each behind a spinner
+   with its log in `$TMPDIR`. `kirocrew` is linked into `~/.local/bin`.
+5. **PATH.** One `export PATH="$HOME/.local/bin:$PATH"` line, under a
+   `# KiroCrew` comment, appended to the running shell's rc file only when
+   `~/.local/bin` is not already on the PATH that shell started with. No other rc
+   line is touched.
+6. **Agent config.** `kirocrew setup --agent-only`.
+7. **Start.** Unless `--no-start`: a plain gateway already serving this crew's
+   port is stopped with `kirocrew stop --port N`, so the new build runs; an
+   installed service is never touched. Then `kirocrew start`, with stdin from
+   `/dev/tty` when one can be opened (under `curl | bash` stdin is the script),
+   so kiro-cli's own sign-in can run.
+
+`--demo` runs `scripts/demo-first-run.sh` instead: a throwaway crew in one
+temporary folder (`$TMPDIR/kirocrew-demo`, or `KIROCREW_DEMO_DIR`) on a free
+port, with the cloud home simulated (`KIROCREW_CLOUD_SIMULATE=1`; `--real-aws`
+builds a real one), a sample agent to import, and the user's own MCP servers
+switched off. `--stop` ends the last demo and removes its files. Neither touches
+the user's own crew or gateway.
 
 ## Doctor Checks
 
@@ -1401,11 +1434,14 @@ an open chat — the installer half of the one-chat first run
 ([rfc-one-chat-first-run](../../request-for-change/rfc-one-chat-first-run.md)
 §5.1). `start.sh` at the repo root execs it after installing; a user who already
 has the CLI runs it directly. It asks nothing: where the crew lives and every
-other choice are asked in the first-run chat. `--home here|cloud|later` lets a
-script answer ahead of time on a fresh install (`first_run.record_home_choice`;
-`cloud` puts the home card on screen, with `--aws-region`, or the profile's own
-region, and `--aws-profile`); no AWS call is made here. It takes four steps, in
-order:
+other choice are asked in the first-run chat, where the gateway shows the home
+step card right after privacy ([first-run](first-run.md#the-home-step)).
+`--home here|cloud|later` lets a script answer ahead of time on a fresh install
+(`first_run.record_home_choice`): `cloud` shows the home card without the step
+framing, with `--aws-region`, or the profile's own region, and `--aws-profile`,
+and records no fallback region; `here` and `later` show no home card. An install
+that can no longer get a first run prints that the flag applies to a first run
+only. No AWS call is made here. It takes four steps, in order:
 
 1. **Port.** `resolve_client_port(--port)`, the same resolution `token` and
    `stop` use.
@@ -1458,10 +1494,11 @@ order:
 4. **Landing URL and browser.** The session is minted the way `kirocrew token`
    mints it (`run_preflight_checks`, the per-port local secret, `GET
    /api/token/local` on `127.0.0.1` with `X-Local-Secret`, TTL `20h`). The path
-   is `/chat?sid=<slot>` when `first_run.read_first_run_slot()` names a slot —
-   polled for up to 10 s while the install can still get one (neither
-   `dashboard.onboarded` nor `privacy_acked`), read once otherwise — and `/`
-   when it does not. The state file is agent-writable, so a slot key outside
+   is `/chat?sid=<slot>` for the main chat when `first_run.read_main_slot()`
+   names one, else for the first-run chat when `first_run.read_first_run_slot()`
+   names a slot — polled for up to 10 s while the install can still get one
+   (neither `dashboard.onboarded` nor `privacy_acked`), read once otherwise —
+   and `/` when neither does. The state file is agent-writable, so a slot key outside
    `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}` is ignored and the key is URL-encoded
    either way. The token goes on as the `token` query value
    (`cli_server._session_url`), as the desktop shell's `dashboardEntryUrl` sets

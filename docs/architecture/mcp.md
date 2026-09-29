@@ -1373,7 +1373,13 @@ answers `tools/list` from):
 - **Session-bound directives** (`session_directive.DIRECTIVE_TOOLS`):
   `ask_question`, `suggest_followup`, `monitor_start`, `monitor_watch`,
   `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`,
-  `reset_conversation`, `chat_tag`
+  `reset_conversation`, `chat_tag`, `setup_card`
+- **Setup:** `setup_card` (above) proposes a setup card the owner commits by
+  clicking, and `setup_status` reads the calling session's cards and the
+  first-run stages, read-only. `setup_card`'s kind enum, argument properties
+  and description are generated from the `setup_actions` registry. Cards are a
+  dashboard surface, so neither has a CLI twin; each underlying action has its
+  own command. Contract: [first-run](../system-specs/modules/first-run.md)
 - **Memory recall (V1 and V2):** `memory_recall` resolves authenticated session identity
   once through `require_strict_session_key` and passes that same identity to the gateway.
   Missing identity returns the shared gate's refusal and installation diagnosis.

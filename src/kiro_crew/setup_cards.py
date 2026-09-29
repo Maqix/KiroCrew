@@ -651,7 +651,8 @@ def build_channel(args: dict[str, Any]) -> dict[str, Any]:
     return {"channel": channel, "label": CHANNELS[channel]}
 
 
-#: The home size offered by default: the cheapest tier the launch engine runs.
+#: The size a home card carries when it offers no size options (its single size);
+#: which sizes are offered, and which is preselected, is ``HOME_PLAN_SIZES``.
 HOME_DEFAULT_SIZE = "light"
 #: What a home card says about each size it can offer: a plain label, and a note
 #: code for what the size runs well (the dashboard words each code).

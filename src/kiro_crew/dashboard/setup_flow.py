@@ -1687,7 +1687,6 @@ async def graduate(state: "DashboardState", slot_key: str) -> bool:
     await _set_explicit_title(state, slot, name or MAIN_CHAT_FALLBACK_TITLE)
     slot.pinned = True
     await asyncio.to_thread(record_main, slot_key)
-    await asyncio.to_thread(mark_stage, "main")
     slot.append(
         "assistant",
         f"Setup is done. This is your main chat{f' with {name}' if name else ''}: start "

@@ -1,7 +1,7 @@
 """What this machine's AWS CLI already knows: its sign-in and its default region.
 
-The first-run chat offers a home in the cloud only when the AWS CLI here is
-signed in, and names the region the profile uses. Both answers come from the
+The first-run chat's home step reads the sign-in to name the account, and the
+region the profile uses to price and build the home. Both answers come from the
 AWS CLI itself: one read-only ``sts get-caller-identity`` call, and the
 ``region`` line of ``~/.aws/config``. Kiro Crew never reads the credentials file
 and never sees a credential; it keeps only the account id and the caller's ARN

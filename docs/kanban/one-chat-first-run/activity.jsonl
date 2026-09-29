@@ -340,3 +340,12 @@
 {"timestamp":"2026-09-29T01:39:31.758282215Z","action":"move","task_id":113,"detail":"in-progress -\u003e review"}
 {"timestamp":"2026-09-29T01:39:31.760113094Z","action":"handoff","task_id":113,"detail":"P2.20 Setup actions as a registry: one module per action, a parity test"}
 {"timestamp":"2026-09-29T01:42:13.382246452Z","action":"edit","task_id":113,"detail":"P2.20 Setup actions as a registry: one module per action, a parity test"}
+{"timestamp":"2026-09-29T02:24:13.342717106Z","action":"create","task_id":114,"detail":"D7 Narrated end-to-end product demo of the first run"}
+{"timestamp":"2026-09-29T02:30:45.451601047Z","action":"create","task_id":115,"detail":"DOC.1 Reconcile docs and RFC rev 4"}
+{"timestamp":"2026-09-29T03:00:09.025825832Z","action":"create","task_id":116,"detail":"D7 Narrated end-to-end product demo (female voice)"}
+{"timestamp":"2026-09-29T03:01:24.882002987Z","action":"edit","task_id":115,"detail":"DOC.1 Reconcile docs and RFC rev 4"}
+{"timestamp":"2026-09-29T03:04:53.800268601Z","action":"create","task_id":117,"detail":"PN.22 Resume a home build after a gateway restart"}
+{"timestamp":"2026-09-29T03:04:53.833197858Z","action":"create","task_id":118,"detail":"REL.1 Point setup.sh and the demo script at main when the branch merges"}
+{"timestamp":"2026-09-29T03:04:53.869208256Z","action":"create","task_id":119,"detail":"PN.23 A home launched from a packaged install ships a prebuilt dashboard too"}
+{"timestamp":"2026-09-29T03:05:31.935040604Z","action":"edit","task_id":117,"detail":"PN.22 Resume a home build after a gateway restart"}
+{"timestamp":"2026-09-29T03:05:31.935338285Z","action":"claim","task_id":117,"detail":"aws-signin-card"}

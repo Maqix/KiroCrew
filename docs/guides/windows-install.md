@@ -32,7 +32,8 @@ decision. It then installs silently for the current user (`/S /currentuser`, no
 elevation) and runs the app's bundled CLI as `kirocrew start`, pointed at the
 kiro-cli the app bundles (as the app itself is), which checks the agent harness,
 starts the gateway in the background and opens the first-run chat in your
-browser. It asks nothing; every choice after that is made in the chat.
+browser. It asks nothing; every choice after that is made in the chat, as the
+[install guide's first run](install.md#first-run) describes.
 
 Flags need the script-block form, because `iex` passes no arguments:
 
@@ -59,10 +60,15 @@ downloads and reinstalls the app each time; add `-SkipInstall` to go straight to
 
 Two limits worth knowing:
 
-- **The harness is found as on any other platform.** The bundled CLI runs outside
-  the app, so `kirocrew start` uses a kiro-cli installed on this machine (for
-  example under `%LOCALAPPDATA%\Kiro-Cli`), not the copy bundled inside the app.
-  When there is none, it prints the official install link and exits 3.
+- **The harness is the app's own copy only when it answers.** When the CLI it
+  runs is a desktop install's bundled one, `start.ps1` points `kirocrew start` at
+  the kiro-cli bundled beside it (`KIROCREW_BUNDLED_KIRO_DIR`, with
+  `KIRO_NO_AUTO_UPDATE=1`), exactly as the app's own launcher does, and only
+  after that `kiro-cli.exe` answers `--version` within ten seconds. Otherwise,
+  and with `-SkipInstall` on a `kirocrew` from `PATH`, the harness is found as on
+  any other platform: a kiro-cli installed on this machine (for example under
+  `%LOCALAPPDATA%\Kiro-Cli`), or, when there is none, the official install link
+  and exit code 3. An operator's `KIROCREW_KIRO_BIN` still ranks first.
 - **A signature that cannot be checked is refused.** On a machine that cannot
   reach certificate revocation (offline, or a proxy that blocks it), Windows
   reports `UnknownError` rather than `Valid`, and the script stops. Download the

@@ -3993,11 +3993,11 @@ exceeds 85% of available cores.
 ## Live chat cap (`session.max_live_sessions`)
 
 A live chat is a kiro-cli child plus the MCP servers its spec starts, measured
-at ~0.39 GB on a small cloud home, and the idle sweep is the only thing that
-retires one. So the number of chats holding a process was unbounded inside the
-timeout, and a 2 GB home (cloud.md, Lite) ran out of memory with three or four
-open. Sub-agents already had a memory-sized cap (`compute_max_subagents`); this
-is the same kind of cap for chats.
+at ~0.39 GB on a small cloud home, and besides this cap the idle sweep is the
+only thing that retires one. Without a count bound, a 2 GB home (cloud.md, Lite)
+runs out of memory with three or four chats open. Sub-agents have a
+memory-sized cap (`compute_max_subagents`); this is the same kind of cap for
+chats.
 
 **The cap.** `session.max_live_sessions`, default `0` = auto; a positive value
 is the cap as written (loader clamps to `[0, MAX_LIVE_SESSIONS_MAX]`). Auto is
@@ -4005,8 +4005,8 @@ is the cap as written (loader clamps to `[0, MAX_LIVE_SESSIONS_MAX]`). Auto is
 400 MiB per chat`, clamped to `[2, 64]`, where the reserve is the OS, the gateway
 with its embedding runtime and the background runtime. That gives 2 on a 2 GB
 home, 5 on 4 GB, 15 on 8 GB, about 35 on a 16 GB laptop and 64 from 32 GB up, so
-a normal laptop keeps today's behaviour. An unreadable total answers the
-ceiling. It is sized from TOTAL memory, not the available-memory reading the
+a normal laptop keeps every chat it realistically opens. An unreadable total
+answers the ceiling. It is sized from TOTAL memory, not the available-memory reading the
 sub-agent cap uses: that one sizes a burst against what is free when it is
 resolved, while this count holds for the gateway's life, and a snapshot of
 available memory has the live chats already subtracted and, on a laptop,
