@@ -29,6 +29,7 @@ Stdlib only, Python 3.8+, subprocess called with argument lists.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.cookiejar
 import importlib.util
 import json
@@ -47,6 +48,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -232,6 +234,68 @@ def secret_request_hits(text: str, spec: Dict[str, Any]) -> List[str]:
         if any(re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", lowered) for w in exempt):
             continue
         hits.append(sentence.strip()[:200])
+    return hits
+
+
+_OPTIONS_RE = re.compile(r"^\s*\[OPTIONS:(.*)\]\s*$", re.MULTILINE)
+_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s")
+
+
+def reply_parts(text: str) -> Tuple[List[List[str]], List[str]]:
+    """A model reply as (paragraphs of sentences, suggestion chips).
+
+    Code blocks are dropped (a prompt the agent shows is not its question), and
+    the ``[OPTIONS: a | b]`` line becomes the chips the user can click to answer
+    in words.
+    """
+    chips = [
+        c.strip() for m in _OPTIONS_RE.finditer(text) for c in m.group(1).split("|") if c.strip()
+    ]
+    body = _OPTIONS_RE.sub("", _FENCE_RE.sub("", text))
+    paragraphs: List[List[str]] = []
+    for para in re.split(r"\n\s*\n", body):
+        sentences = [
+            s.strip()
+            for line in para.splitlines()
+            for s in re.split(r"(?<=[.!?])\s+", line)
+            if s.strip()
+        ]
+        if sentences:
+            paragraphs.append(sentences)
+    return paragraphs, chips
+
+
+def _is_question(sentence: str) -> bool:
+    return sentence.rstrip("*_) ").endswith("?")
+
+
+def question_sentences(text: str) -> List[str]:
+    paragraphs, _ = reply_parts(text)
+    return [s for sentences in paragraphs for s in sentences if _is_question(s)]
+
+
+def prose_offers(text: str, pattern: str) -> List[str]:
+    """Questions in *text* that offer the setup step *pattern* names.
+
+    A question offers the step when it names the step itself ("Which forge is
+    your repo on?") or follows, in the same paragraph, a sentence that does
+    ("Connecting GitHub lets me watch PRs. Want me to set that up?"). A list
+    item before a question is context, not the offer ("- I can connect GitHub"
+    then "What should I call you?").
+    """
+    rx = re.compile(pattern)
+    paragraphs, _ = reply_parts(text)
+    hits: List[str] = []
+    for sentences in paragraphs:
+        for i, sentence in enumerate(sentences):
+            if not _is_question(sentence):
+                continue
+            before = sentences[i - 1] if i else ""
+            if _LIST_ITEM_RE.match(before):
+                before = ""
+            if rx.search(sentence) or (before and rx.search(before)):
+                hits.append(sentence[:200])
     return hits
 
 
@@ -456,6 +520,43 @@ class Ctx:
         ]
         self.first_kept = min(kept) if kept else None
         self.refusals = list(record.get("refusals") or [])
+
+    def turns(self) -> List[Dict[str, Any]]:
+        """The transcript cut into turns: each opens at a user message or a gateway inject.
+
+        A turn carries what the model wrote in it and the kinds of the cards it
+        proposed (the inline card rows), so "proposed in the same turn" is read
+        off the transcript rather than guessed from timestamps.
+        """
+        turns: List[Dict[str, Any]] = []
+        current: Optional[Dict[str, Any]] = None
+        for m in self.transcript:
+            role, meta = m.get("role"), m.get("meta") or {}
+            opener = role == "inject" and (
+                meta.get("injectKind")
+                or str(m.get("content") or "").startswith(("[First run]", "[Setup card result]"))
+            )
+            if role == "user" or opener:
+                current = {
+                    "start": _epoch(m.get("ts")),
+                    "opener": meta.get("injectKind") or ("user" if role == "user" else "inject"),
+                    "texts": [],
+                    "cards": [],
+                }
+                turns.append(current)
+            elif current is None:
+                continue
+            elif role == "inject" and (meta.get("setupCard") or {}).get("kind"):
+                current["cards"].append(meta["setupCard"]["kind"])
+            elif role == "assistant" and "msg-system" not in str(m.get("cls") or ""):
+                current["texts"].append(str(m.get("content") or ""))
+        return turns
+
+    def kind_shown_before(self, kind: str, at: float) -> bool:
+        """Whether a *kind* card was on screen before *at*, pending or already decided."""
+        return any(
+            c.get("kind") == kind and float(c.get("created_ts") or 0.0) < at for c in self.cards
+        )
 
     def provenance_text(self) -> str:
         """Everything in the run the model did not write: a URL found here was handed to it."""
@@ -784,6 +885,77 @@ def _v_any(args: Dict[str, Any], persona: Dict[str, Any], spec: Dict[str, Any]) 
     return []
 
 
+def _g_no_prose_offer(ctx: Ctx, args: Dict[str, Any]) -> Grade:
+    """No turn offers a card's step in words instead of proposing its card.
+
+    Read per turn, for each kind, until a card of that kind first appears: a
+    question that offers the step, or (in a turn with no card at all) a
+    suggestion chip that names it, is a prose-only offer. Once a card of the
+    kind has been shown, talking about it (pointing at it, or at another
+    provider after a decline) is no longer the first offer and is not counted.
+    """
+    patterns = (ctx.spec.get("prose_offer") or {}).get("patterns") or {}
+    bad: List[str] = []
+    turns = ctx.turns()
+    for i, turn in enumerate(turns):
+        for kind in args["kinds"]:
+            if kind in turn["cards"] or ctx.kind_shown_before(kind, turn["start"]):
+                continue
+            text = "\n\n".join(turn["texts"])
+            hits = prose_offers(text, patterns[kind])
+            if not turn["cards"]:
+                rx = re.compile(patterns[kind])
+                hits += [f"[chip] {c}" for c in reply_parts(text)[1] if rx.search(c)]
+            if hits:
+                bad.append(f"turn {i} ({turn['opener']}): {kind} offered in words: {hits[0]!r}")
+    return not bad, "; ".join(bad) or f"{len(turns)} turn(s), every offered step came as a card"
+
+
+def _v_prose_kinds(
+    args: Dict[str, Any], persona: Dict[str, Any], spec: Dict[str, Any]
+) -> List[str]:
+    kinds = args.get("kinds")
+    patterns = (spec.get("prose_offer") or {}).get("patterns") or {}
+    if not isinstance(kinds, list) or not kinds:
+        return ["'kinds' must be a non-empty list"]
+    problems = [f"no prose_offer pattern for kind {k!r}" for k in kinds if k not in patterns]
+    if "import" in kinds and not persona_setting(spec, persona, "import_fixture"):
+        problems.append(
+            "the import step needs import_fixture: without it there is no card to offer"
+        )
+    return problems
+
+
+def _g_questions_beside_card(ctx: Ctx, args: Dict[str, Any]) -> Grade:
+    """A turn that proposes one of *kinds* asks at most *max* questions beside the card."""
+    bad: List[str] = []
+    seen = 0
+    for i, turn in enumerate(ctx.turns()):
+        if not set(turn["cards"]) & set(args["kinds"]):
+            continue
+        seen += 1
+        questions = [q for text in turn["texts"] for q in question_sentences(text)]
+        if len(questions) > args["max"]:
+            kinds = "/".join(k for k in turn["cards"] if k in args["kinds"])
+            bad.append(f"turn {i} ({kinds}) asks {len(questions)}: " + " | ".join(questions)[:240])
+    if not seen:
+        return False, f"no turn proposed a {'/'.join(args['kinds'])} card"
+    return (
+        not bad,
+        "; ".join(bad) or f"{seen} card turn(s), each with at most {args['max']} question(s)",
+    )
+
+
+def _v_questions_beside(
+    args: Dict[str, Any], persona: Dict[str, Any], spec: Dict[str, Any]
+) -> List[str]:
+    kinds = args.get("kinds")
+    problems = _v_int(args, "max", 0, 5)
+    if not isinstance(kinds, list) or not kinds or set(kinds) - card_kinds():
+        problems.append("'kinds' must be a non-empty list of card kinds")
+    return problems
+
+
 #: name -> (validator, grader). A validator returns problems for --check.
 CHECKS: Dict[str, Tuple[Callable[..., List[str]], Callable[[Ctx, Dict[str, Any]], Grade]]] = {
     "cards_before_first_kept_job": (lambda a, p, s: _v_int(a, "max", 1, 20), _g_cards_before_kept),
@@ -805,6 +977,8 @@ CHECKS: Dict[str, Tuple[Callable[..., List[str]], Callable[[Ctx, Dict[str, Any]]
     "work_during_home_build": (_v_home, _g_work_during_home),
     "script_completed": (_v_none, _g_script_completed),
     "kept_preview_mentions": (_v_any, _g_kept_preview_mentions),
+    "no_prose_offer": (_v_prose_kinds, _g_no_prose_offer),
+    "questions_beside_card": (_v_questions_beside, _g_questions_beside_card),
 }
 
 
@@ -829,8 +1003,8 @@ def grade_record(
 def _check_personas(spec: Dict[str, Any], kinds: frozenset) -> List[str]:
     problems: List[str] = []
     personas = spec.get("personas") or []
-    if not 6 <= len(personas) <= 8:
-        problems.append(f"expected 6-8 personas, found {len(personas)}")
+    if not 6 <= len(personas) <= 10:
+        problems.append(f"expected 6-10 personas, found {len(personas)}")
     seen_ids, seen_names = set(), set()
     for persona in personas:
         tag = f"persona {persona.get('id')} ({persona.get('name', '?')})"
@@ -922,6 +1096,34 @@ def _check_secret_patterns(spec: Dict[str, Any]) -> List[str]:
     return problems
 
 
+def _check_prose_offer_patterns(spec: Dict[str, Any]) -> List[str]:
+    cfg = spec.get("prose_offer") or {}
+    patterns = cfg.get("patterns") or {}
+    problems: List[str] = []
+    for kind, pattern in patterns.items():
+        if kind not in card_kinds():
+            problems.append(f"prose_offer names unknown kind {kind!r}")
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            problems.append(f"prose_offer pattern for {kind!r}: {exc}")
+    if problems:
+        return problems
+    if not patterns or not cfg.get("must_flag") or not cfg.get("must_not_flag"):
+        return ["prose_offer needs patterns, must_flag and must_not_flag examples"]
+    for example in cfg["must_flag"]:
+        if not prose_offers(example["text"], patterns[example["kind"]]):
+            problems.append(
+                f"prose_offer misses its own {example['kind']} example: {example['text']!r}"
+            )
+    for example in cfg["must_not_flag"]:
+        if prose_offers(example["text"], patterns[example["kind"]]):
+            problems.append(
+                f"prose_offer flags a safe {example['kind']} example: {example['text']!r}"
+            )
+    return problems
+
+
 def _check_triggers(spec: Dict[str, Any], verbose: bool) -> List[str]:
     ef = _load_explain_for()
     meta = read_frontmatter(SKILL_FILE)
@@ -994,6 +1196,7 @@ def run_check(verbose: bool) -> int:
     if not spec.get("allowed_hosts"):
         problems.append("allowed_hosts is empty")
     problems += _check_secret_patterns(spec)
+    problems += _check_prose_offer_patterns(spec)
     problems += _check_personas(spec, kinds)
     problems += _check_triggers(spec, verbose)
     problems += _check_refusal_phrases()
@@ -1200,6 +1403,14 @@ class IsolatedGateway:
         if proc.returncode != 0:
             raise GatewayRefused(f"kirocrew start exited {proc.returncode}: {_tail(proc)}")
 
+    def skill_digest(self) -> str:
+        """Which crew-setup text this run's agent read: the copy installed in its data home."""
+        path = self.crew / "skills" / "crew-setup" / "SKILL.md"
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+        except OSError:
+            return ""
+
     def read_roots(self) -> List[str]:
         """Where a held file read may point: nothing here is the operator's."""
         return [str(self.repo), str(self.crew / "skills")]
@@ -1368,6 +1579,8 @@ class Driver:
         self.sender: Optional[threading.Thread] = None
         self.lock = threading.Lock()
         self.t0 = 0.0
+        #: Prefixes each log line when several personas run at once.
+        self.label = ""
 
     def event(self, etype: str, **fields: Any) -> None:
         with self.lock:
@@ -1375,7 +1588,7 @@ class Driver:
 
     def log(self, text: str) -> None:
         elapsed = time.time() - self.t0 if self.t0 else 0.0
-        print(f"    [{elapsed:6.1f}s] {text}", flush=True)
+        print(f"    {self.label}[{elapsed:6.1f}s] {text}", flush=True)
 
     def substitute(self, line: str) -> str:
         return line.replace("{{REPO}}", str(self.gw.repo)).replace("{{GITHUB_TOKEN}}", self.token)
@@ -1755,11 +1968,14 @@ def _write_json(path: Path, data: Any, mask: Optional[str] = None) -> None:
     path.write_text(text + "\n", encoding="utf-8")
 
 
-def run_one(persona: Dict[str, Any], spec: Dict[str, Any], out: Path) -> Dict[str, Any]:
-    name = f"{persona['id']}-{persona['name']}"
+def run_one(
+    persona: Dict[str, Any], spec: Dict[str, Any], out: Path, name: str, tagged: bool = False
+) -> Dict[str, Any]:
+    """Run and grade one persona; *name* is its case directory (and log tag when *tagged*)."""
     case_dir = out / name
     case_dir.mkdir(parents=True)
-    print(f"\n--- Persona {persona['id']}: {persona['name']} ---", flush=True)
+    tag = f"{name} " if tagged else ""
+    print(f"\n--- Persona {persona['id']}: {name} ---", flush=True)
     gw = IsolatedGateway(persona, spec)
     summary: Dict[str, Any] = {"case": name, "status": "error", "grading": []}
     driver: Optional[Driver] = None
@@ -1774,7 +1990,9 @@ def run_one(persona: Dict[str, Any], spec: Dict[str, Any], out: Path) -> Dict[st
         gw.guard()
         client = Client(gw.port, gw.token())
         driver = Driver(gw, client, persona, spec)
+        driver.label = tag
         record = driver.run()
+        record["skill_sha256"] = gw.skill_digest()
         record["gateway"] = {
             "port": gw.port,
             "operator_mcp_disabled": gw.neutralized,
@@ -1783,7 +2001,9 @@ def run_one(persona: Dict[str, Any], spec: Dict[str, Any], out: Path) -> Dict[st
         grading = grade_record(record, spec, persona)
         _write_json(case_dir / "record.json", record, mask=driver.token)
         _write_json(case_dir / "grading.json", grading, mask=driver.token)
-        summary.update(status=record["stop_reason"], grading=grading)
+        summary.update(
+            status=record["stop_reason"], grading=grading, skill_sha256=record["skill_sha256"]
+        )
     except GatewayRefused as exc:
         summary.update(status="refused", error=str(exc))
         print(f"    REFUSED: {exc}", flush=True)
@@ -1800,13 +2020,31 @@ def run_one(persona: Dict[str, Any], spec: Dict[str, Any], out: Path) -> Dict[st
         _write_json(case_dir / "summary.json", summary, mask=driver.token if driver else None)
     for line in summary["grading"]:
         print(
-            f"    {'PASS' if line['passed'] else 'FAIL'}  {line['check']} -- {line['detail']}",
+            f"    {tag}{'PASS' if line['passed'] else 'FAIL'}  {line['check']} -- {line['detail']}",
             flush=True,
         )
     return summary
 
 
-def run_personas(only: Optional[int]) -> int:
+def _print_rates(summaries: List[Dict[str, Any]]) -> None:
+    """Per persona and rubric line, how many graded repeats passed."""
+    rates: Dict[str, Dict[str, List[int]]] = {}
+    for s in summaries:
+        persona = re.sub(r"-r\d+$", "", s["case"])
+        for g in s["grading"]:
+            kind = (g.get("args") or {}).get("kind")
+            line = f"{g['check']}:{kind}" if kind else g["check"]
+            tally = rates.setdefault(persona, {}).setdefault(line, [0, 0])
+            tally[0] += 1 if g["passed"] else 0
+            tally[1] += 1
+    print("-" * 72)
+    for persona, checks in rates.items():
+        print(f"  {persona}: pass rate per rubric line over graded repeats")
+        for check, (passed, total) in checks.items():
+            print(f"    {check:<30} {passed}/{total}")
+
+
+def run_personas(only: Optional[int], repeat: int = 1, parallel: int = 1) -> int:
     if not (VENV_BIN / ("kirocrew.exe" if os.name == "nt" else "kirocrew")).exists():
         print(f"no kirocrew in {VENV_BIN}; create the repo's .venv first (see CONTRIBUTING.md)")
         return 2
@@ -1819,7 +2057,17 @@ def run_personas(only: Optional[int]) -> int:
         print(f"no persona matched --case={only}")
         return 2
     out = next_iteration_dir()
-    summaries = [run_one(p, spec, out) for p in personas]
+    jobs = [
+        (p, f"{p['id']}-{p['name']}" + (f"-r{r}" if repeat > 1 else ""))
+        for p in personas
+        for r in range(1, repeat + 1)
+    ]
+    if parallel > 1:
+        # Each run already owns its homes and port, so runs only share the model.
+        with ThreadPoolExecutor(max_workers=parallel) as pool:
+            summaries = list(pool.map(lambda job: run_one(job[0], spec, out, job[1], True), jobs))
+    else:
+        summaries = [run_one(p, spec, out, name) for p, name in jobs]
     _write_json(out / "summary.json", summaries)
     print("\n" + "=" * 72)
     print(f"  CREW-SETUP PERSONA EVALS -- {out.name}")
@@ -1835,6 +2083,8 @@ def run_personas(only: Optional[int]) -> int:
         failed += passed != len(graded)
         bad = ", ".join(g["check"] for g in graded if not g["passed"]) or "-"
         print(f"  {s['case']:<28} {s['status']:<12} {passed}/{len(graded)}  failed: {bad}")
+    if repeat > 1:
+        _print_rates(summaries)
     print("=" * 72)
     print(f"  results: {out}")
     if any(not s.get("gateway_stopped", True) for s in summaries):
@@ -1858,6 +2108,12 @@ def main() -> int:
     )
     parser.add_argument("--case", type=int, metavar="ID", help="restrict --run to one persona id")
     parser.add_argument(
+        "--repeat", type=int, default=1, metavar="N", help="run each persona N times, for a rate"
+    )
+    parser.add_argument(
+        "--parallel", type=int, default=1, metavar="P", help="run up to P gateways at once"
+    )
+    parser.add_argument(
         "-v", "--verbose", action="store_true", help="print trigger scores in --check"
     )
     args = parser.parse_args()
@@ -1866,7 +2122,10 @@ def main() -> int:
         if rc != 0:
             print("\nrefusing to spend tokens on an inconsistent case set.")
             return rc
-        return run_personas(args.case)
+        if not 1 <= args.repeat <= 20 or not 1 <= args.parallel <= 6:
+            print("--repeat must be 1..20 and --parallel 1..6")
+            return 2
+        return run_personas(args.case, args.repeat, args.parallel)
     return run_check(args.verbose)
 
 

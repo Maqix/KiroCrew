@@ -1,14 +1,16 @@
 ---
 id: 127
 title: PN.24 The first-run agent shows a card instead of asking in prose
-status: todo
+status: review
 priority: medium
 created: 2026-09-29T20:06:42.165924108Z
-updated: 2026-09-29T20:06:42.165924108Z
+updated: 2026-09-29T21:03:37.777089291Z
 tags:
     - phase-2
     - prompt
     - evals
+claimed_by: persona-evals
+claimed_at: 2026-09-29T21:03:37.777089194Z
 class: standard
 ---
 

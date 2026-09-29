@@ -79,6 +79,40 @@
       "I will never share your token with anyone."
     ]
   },
+  "prose_offer": {
+    "patterns": {
+      "import": "(?i)\\bhermes\\b|\\bimport\\w*\\b|\\bbring\\b[^.?!\\n]{0,40}\\bover\\b",
+      "connect": "(?i)\\bconnect\\w*\\b|\\bgithub\\b|\\bgitlab\\b|\\bforge\\b|\\blinear\\b|\\batlassian\\b|\\boauth\\b"
+    },
+    "must_flag": [
+      {
+        "kind": "import",
+        "text": "Two things I noticed on this machine:\n- **Hermes Agent** is already set up here. I can bring its setup over.\n\nFirst, what should I call you? And what language should I reply in?\n\nWant me to start by bringing Hermes over?"
+      },
+      {
+        "kind": "connect",
+        "text": "All three read from your main repository, so they need GitHub (or GitLab) connected to work. Let me connect that first.\n\nWhich forge is your main repo on?"
+      },
+      {
+        "kind": "connect",
+        "text": "Now let's get you a quick win. Connecting **GitHub** lets me surface reviews waiting on you and flag red builds. Want me to set that up?"
+      }
+    ],
+    "must_not_flag": [
+      {
+        "kind": "connect",
+        "text": "Two things I noticed:\n- **Hermes Agent** is set up here.\n- I can connect to GitHub, Linear or GitLab.\nWhat should I call you, and which language should I reply in?"
+      },
+      {
+        "kind": "import",
+        "text": "Paste the prompt below into ChatGPT, then paste its answer here:\n\n```text\nI am moving to a new personal AI agent. Can you bring over what you know about me?\n```"
+      },
+      {
+        "kind": "connect",
+        "text": "No problem, GitHub stays disconnected. You can connect it later from Settings."
+      }
+    ]
+  },
   "triggers": [
     {"id": 1, "prompt": "Is this the first run? What should I do now?", "expect_trigger": true},
     {"id": 2, "prompt": "Can you set me up with something useful for my work?", "expect_trigger": true},
@@ -124,6 +158,7 @@
       },
       "rubric": [
         {"check": "first_reply_within", "secs": 120},
+        {"check": "no_prose_offer", "kinds": ["import", "connect"]},
         {"check": "job_kept_within", "minutes": 10},
         {"check": "preview_succeeded"},
         {"check": "kept_preview_mentions", "any": ["webhook", "off-by-one", "rate-limit", "limits.py", "retry budget"]}
@@ -279,6 +314,51 @@
       "policy": {"connect": "decline", "credential": "accept", "default": "decline"},
       "rubric": [
         {"check": "card_proposed", "kind": "connect", "where": {"provider.slug": {"equals": "github"}}}
+      ]
+    },
+    {
+      "id": 9,
+      "name": "card-clicker",
+      "persona": "A developer who clicks whatever card appears and answers only what they are asked, in a few words. They never say 'yes, do it' to an offer made in prose.",
+      "objective": "Each step the skill has a card for arrives as that card in the turn that brings it up (the import in the hello, the connection after the import), with at most one question beside it.",
+      "script": [
+        "Nova. English.",
+        "Go on.",
+        "Go on.",
+        "What else?"
+      ],
+      "policy": {
+        "import": "accept",
+        "connect": "decline",
+        "profile": "accept",
+        "soul": "accept",
+        "cron": "preview-then-keep",
+        "default": "decline"
+      },
+      "rubric": [
+        {
+          "check": "no_prose_offer",
+          "kinds": [
+            "import",
+            "connect"
+          ]
+        },
+        {
+          "check": "card_proposed",
+          "kind": "import"
+        },
+        {
+          "check": "card_proposed",
+          "kind": "connect"
+        },
+        {
+          "check": "questions_beside_card",
+          "kinds": [
+            "import",
+            "connect"
+          ],
+          "max": 1
+        }
       ]
     }
   ]

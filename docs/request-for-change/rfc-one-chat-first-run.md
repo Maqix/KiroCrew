@@ -406,8 +406,14 @@ The agent's first message says what it is, what it will ask approval for, and
 what it found. For example:
 
 > I found a Hermes agent here, with six scheduled jobs and a memory file, and
-> kiro-cli is signed in. Want me to bring Hermes over? Also, what should I be
-> called? Here are three ideas.
+> kiro-cli is signed in. The card below brings Hermes over. What should I be
+> called (here are three ideas), and which language should I reply in?
+
+The import arrives as its card in that same message, with one question beside
+it. *Superseded:* the Hello asking "want me to bring Hermes over?" in words.
+Recorded first runs answered that in words, which cost a turn and delayed the
+card's consent step until the agent proposed it; `evals/crew-setup` persona 9
+now fails a step offered in words when it has a card.
 
 It does not mention the home: where the crew lives is asked once the first job
 is kept (§5.7). *Superseded:* the Hello offering the home itself (a tester never

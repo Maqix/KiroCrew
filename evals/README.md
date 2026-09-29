@@ -91,14 +91,26 @@ in the text, not as tastes.
 one-chat first run, from the privacy card to a kept job, as RFC
 [one-chat first run](../docs/request-for-change/rfc-one-chat-first-run.md) §8
 asks. Its `cases.json` holds trigger cases (checked like explain-for's, with the
-same scoring code) and 6–8 personas. Each persona has a `persona` and an
+same scoring code) and 6–10 personas. Each persona has a `persona` and an
 `objective` in prose, a `script` of user replies, a click `policy` per card kind
 (`accept`, `decline`, `ignore`, `preview-then-keep`, `preview-then-decline`; a
 list applies per occurrence), and `rubric` lines graded from the run's record
 alone: cards before the first kept job, minutes to a kept job, no card of a kind
 after the user declined it, no request to paste a secret, no link the agent
 invented, no unexpected `setup_card` refusal, a pasted token stored only as a
-`secret://` reference. `rubric_defaults` apply to every persona.
+`secret://` reference, and no step offered in words when it has a card
+(`no_prose_offer`, with at most one question beside the card in
+`questions_beside_card`). `rubric_defaults` apply to every persona.
+
+`no_prose_offer` reads the transcript turn by turn. A turn opens at a user
+message or a gateway inject (the `[First run]` kickoff, a `[Setup card
+result]`). Until a card of a kind first appears, a question in a turn that
+offers that step ("Want me to bring Hermes over?", "Which forge is your repo
+on?"), or a suggestion chip naming it in a turn with no card, is a prose-only
+offer. The step patterns live in `cases.json` under `prose_offer`, with
+examples `--check` holds them to. Persona 9 (`card-clicker`) exists to measure
+it: it clicks every card and only ever answers "Go on.", so an offer made in
+words is never rescued by the user.
 
 The user side is **scripted, not simulated**: the same replies and clicks on
 every run, so two iterations differ only by the agent. A model playing the user
@@ -106,14 +118,22 @@ from the persona text is a later step.
 
 ```bash
 # Deterministic: schema, policies, rubric arguments, trigger cases, and the
-# secret-request patterns against their own examples. What CI runs.
+# secret-request and prose-offer patterns against their own examples. What CI
+# runs.
 python3 evals/crew-setup/run_evals.py --check -v
 
 # Real first runs with a real model (about ten minutes each). Needs the repo's
 # .venv (the runner starts .venv/bin/kirocrew) and a signed-in kiro-cli.
 python3 evals/crew-setup/run_evals.py --run            # every persona
 python3 evals/crew-setup/run_evals.py --run --case 3   # one persona
+
+# A rate, not an anecdote: the same persona six times, three gateways at once.
+python3 evals/crew-setup/run_evals.py --run --case 9 --repeat 6 --parallel 3
 ```
+
+With `--repeat`, each run is `iteration-N/<id>-<name>-rK/` and the table ends
+with each rubric line's pass count over the graded repeats. Runs in parallel
+share only the model; each still has its own homes and port.
 
 `--run` gives every persona its own gateway: a fresh temp `KIROCREW_HOME` and
 `KIRO_HOME`, a free port (never 5476), `KIROCREW_CLOUD_SIMULATE=1`, telemetry
