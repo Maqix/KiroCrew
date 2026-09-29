@@ -223,7 +223,15 @@ export const CHUNK_BUDGETS = {
   // Route-only pages (settings, capabilities, schedule, artifacts, apps, ...) load
   // through React.lazy in their own chunks, so this chunk holds the shell and the
   // chat route; the ceiling keeps the ~5% margin the lines above prescribe.
-  App: 1978 * KB, // measured 1,929,378 B with route-only pages lazy (~5% headroom)
+  // Re-measured 2026-09-30 with the whole-message quote surface (the card, the
+  // bubble context menu, the row menus and the `messageQuote` module -- chat-route
+  // code with no lazy boundary): the CI build of this chunk is 2,026,409 B, 937 B
+  // over the 1978 KB entry. Attribution measured on two builds from one machine
+  // and one toolchain: main's tip alone builds 2,042,024 B and this branch on top
+  // of it 2,044,280 B, so the quote surface costs 2,256 B and main's own drift
+  // since the measurement above is the rest. Back to the ~5% convention over the
+  // CI measurement that includes this branch: 2,026,409 B * 1.05 = 2,127,729 B.
+  App: 2078 * KB, // measured 2,026,409 B on CI with the quote surface (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.
