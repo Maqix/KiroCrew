@@ -118,6 +118,84 @@ def barrier_step(ci: dict) -> dict:
     return steps[0]
 
 
+#: The exact `if` clause that trims a job off the push path while the repository
+#: variable MERGE_QUEUE_ENABLED is 'true', and keeps it there while it is unset.
+_PUSH_SKIP_CLAUSE = "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
+#: The exact clause under which the boot leg admits a push with no needs to lean on.
+_PUSH_ADMIT_CLAUSE = "github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true'"
+
+
+def _assert_push_to_main_reaches_exactly_the_macos_boot_leg(ci: dict) -> None:
+    jobs = ci["jobs"]
+    skipped_on_push = {
+        name for name, spec in jobs.items() if _PUSH_SKIP_CLAUSE in str(spec.get("if", ""))
+    }
+    assert skipped_on_push == {
+        "changes",
+        "await-fast-gate",
+        "coverage-gate",
+        "frontend-coverage-merge",
+    }
+    # A bare `!= 'push'` anywhere else would trim a job off the push path with
+    # the variable unset, which is the state this contract keeps at full matrix.
+    bare = {
+        name
+        for name, spec in jobs.items()
+        if "github.event_name != 'push'" in str(spec.get("if", ""))
+    }
+    assert (
+        bare == skipped_on_push
+    ), f"push-skips not gated on MERGE_QUEUE_ENABLED: {bare - skipped_on_push}"
+
+    for name, spec in jobs.items():
+        if name in skipped_on_push or name == "e2e-boot-matrix":
+            continue
+        needs = spec.get("needs") or []
+        direct_needs = {needs} if isinstance(needs, str) else set(needs)
+        assert direct_needs & {"changes", "await-fast-gate"}, (
+            f"{name} does not directly need changes or await-fast-gate, so a push "
+            "could reach it after those jobs skip"
+        )
+        guard = str(spec.get("if", ""))
+        assert (
+            "always()" not in guard and "!cancelled()" not in guard
+        ), f"{name} overrides the skipped dependency with {guard!r} and can run on push"
+
+    boot = jobs["e2e-boot-matrix"]
+    boot_guard = str(boot["if"])
+    assert _PUSH_ADMIT_CLAUSE in boot_guard
+    assert "!cancelled()" in boot_guard
+    # The admission is the whole conjunction, never a bare push: with the
+    # variable unset a push must go through the needs like every other event.
+    assert boot_guard.count("github.event_name == 'push'") == 1
+    assert "(github.event_name == 'push' ||" not in boot_guard
+
+    matrix_os = str(boot["strategy"]["matrix"]["os"])
+    sides = matrix_os.split("||")
+    assert (
+        len(sides) == 3
+    ), f"expected non-push / queue-on / queue-off matrix split, got: {matrix_os}"
+    non_push_side, queue_on_side, queue_off_side = sides
+    assert "github.event_name != 'push'" in non_push_side
+    assert "vars.MERGE_QUEUE_ENABLED == 'true'" in queue_on_side
+    assert "&&" not in queue_off_side, "the fallback literal must be unguarded"
+
+    def platforms(side: str) -> list[str]:
+        start = side.index("[")
+        end = side.index("]", start) + 1
+        parsed = json.loads(side[start:end])
+        assert isinstance(parsed, list) and all(isinstance(item, str) for item in parsed)
+        return parsed
+
+    non_push_platforms = platforms(non_push_side)
+    queue_on_platforms = platforms(queue_on_side)
+    queue_off_platforms = platforms(queue_off_side)
+    assert non_push_platforms == ["ubuntu-latest", "windows-latest"]
+    assert queue_on_platforms == ["macos-15"]
+    assert queue_off_platforms == ["ubuntu-latest", "macos-15", "windows-latest"]
+    assert not any("macos" in platform for platform in non_push_platforms)
+
+
 class TestTheGatesLiveInTheGateWorkflow:
     def test_all_gates_are_in_fast_gate_and_none_left_in_ci(
         self, ci: dict, fast_gate: dict
@@ -138,15 +216,37 @@ class TestTheGatesLiveInTheGateWorkflow:
         assert "if" not in spec, f"{job} gained a condition and can now be dodged"
 
     def test_the_gate_workflow_matches_ci_triggers(self, ci: dict, fast_gate: dict) -> None:
+        """Re-derived stronger: pin both workflows' complete, identical trigger dictionaries."""
         # `on` is a YAML 1.1 boolean, so PyYAML keys the trigger block on True.
-        ci_on = ci.get("on", ci.get(True))
-        fg_on = fast_gate.get("on", fast_gate.get(True))
-        assert fg_on == ci_on, (
-            "Fast Gate's triggers drifted from ci.yml's. They must match: a WIDER "
-            "filter newly reviews fork PRs on a non-main base (the fork reviewers key "
-            "on this workflow), and a NARROWER one leaves await-fast-gate waiting for "
-            "a run that never starts."
+        ci_on = dict(ci.get("on", ci.get(True)))
+        fg_on = dict(fast_gate.get("on", fast_gate.get(True)))
+        expected = {
+            "push": {"branches": ["main"]},
+            "pull_request": {"branches": ["main"]},
+            "merge_group": {"types": ["checks_requested"]},
+        }
+        assert ci_on == expected
+        # Fast Gate runs on a push too: with MERGE_QUEUE_ENABLED unset, ci.yml's
+        # barrier consumes that run before the full push matrix.
+        assert fg_on == expected, (
+            "Fast Gate's triggers drifted from ci.yml's. A WIDER filter newly reviews "
+            "fork PRs on a non-main base (the fork reviewers key on this workflow), and "
+            "a NARROWER one leaves await-fast-gate waiting for a run that never starts."
         )
+        assert list(fg_on) == list(expected), "keep the trigger order matching ci.yml"
+
+    def test_the_gate_workflow_groups_a_push_per_commit_like_ci(
+        self, ci: dict, fast_gate: dict
+    ) -> None:
+        """Re-derived stronger: the two concurrency blocks are identical, not just same-shaped."""
+        assert fast_gate["concurrency"] == ci["concurrency"]
+        group = str(fast_gate["concurrency"]["group"])
+        assert "github.event_name == 'push'" in group and "github.sha" in group
+
+    def test_a_push_to_main_reaches_exactly_the_macos_boot_leg(self, ci: dict) -> None:
+        """Re-derived stronger: pin the push path job by job under both states of
+        MERGE_QUEUE_ENABLED -- trimmed to the mac boot leg when set, full matrix when unset."""
+        _assert_push_to_main_reaches_exactly_the_macos_boot_leg(ci)
 
 
 class TestFastGatePythonRuntime:
