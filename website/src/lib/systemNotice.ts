@@ -29,3 +29,17 @@ const SYSTEM_NOTICE_KINDS: ReadonlySet<string> = new Set([
 export function isSystemNoticeKind(kind: string | undefined): boolean {
   return !!kind && SYSTEM_NOTICE_KINDS.has(kind)
 }
+
+/**
+ * A notice the gateway writes BEFORE the user row it describes. The captured-
+ * secret note is the one: `dashboard/secret_capture.py` swaps a pasted credential
+ * for a vault reference before the message is appended, and posts its "moved 1
+ * pasted secret" row as it does, so the note lands directly above the prompt it
+ * is about. It belongs to that prompt's exchange, not to the turn above it: the
+ * transcript groups it as the prompt's lead-in (`groupDisplayItems`), and the
+ * incoming prompt's lead-in is what pushes the pinned-prompt banner out
+ * (`pushRowIdx` in utils/pinnedPrompt.ts), so the banner never parks over it.
+ */
+export function isPromptLeadInNotice(msg: { role: string; kind?: string; meta?: Record<string, unknown> }): boolean {
+  return msg.role === 'assistant' && (msg.kind ?? (msg.meta?.kind as string | undefined)) === 'secret_captured'
+}

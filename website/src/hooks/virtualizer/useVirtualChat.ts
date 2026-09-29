@@ -2249,6 +2249,11 @@ export function useVirtualChat<T>(
       stick: stickRef.current,
       geom,
       lastWriteTop: lastWriteTopRef.current,
+      // Chrome leaving the space below (the setup tray folding) clamps a
+      // follower below our write before the clamp's scroll event can
+      // re-baseline it; the growth's own pixels are ours, not the reader's.
+      viewportGrowth: -viewportShrink,
+      upwardInputWithinSettle: performance.now() - lastUpwardInputAtRef.current < SCROLL_SETTLE_MS,
       // Undefined = the caller gave no run signal, which the predicate reads as
       // "assume live" so an unaware caller keeps its behaviour.
       runActive: runActiveRef.current,
@@ -3384,6 +3389,9 @@ export function useVirtualChat<T>(
         stick: stickRef.current,
         geom,
         lastWriteTop: lastWriteTopRef.current,
+        // Same allowance as pinAuto's: growth reaching here clamped a follower.
+        viewportGrowth: lastWriteClientHRef.current >= 0 ? geom.clientHeight - lastWriteClientHRef.current : 0,
+        upwardInputWithinSettle: performance.now() - lastUpwardInputAtRef.current < SCROLL_SETTLE_MS,
         runActive: runActiveRef.current,
         restoreGate: settleGateRef.current,
         readerMovedSinceWrite: readerMovedSinceWrite(),

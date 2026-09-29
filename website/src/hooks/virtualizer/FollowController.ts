@@ -427,6 +427,25 @@ export function evaluateAutoPin(args: {
   lastWriteTop: number
   epsilon?: number
   viewportShrink?: number
+  /** How much the scroller's own box has GROWN since `lastWriteTop` was
+   *  recorded: chrome leaving the space below the transcript (the setup-card
+   *  tray folding to its bar, a queue band unmounting, the keyboard closing).
+   *
+   *  A growth lowers the maximum scrollTop by exactly its own pixels, so the
+   *  engine clamps a flush follower from `lastWriteTop` to `lastWriteTop -
+   *  growth` during layout, with no write of ours. The clamp's scroll event
+   *  (which re-baselines the reference) only dispatches in the next frame, so
+   *  output landing first finds scrollTop below our write with a gap under it:
+   *  the scroll-up signature below, made of two of our own layout changes. It
+   *  released follow mid-answer, with the reply streaming on below the fold.
+   *  The mirror of `viewportShrink`, and like it only its own pixels are
+   *  forgiven. Negative values are no allowance. */
+  viewportGrowth?: number
+  /** An upward hardware input (wheel up / upward key / upward drag) landed
+   *  within the scroll-settle window. It voids the `viewportGrowth` allowance:
+   *  a clamp erases the evidence of a small scroll-up inside it, and the reader
+   *  who asked to leave the bottom must be released, not pinned back. */
+  upwardInputWithinSettle?: boolean
   /** Is a turn actually producing output right now?
    *
    *  Follow means "keep me at the end of a LIVE turn". With nothing running there
@@ -476,6 +495,9 @@ export function evaluateAutoPin(args: {
   const { stick, geom, lastWriteTop } = args
   const epsilon = args.epsilon ?? SELF_SCROLL_EPSILON
   const viewportShrink = Math.max(0, args.viewportShrink ?? 0)
+  const viewportGrowth = args.upwardInputWithinSettle ? 0 : Math.max(0, args.viewportGrowth ?? 0)
+  // Where the engine's clamp leaves a follower who was flush at our last write.
+  const clampedWriteTop = lastWriteTop - viewportGrowth
   const runActive = args.runActive ?? true
   const readerMovedSinceWrite = args.readerMovedSinceWrite ?? true
   const target = bottomTarget(geom)
@@ -489,7 +511,11 @@ export function evaluateAutoPin(args: {
   // prompt, find-in-page -- whose scroll event has not dispatched yet when a
   // height commit lands, since none of those touch the scroller's input
   // listeners. A reveal moves scrollTop off our write; a reprice does not.
-  const restingOnOurWrite = lastWriteTop >= 0 && Math.abs(geom.scrollTop - lastWriteTop) <= epsilon
+  const restingOnOurWrite = lastWriteTop >= 0 && (
+    Math.abs(geom.scrollTop - lastWriteTop) <= epsilon
+    // ...or exactly where our own viewport growth clamped them (see viewportGrowth).
+    || (viewportGrowth > epsilon && Math.abs(geom.scrollTop - clampedWriteTop) <= epsilon)
+  )
   if (!readerMovedSinceWrite && restingOnOurWrite) {
     return { pin: distanceFromBottom(geom) > atBottomEpsilon(), stick: true, target }
   }
@@ -520,7 +546,7 @@ export function evaluateAutoPin(args: {
   // released, nothing re-armed stick for the rest of the response.
   if (
     lastWriteTop >= 0 &&
-    geom.scrollTop < lastWriteTop - epsilon &&
+    geom.scrollTop < clampedWriteTop - epsilon &&
     distanceFromBottom(geom) - viewportShrink > epsilon
   ) {
     return { pin: false, stick: false, target }

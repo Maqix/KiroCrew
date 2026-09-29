@@ -14,6 +14,7 @@ import {
   DEFAULT_PINNED_CARD_H,
   PINNED_PREVIEW_LINES,
   PINNED_RESTING_LINES,
+  pushRowIdx,
 } from '../utils/pinnedPrompt'
 import type { DisplayItem } from '../pages/chat/types'
 
@@ -419,5 +420,27 @@ describe('computeLiveCardH', () => {
       expect(h).toBeGreaterThanOrEqual(prev)
       prev = h
     }
+  })
+})
+
+describe('pushRowIdx — the incoming prompt, led by its lead-in', () => {
+  const at = (idx: number, role: string, meta?: Record<string, unknown>): DisplayItem =>
+    ({ kind: 'single', idx, msg: { role, content: 'x', cls: '', ...(meta ? { meta } : {}) } }) as DisplayItem
+  const note = (idx: number) => at(idx, 'assistant', { kind: 'secret_captured' })
+
+  it('is the prompt itself when nothing leads it', () => {
+    const items = [at(0, 'user'), at(1, 'assistant'), at(2, 'user')]
+    expect(pushRowIdx(items, 0, 2)).toBe(2)
+  })
+
+  it('is the first of the captured-secret notes standing directly above it', () => {
+    const items = [at(0, 'user'), at(1, 'assistant'), note(2), note(3), at(4, 'user')]
+    expect(pushRowIdx(items, 0, 4)).toBe(2)
+  })
+
+  it('ignores other rows above the prompt, and never reaches the pinned prompt', () => {
+    expect(pushRowIdx([at(0, 'user'), at(1, 'assistant', { kind: 'first_week_tip' }), at(2, 'user')], 0, 2)).toBe(2)
+    expect(pushRowIdx([at(0, 'user'), note(1), at(2, 'user')], 1, 2)).toBe(2)
+    expect(pushRowIdx([at(0, 'user')], 0, -1)).toBe(-1)
   })
 })

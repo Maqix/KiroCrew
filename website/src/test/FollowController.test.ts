@@ -460,6 +460,47 @@ describe('evaluateAutoPin — the race-proof core', () => {
   })
 })
 
+describe('evaluateAutoPin — our own viewport GROWTH clamps a follower below the last write', () => {
+  // Chrome leaving the space below the transcript (the setup-card tray folding
+  // to its bar, a queue band unmounting) GROWS the scroller. That lowers the
+  // maximum scrollTop by exactly the growth, so the engine clamps a flush
+  // follower from 600 to 600 - g during layout, with no write of ours and a
+  // scroll event that will not dispatch until the next frame. Streaming output
+  // that lands before that event opens a gap below the reader, and without the
+  // allowance the pair reads as a full scroll-up signature: follow released,
+  // the answer left below the fold. (P2.23)
+  it('keeps following through the clamp and pins to the new bottom', () => {
+    // Box 400 -> 642 (the tray's 242px fold), clamp 600 -> 358, then 20px of output.
+    const geom = { scrollTop: 358, scrollHeight: 1020, clientHeight: 642 }
+    expect(distanceFromBottom(geom)).toBe(20)
+    expect(evaluateAutoPin({ stick: true, geom, lastWriteTop: 600 }).stick).toBe(false)
+    const r = evaluateAutoPin({ stick: true, geom, lastWriteTop: 600, viewportGrowth: 242 })
+    expect(r.stick).toBe(true)
+    expect(r.pin).toBe(true)
+    expect(r.target).toBe(378)
+  })
+
+  it('forgives only the growth’s own pixels: a drag past the clamp still releases', () => {
+    // Same 242px growth, but scrollTop sits 150px above where the clamp puts a follower.
+    const geom = { scrollTop: 208, scrollHeight: 1020, clientHeight: 642 }
+    const r = evaluateAutoPin({ stick: true, geom, lastWriteTop: 600, viewportGrowth: 242 })
+    expect(r.stick).toBe(false)
+    expect(r.pin).toBe(false)
+  })
+
+  it('a fresh upward input voids the allowance: the reader scrolled up', () => {
+    const geom = { scrollTop: 358, scrollHeight: 1020, clientHeight: 642 }
+    const r = evaluateAutoPin({ stick: true, geom, lastWriteTop: 600, viewportGrowth: 242, upwardInputWithinSettle: true })
+    expect(r.stick).toBe(false)
+    expect(r.pin).toBe(false)
+  })
+
+  it('a negative growth (the box shrank) is no allowance', () => {
+    const geom = { scrollTop: 500, scrollHeight: 1000, clientHeight: 400 }
+    expect(evaluateAutoPin({ stick: true, geom, lastWriteTop: 600, viewportGrowth: -60 }).stick).toBe(false)
+  })
+})
+
 // Feature: chat-virtualizer — DPR-aware "at bottom" epsilon.
 //
 // A flat 0.5px gate is UNDER one device pixel at fractional device-pixel ratios

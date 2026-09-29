@@ -2,6 +2,7 @@ import type { ChatMessage } from '../../types'
 import type { DisplayItem, TurnItem } from './types'
 import { isSubagentCompletionMessage } from './subagentCompletion'
 import { isNoteRow } from '../../lib/noteContract'
+import { isPromptLeadInNotice } from '../../lib/systemNotice'
 
 /** Roles that fold into a collapsible group in the turn view. Thinking is NOT
  *  here: it carries real content and renders as its own standalone block (a
@@ -336,7 +337,23 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
       // is flushed into the region a later synthesis folds, and that synthesis
       // then reads the next wave's own reply as the answer boundary.
       settlePendingSynthesisAnswer()
-      if (turnItems.length > 0) { flushTurn(turnItems, true); turnItems = [] }
+      // A typed prompt's lead-in (the captured-secret note the gateway writes
+      // just above it) is part of THIS exchange, not the tail of the previous
+      // turn: it stands as its own row directly above the prompt, so it is
+      // never folded into the previous turn's steps, and the pinned-prompt
+      // banner can be pushed out by it (see isPromptLeadInNotice).
+      let leadIn = 0
+      if (item.msg.role === 'user') {
+        while (leadIn < turnItems.length) {
+          const t = turnItems[turnItems.length - 1 - leadIn]
+          if (t.kind !== 'single' || !isPromptLeadInNotice(t.msg)) break
+          leadIn++
+        }
+      }
+      const body = leadIn ? turnItems.slice(0, turnItems.length - leadIn) : turnItems
+      if (body.length > 0) flushTurn(body, true)
+      if (leadIn) turns.push(...turnItems.slice(turnItems.length - leadIn))
+      turnItems = []
       turns.push(item)
       // A user/nudge prompt begins a fresh interim region; a sub-agent
       // completion belongs to the one already open.

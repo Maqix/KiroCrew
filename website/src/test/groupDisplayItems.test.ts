@@ -524,3 +524,34 @@ describe('applyRunningState', () => {
     }
   })
 })
+
+/** The captured-secret note the gateway writes just ABOVE the prompt it describes. */
+const secretNote = () =>
+  ({ role: 'assistant', content: 'I moved 1 pasted secret(s) out of this chat into the vault.', cls: 'msg msg-system', meta: { kind: 'secret_captured' } } as ChatMessage)
+
+describe('groupDisplayItems: a prompt’s lead-in note belongs to the prompt (P2.24)', () => {
+  it('stands the captured-secret note on its own, directly above the prompt, not inside the turn before', () => {
+    const note = secretNote()
+    const messages = [msg('user', 'what is going on?'), ...workingTurn(), note, msg('user', 'here is my token: secret://T'), msg('assistant', 'got it')]
+    const { turns } = groupDisplayItems(messages)
+    expect(turns.map(t => t.kind)).toEqual(['single', 'turn', 'single', 'single', 'single'])
+    const previous = turns[1] as Extract<DisplayItem, { kind: 'turn' }>
+    expect(previous.items).toHaveLength(3)
+    expect((turns[2] as Extract<DisplayItem, { kind: 'single' }>).msg).toBe(note)
+    expect((turns[3] as Extract<DisplayItem, { kind: 'single' }>).msg.role).toBe('user')
+  })
+
+  it('leaves other notices, and a note with no prompt after it, where they were', () => {
+    const tip = { ...secretNote(), meta: { kind: 'first_week_tip' } } as ChatMessage
+    const before = groupDisplayItems([msg('user', 'q'), ...workingTurn(), tip, msg('user', 'next')]).turns
+    expect(before.map(t => t.kind)).toEqual(['single', 'turn', 'single'])
+    expect((before[1] as Extract<DisplayItem, { kind: 'turn' }>).items).toHaveLength(4)
+    const trailing = groupDisplayItems([msg('user', 'q'), ...workingTurn(), secretNote()]).turns
+    expect(trailing.map(t => t.kind)).toEqual(['single', 'turn'])
+  })
+
+  it('does not peel a note in front of a machine opener', () => {
+    const turns = groupDisplayItems([msg('user', 'q'), ...workingTurn(), secretNote(), msg('nudge', 'cycle 2')]).turns
+    expect(turns.map(t => t.kind)).toEqual(['single', 'turn', 'single'])
+  })
+})

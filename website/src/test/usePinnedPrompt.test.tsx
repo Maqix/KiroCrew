@@ -349,6 +349,50 @@ describe('usePinnedPrompt push geometry is resting-height-derived', () => {
 })
 
 /**
+ * The captured-secret note the gateway writes just above the next prompt is that
+ * prompt's lead-in, and pushes the previous prompt's banner out exactly as the
+ * prompt would. Without it the banner parked over the note for the whole reply:
+ * the D8 recording's vault step, "moved 1 pasted secret" unreadable under it.
+ */
+describe('usePinnedPrompt: the incoming prompt’s lead-in pushes the banner (P2.24)', () => {
+  const LEAD_IN_ITEMS: DisplayItem[] = [
+    single(0, 'user', 'first prompt'),
+    single(1, 'assistant', 'first reply'),
+    single(2, 'user', 'what is going on?'),
+    single(3, 'assistant', 'the reply'),
+    { kind: 'single', idx: 4, msg: { ...message('assistant', 'I moved 1 pasted secret(s)', '2026-09-08T00:00:04.000Z'), meta: { kind: 'secret_captured' } } },
+    single(5, 'user', 'here is my token: secret://T'),
+  ]
+  const place = (g: ReturnType<typeof mountGeometry>, tops: number[]) => tops.forEach((t, i) => setRect(g.rows[i], t, 40))
+
+  it('pushes by the note’s top, not the prompt’s, while the note nears the fold', () => {
+    const h = renderPin()
+    const g = mountGeometry(6)
+    // Note 40px below the fold (inside the resting travel of 64); the prompt 100px below it.
+    place(g, [0, 20, 40, 70, 140, 200])
+    wire(h, g, LEAD_IN_ITEMS)
+    expect(h.result.current.pinned).toMatchObject({ idx: 2, push: 24 })
+  })
+
+  it('drops the banner once the note has reached the fold, before the prompt does', () => {
+    const h = renderPin()
+    const g = mountGeometry(6)
+    place(g, [0, 10, 20, 40, 70, 130])
+    wire(h, g, LEAD_IN_ITEMS)
+    expect(h.result.current.pinned).toBeNull()
+  })
+
+  it('control: with no lead-in the prompt alone decides, and a banner that far away rests', () => {
+    const h = renderPin()
+    const g = mountGeometry(6)
+    place(g, [0, 20, 40, 70, 140, 200])
+    const plain = LEAD_IN_ITEMS.map((it, i) => (i === 4 ? single(4, 'assistant', 'more reply') : it))
+    wire(h, g, plain)
+    expect(h.result.current.pinned).toMatchObject({ idx: 2, push: 0 })
+  })
+})
+
+/**
  * The fold stands in for the BUBBLE, not the row. UserMessage draws an action
  * strip (copy / copy link / pin / timestamp) under its bubble, and the hidden row
  * re-shows that strip in place (index.css `[data-pinned-standin]`), so the card

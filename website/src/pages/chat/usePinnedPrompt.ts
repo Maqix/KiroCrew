@@ -13,6 +13,7 @@ import {
   nextPinnedPromptState,
   pinHandoffY,
   pinPushTravel,
+  pushRowIdx,
   type PinnedPromptState,
 } from '../../utils/pinnedPrompt'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
@@ -129,8 +130,11 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // line than the hand-off, so a tall prompt shoves the card fully out while it
     // scrolls in, and only takes the pin once its own bottom clears the band.
     const nextIdx = findNextPromptIdx(list, pinIdx)
-    const nextEl = nextIdx >= 0
-      ? el.querySelector(`[data-display-index="${nextIdx}"]`) as HTMLElement | null
+    // ...led by its lead-in, when it has one: a note written just above the
+    // prompt pushes like the prompt, so the banner never parks over it.
+    const pushIdx = pushRowIdx(list, pinIdx, nextIdx)
+    const nextEl = pushIdx >= 0
+      ? el.querySelector(`[data-display-index="${pushIdx}"]`) as HTMLElement | null
       : null
     const nextTop = nextEl ? nextEl.getBoundingClientRect().top : null
     const pinEl = el.querySelector(`[data-display-index="${pinIdx}"]`) as HTMLElement | null

@@ -1,4 +1,5 @@
 import type { DisplayItem } from '../pages/chat/types'
+import { isPromptLeadInNotice } from '../lib/systemNotice'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { mdImageDestToPath } from './fileTokens'
 import { type PasteBlock, expandAll } from './pasteTokens'
@@ -136,6 +137,26 @@ export function findNextPromptIdx(items: DisplayItem[], afterIdx: number): numbe
     if (isPrompt(items[i])) return i
   }
   return -1
+}
+
+/**
+ * Display index of the row whose TOP pushes the pinned banner out: the incoming
+ * prompt at `nextIdx`, or the first of the lead-in notices standing directly
+ * above it (`isPromptLeadInNotice`: the captured-secret note is written just
+ * before the prompt it describes). Without this the banner stayed parked over
+ * that note for as long as the prompt itself was still a note's height below
+ * the fold -- at the vault step, for the whole reply. -1 when there is no
+ * incoming prompt. Never reaches back to `pinIdx` or above.
+ */
+export function pushRowIdx(items: DisplayItem[], pinIdx: number, nextIdx: number): number {
+  if (nextIdx < 0) return -1
+  let i = nextIdx
+  while (i - 1 > pinIdx) {
+    const prev = items[i - 1]
+    if (!prev || prev.kind !== 'single' || !isPromptLeadInNotice(prev.msg)) break
+    i--
+  }
+  return i
 }
 
 /**
