@@ -26,6 +26,7 @@ from kiro_crew.platform.governance import SCOPE_CATALOG
 _ROOT = Path(__file__).resolve().parents[1]
 _REGISTRY_TSX = _ROOT / "website" / "src" / "components" / "setup" / "setupCardRegistry.tsx"
 _EN_MANUAL = _ROOT / "website" / "src" / "i18n" / "locales" / "en.manual.json"
+_SETUP_CARDS_TS = _ROOT / "website" / "src" / "api" / "setupCards.ts"
 _SKILL = _ROOT / "src" / "kiro_crew" / "builtin_skills" / "crew-setup" / "SKILL.md"
 
 _REGISTERED = sorted(a.kind for a in setup_actions.ACTIONS)
@@ -172,6 +173,17 @@ class TestTheDashboard:
         assert not stray_titles, (
             f"SETUP_CARD_TITLE_KEY ({_rel(_REGISTRY_TSX)}) titles {stray_titles}, which no "
             "module in src/kiro_crew/setup_actions/ registers"
+        )
+
+    def test_the_decide_call_can_send_every_decision(self):
+        text = _SETUP_CARDS_TS.read_text(encoding="utf-8")
+        m = re.search(r"^export type SetupDecision = (?P<union>[^\n]+)$", text, re.M)
+        assert m, f"{_rel(_SETUP_CARDS_TS)} no longer declares `export type SetupDecision = ...`"
+        sent = set(re.findall(r"'([a-z_]+)'", m.group("union")))
+        assert sent == set(sc.DECISIONS), (
+            f"SetupDecision ({_rel(_SETUP_CARDS_TS)}) is {sorted(sent)}; setup_cards.DECISIONS "
+            f"is {sorted(sc.DECISIONS)}: a decision the dashboard cannot send, or one the "
+            "gateway refuses"
         )
 
 

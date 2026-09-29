@@ -96,8 +96,17 @@ DECISION_PREVIEW = "preview"
 DECISION_AWS_SIGNIN = "aws_signin"
 #: The home card's region picker, shown when no region answers (``setup_flow``).
 DECISION_REGION = "region"
+#: A failed home card's "Remove what it created", after a restart cut its build short.
+DECISION_REMOVE = "remove"
 DECISIONS: frozenset[str] = frozenset(
-    {DECISION_COMMIT, DECISION_DECLINE, DECISION_PREVIEW, DECISION_AWS_SIGNIN, DECISION_REGION}
+    {
+        DECISION_COMMIT,
+        DECISION_DECLINE,
+        DECISION_PREVIEW,
+        DECISION_AWS_SIGNIN,
+        DECISION_REGION,
+        DECISION_REMOVE,
+    }
 )
 
 #: Largest SOUL.md / USER.md a card may carry. Small by design: the files are

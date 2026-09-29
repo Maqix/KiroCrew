@@ -53,6 +53,9 @@ _PREVIEW_MAX_CHARS = 6000
 #: Background tasks this module owns (a connect card's consent watcher), held
 #: so they are not garbage collected mid-flight.
 _tasks: set[asyncio.Task[Any]] = set()
+#: Each home card's build watcher (``_watch_home``), by card id: at most one runs
+#: per card, whether a click or a restart started it.
+_home_watchers: dict[str, asyncio.Task[Any]] = {}
 
 
 def _audit(operation: str, outcome: str, session_key: str, resources: str) -> None:
@@ -1149,9 +1152,7 @@ async def _commit_home(
     may_open = card.private.get(BROWSER_HERE_KEY) is True
     await asyncio.to_thread(sc.update_card, card.id, _remember)
     card = await _finish(card, sc.STATUS_WAITING, outcome=_home_outcome(job))
-    task = asyncio.create_task(_watch_home(state, card.id, job.id, may_open=may_open))
-    _tasks.add(task)
-    task.add_done_callback(_tasks.discard)
+    _start_home_watch(state, card.id, job.id, may_open=may_open)
     return card
 
 
@@ -1262,6 +1263,66 @@ def _shown_signin(job_id: str, from_file: dict[str, Any]) -> dict[str, str]:
     return {"url": str(from_file.get("url") or ""), "code": str(from_file.get("code") or "")}
 
 
+def _start_home_watch(
+    state: "DashboardState", card_id: str, job_id: str, *, may_open: bool
+) -> bool:
+    """Start *card_id*'s build watcher unless one is running; return whether it started."""
+    running = _home_watchers.get(card_id)
+    if running is not None and not running.done():
+        return False
+    task = asyncio.create_task(_watch_home(state, card_id, job_id, may_open=may_open))
+    _home_watchers[card_id] = task
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+
+    def _forget(done: asyncio.Task[Any]) -> None:
+        if _home_watchers.get(card_id) is done:
+            del _home_watchers[card_id]
+
+    task.add_done_callback(_forget)
+    return True
+
+
+def _removal_interrupted(card: sc.SetupCard) -> None:
+    card.outcome = {**(card.outcome or {}), "removal": {"state": "failed"}}
+
+
+async def resume_home_builds(state: "DashboardState") -> int:
+    """Pick up the home cards a gateway restart left ``waiting`` on their build.
+
+    A build runs on a daemon thread, so a restart takes its worker along while
+    its card still says ``waiting`` and nothing watches it. After the launch
+    store's once-per-process reap (``handlers_cloud._astore``: a job no worker
+    here drives is settled failed, or done when the home was already created),
+    each such card gets its watcher back. The watcher follows a build still
+    driven in this process, and otherwise settles the card from the job at its
+    first poll: failed, built and signed in (``ready``), built but not signed in
+    (phase ``signin``), or ``home_build_untracked`` when the job cannot be read.
+    A resumed watcher never opens a page in a browser. A removal of what a build
+    left (``_decide_home_remove``) that the restart cut short is marked failed, so
+    its card offers it again. Returns the build cards picked up.
+    """
+    from kiro_crew.dashboard.handlers_cloud import _astore
+
+    await _astore(state)
+    resumed = 0
+    for card in await asyncio.to_thread(sc.load_cards):
+        if card.kind != sc.KIND_HOME:
+            continue
+        if ((card.outcome or {}).get("removal") or {}).get("state") == "active":
+            # The restart cut a removal short too: the card offers it again.
+            await asyncio.to_thread(sc.update_card, card.id, _removal_interrupted)
+            continue
+        job_id = str(card.private.get("job_id") or "")
+        if card.status != sc.STATUS_WAITING or not job_id:
+            continue
+        if _start_home_watch(state, card.id, job_id, may_open=False):
+            resumed += 1
+    if resumed:
+        logger.info("picked up %d home build(s) after the restart", resumed)
+    return resumed
+
+
 async def _watch_home(
     state: "DashboardState", card_id: str, job_id: str, *, may_open: bool = False
 ) -> None:
@@ -1304,6 +1365,10 @@ async def _watch_home(
                 code = (
                     "home_spend_limit" if _SPEND_LIMIT_RE.search(message) else "home_build_failed"
                 )
+                if lj.interrupted_by_restart(job) and lj.stack_may_exist(job):
+                    # No worker is left to roll its stack back: the card offers
+                    # to remove it (the ``remove`` decision).
+                    outcome = {**outcome, "leftover": _leftover(job)}
                 card = await _finish(card, sc.STATUS_FAILED, outcome=outcome, error=(code, message))
                 broadcast(state, card)
                 await _report(state, card)
@@ -1343,20 +1408,115 @@ async def _stop_untracked_build(state: "DashboardState", card_id: str, job_id: s
         card = await asyncio.to_thread(sc.get_card, card_id)
         if card is None or card.status != sc.STATUS_WAITING:
             return
+        message = (
+            "the home's build could not be followed any more, so it was stopped; "
+            "whatever it had created in AWS is being removed"
+            if event is not None
+            # No worker in this process: nothing is rolling anything back.
+            else "the home's build was lost track of when Kiro Crew restarted, so parts "
+            "of it may still be in the AWS account and billing; remove them from Remote Crew"
+        )
         card = await _finish(
             card,
             sc.STATUS_FAILED,
             outcome={"job_id": job_id, "stopped": event is not None},
-            error=(
-                "home_build_untracked",
-                "the home's build could not be followed any more, so it was stopped; "
-                "whatever it had created in AWS is being removed",
-            ),
+            error=("home_build_untracked", message),
         )
         broadcast(state, card)
         await _report(state, card)
     except Exception:
         logger.exception("home card %s: stopping its untracked build failed", card_id)
+
+
+def _leftover(job: Any) -> dict[str, str]:
+    """What a build cut short may have left in AWS, as its card shows it."""
+    from kiro_crew.cloud import ec2
+
+    return {"tag": job.tag, "stack": ec2.stack_name(job.tag), "region": job.region}
+
+
+async def _decide_home_remove(
+    state: "DashboardState", card: sc.SetupCard, card_hash: str, input_: dict[str, Any]
+) -> sc.SetupCard:
+    """The home card's ``remove`` decision: delete what an interrupted build left in AWS.
+
+    Offered on a failed home card whose build a gateway restart cut short once its
+    stack may have been created (``outcome.leftover``), since no worker is left to
+    roll it back. What it removes is read again from the launch job, never from the
+    card, whose store the agent's sandbox can write: the job must have failed on
+    that restart after reaching its provision step, and ``input.tag``, the stack
+    the card showed, must be the job's. The removal is the Instances hub's destroy
+    (``handlers_cloud.teardown_stack``), waited on in the background: the card
+    shows it running, then ``done`` once AWS confirms the stack is gone, or
+    ``failed``. A click while it runs or after it is done is refused.
+    """
+    import hmac
+
+    from kiro_crew.cloud import launch_job as lj
+    from kiro_crew.dashboard.handlers_cloud import _store
+
+    denial = await asyncio.to_thread(_governance_denial, card.kind, card.session_key)
+    if denial:
+        raise sc.CardRejected(f"blocked by policy: {denial}", "governance_denied")
+    if not hmac.compare_digest(str(card_hash), card.payload_hash):
+        raise sc.CardRejected("this card changed since it was shown", "card_hash_mismatch")
+    job_id = str(card.private.get("job_id") or "")
+    job = await asyncio.to_thread(_store(state).get, job_id) if job_id else None
+    if (
+        card.status != sc.STATUS_FAILED
+        or job is None
+        or not lj.interrupted_by_restart(job)
+        or not lj.stack_may_exist(job)
+    ):
+        raise sc.CardRejected(
+            "nothing this build created is left to remove from this card",
+            "home_nothing_to_remove",
+        )
+    if str(input_.get("tag") or "") != job.tag:
+        raise sc.CardRejected("this card changed since it was shown", "card_hash_mismatch")
+    leftover = _leftover(job)
+
+    def _claim(c: sc.SetupCard) -> None:
+        # Under the store lock, so two clicks start one removal.
+        if c.status != sc.STATUS_FAILED or not hmac.compare_digest(str(card_hash), c.payload_hash):
+            raise sc.CardRejected("this card changed since it was shown", "card_hash_mismatch")
+        if ((c.outcome or {}).get("removal") or {}).get("state") in ("active", "done"):
+            raise sc.CardRejected("its removal is already running or done", "home_remove_running")
+        c.outcome = {**(c.outcome or {}), "leftover": leftover, "removal": {"state": "active"}}
+
+    card = await asyncio.to_thread(sc.update_card, card.id, _claim)
+    broadcast(state, card)
+    _audit("setup_card.remove", "started", card.session_key, f"kind:home card:{card.id}")
+    task = asyncio.create_task(_remove_leftover(state, card.id, job))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return card
+
+
+async def _remove_leftover(state: "DashboardState", card_id: str, job: Any) -> None:
+    """Run the removal a ``remove`` click started and put its result on the card."""
+    from kiro_crew.dashboard.handlers_cloud import _store, teardown_stack
+
+    try:
+        gone = await asyncio.to_thread(
+            teardown_stack, _store(state), job.tag, job.profile, job.region
+        )
+    except Exception:
+        # The AWS error stays in the log: it can name the whole account id (SC4).
+        logger.warning("home card %s: removing %s failed", card_id, job.tag, exc_info=True)
+        gone = False
+    state_word = "done" if gone else "failed"
+
+    def _record(c: sc.SetupCard) -> None:
+        c.outcome = {**(c.outcome or {}), "removal": {"state": state_word}}
+
+    try:
+        card = await asyncio.to_thread(sc.update_card, card_id, _record)
+    except Exception:
+        logger.exception("home card %s: its removal result was not recorded", card_id)
+        return
+    broadcast(state, card)
+    _audit("setup_card.remove", state_word, card.session_key, f"kind:home card:{card_id}")
 
 
 async def _home_built(card: sc.SetupCard, job: Any, outcome: dict[str, Any]) -> sc.SetupCard:
@@ -1408,9 +1568,7 @@ async def _sign_home_in(state: "DashboardState", card: sc.SetupCard) -> sc.Setup
         raise sc.CardRejected(str(body.get("error") or "the sign-in could not start"), code)
     may_open = card.private.get(BROWSER_HERE_KEY) is True
     card = await _finish(card, sc.STATUS_WAITING, outcome=_home_outcome(job))
-    task = asyncio.create_task(_watch_home(state, card.id, job.id, may_open=may_open))
-    _tasks.add(task)
-    task.add_done_callback(_tasks.discard)
+    _start_home_watch(state, card.id, job.id, may_open=may_open)
     return card
 
 

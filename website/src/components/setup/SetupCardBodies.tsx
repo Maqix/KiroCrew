@@ -22,7 +22,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 import ErrorNotice from '../ErrorNotice'
 import MarkdownRenderer from '../MarkdownRenderer'
 import SegmentedControl from '../SegmentedControl'
-import { Checkbox, IconButton, Input } from '../ui'
+import { Btn, Checkbox, IconButton, Input } from '../ui'
 import { NativeSelect, NativeSelectOption } from '../ui/native-select'
 import {
   PrivacyCommandList,
@@ -31,7 +31,7 @@ import {
   type BeaconStatus,
 } from '../PrivacyDisclosure'
 import CronPreviewApprovals from './CronPreviewApprovals'
-import { isHomeOffer, safeConsentUrl, soulFileName } from './setupCardCopy'
+import { isHomeOffer, safeConsentUrl, soulFileName, type HomeLeftover } from './setupCardCopy'
 
 export interface SetupAction {
   label: string
@@ -692,6 +692,63 @@ function StepList({ steps, testId }: { steps: HomeStep[]; testId: string }) {
         )
       })}
     </ol>
+  )
+}
+
+/**
+ * A failed home card's "Remove what it created" (the `remove` decision): the stack
+ * it deletes before the click, then the removal running, then "Removed" once AWS
+ * confirms the stack is gone, or that it did not finish (and the button again).
+ */
+export function HomeLeftoverRemoval({ leftover, state, busy, error, onRemove }: {
+  leftover: HomeLeftover
+  state: string
+  busy: boolean
+  /** A refused click, in the owner's words. */
+  error: string
+  onRemove: () => void
+}) {
+  const { t } = useTranslation()
+  if (state === 'done') {
+    return (
+      <p className="flex items-start gap-1.5 text-[13px] text-text min-w-0 break-words" role="status" data-testid="setup-card-home-removed">
+        <CircleCheck className="lucide-inline shrink-0 text-ok" aria-hidden="true" />
+        {t('components.setupCard.home_removed', { stack: leftover.stack })}
+      </p>
+    )
+  }
+  if (state === 'active') {
+    return (
+      <p className="flex items-center gap-1.5 text-[13px] text-muted" role="status" data-testid="setup-card-home-removing">
+        <Loader2 className="lucide-inline animate-spin shrink-0" aria-hidden="true" />
+        {t('components.setupCard.home_removing')}
+      </p>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-1.5 min-w-0" data-testid="setup-card-home-remove">
+      {state === 'failed' && (
+        <p className="text-[13px] text-danger min-w-0 break-words" data-testid="setup-card-home-remove-failed">
+          {t('components.setupCard.home_remove_failed')}
+        </p>
+      )}
+      <p className="text-[12px] text-muted min-w-0 break-words">
+        {t('components.setupCard.home_remove_what', { stack: leftover.stack, region: leftover.region })}
+      </p>
+      {error && (
+        <p className="text-[13px] text-danger min-w-0 break-words" role="alert" data-testid="setup-card-home-remove-error">{error}</p>
+      )}
+      <Btn
+        type="button"
+        danger
+        onClick={onRemove}
+        disabled={busy}
+        className="self-start min-h-9"
+        data-testid="setup-card-home-remove-button"
+      >
+        {t('components.setupCard.home_remove')}
+      </Btn>
+    </div>
   )
 }
 

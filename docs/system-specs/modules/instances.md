@@ -963,7 +963,12 @@ that can never advance, and a `cancel` that returns 200 while signalling a threa
 that no longer exists. Ownership is tracked (`adopt()`) so a live process never
 reaps its own in-flight jobs. The CloudFormation stack may well have completed in
 AWS, so the message points the user at their crew list rather than implying
-nothing was created.
+nothing was created. That message starts with `launch_job.RESTART_INTERRUPTED`,
+which `interrupted_by_restart` reads back; with `stack_may_exist` it is how the
+first-run home card knows a restart may have left a billing stack, which it
+offers to remove with `handlers_cloud.teardown_stack`, this hub's destroy waited
+on (first-run.md, "What a restart leaves in AWS"). The reap also runs at gateway
+boot, from `setup_flow.resume_home_builds`.
 
 One shape is parked rather than failed: a job whose connect step already ran.
 The crew exists and is registered, so `failed` would hide a working instance

@@ -6260,6 +6260,14 @@ async def start_dashboard(
         await ensure_first_run_session(state)
     except Exception:
         logger.warning("first-run session setup failed", exc_info=True)
+    # A home build a restart interrupted: its card gets its watcher back, or is
+    # settled from the build's real outcome.
+    try:
+        from kiro_crew.dashboard.setup_flow import resume_home_builds
+
+        await resume_home_builds(state)
+    except Exception:
+        logger.warning("home builds were not picked up after the restart", exc_info=True)
     # The first week's daily tips in the main chat (a no-op without a first run).
     from kiro_crew.dashboard import first_week
 

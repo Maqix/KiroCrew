@@ -1278,7 +1278,7 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
     return web.json_response(job.to_dict(), status=202)
 
 
-def _teardown_after_delete(tag: str, profile: str, region: str, instance_id: str) -> None:
+def _teardown_after_delete(tag: str, profile: str, region: str, instance_id: str) -> bool:
     """Drop local state for *tag*, but only once AWS confirms the stack is gone.
 
     Mirrors the CLI's destroy ordering (``cli_cloud.py``): confirm first, then
@@ -1287,7 +1287,7 @@ def _teardown_after_delete(tag: str, profile: str, region: str, instance_id: str
     both are deliberately left in place — a crew that still exists must keep its
     registration, and the archive is the cheaper thing to leak. The opposite
     ordering loses the registration for a live instance, which the user cannot
-    recover from the dashboard.
+    recover from the dashboard. Returns whether AWS confirmed the stack is gone.
     """
     try:
         if not ec2.wait_for_delete(tag, profile, region):
@@ -1296,10 +1296,10 @@ def _teardown_after_delete(tag: str, profile: str, region: str, instance_id: str
                 "uploaded source in place.",
                 tag,
             )
-            return
+            return False
     except AWSError as e:
         logger.warning("Could not confirm deletion of %s: %s", tag, e)
-        return
+        return False
 
     if instance_id:
         try:
@@ -1310,6 +1310,52 @@ def _teardown_after_delete(tag: str, profile: str, region: str, instance_id: str
         source_mod.delete_source(tag, profile, region)
     except Exception as e:  # pragma: no cover - defensive, same as the CLI
         logger.warning("Could not remove the uploaded source for %s: %s", tag, e)
+    return True
+
+
+def _teardown_instance_id(store: lj.LaunchJobStore, tag: str, profile: str, region: str) -> str:
+    """The instance id a destroy of *tag* unregisters, derived by the server, never taken from a caller.
+
+    The instance id drives the registry cleanup, and ``unregister_instance``
+    matches it against EVERY registered box (by ssm_target, ssh_host or id) with
+    no cross-check against this tag. Accepting it from the caller therefore lets a
+    mismatched value silently remove a *different*, still-living crew's
+    registration — the exact harm ``_teardown_after_delete`` documents it exists to
+    prevent, and not recoverable from the dashboard. The server can derive it
+    authoritatively, so it always does: from the stack itself, and BEFORE the
+    delete, because the outputs are unreadable once the stack is gone.
+    """
+    iid = ""
+    try:
+        iid = str(ec2.describe(tag, profile, region).get("instance_id") or "")
+    except Exception as e:
+        # Deliberately broad, and deliberately NOT falling back to a caller-supplied
+        # id: an empty id skips the unregister, leaving a stale registry row the user
+        # can see and remove. That is the safe direction to fail — the alternative
+        # risks dropping the registration of a crew that is still running.
+        # AWSError alone is not enough: describe shells out, so an exec/sandbox
+        # failure surfaces as an unrelated exception type.
+        logger.warning("Could not resolve the instance id for %s: %s", tag, e)
+    if not iid:
+        # `describe` cannot answer once the stack is gone — which is exactly the
+        # retry case after a teardown was cut short (a restart kills the watcher
+        # thread mid-wait). Without this the retry deletes an already-deleted stack
+        # as a no-op, resolves no id, and skips the unregister AGAIN, so the row can
+        # never be cleared from this panel. The launch job that created this tag
+        # persists its instance id: still server-owned state, never caller input.
+        iid = next((j.instance_id for j in store.list() if j.tag == tag and j.instance_id), "")
+    return iid
+
+
+def teardown_stack(store: lj.LaunchJobStore, tag: str, profile: str, region: str) -> bool:
+    """The Instances hub's destroy of *tag*, waited on: the stack, then its local state.
+
+    Blocking (minutes): call it off the event loop. Returns whether AWS confirmed
+    the stack is gone; only then are its registration and uploaded source removed.
+    """
+    instance_id = _teardown_instance_id(store, tag, profile, region)
+    ec2.destroy(tag, profile, region, wait=False)
+    return _teardown_after_delete(tag, profile, region, instance_id)
 
 
 def _start_teardown_watch(
@@ -1346,33 +1392,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
             return ec2.stop(tag, profile, region)
         if op == "start":
             return ec2.start(tag, profile, region)
-        # The instance id drives the registry cleanup below, and `unregister_instance`
-        # matches it against EVERY registered box (by ssm_target, ssh_host or id) with
-        # no cross-check against this tag. Accepting it from the caller therefore lets a
-        # mismatched value silently remove a *different*, still-living crew's
-        # registration — the exact harm `_teardown_after_delete` documents it exists to
-        # prevent, and not recoverable from the dashboard. The server can derive it
-        # authoritatively, so it always does: from the stack itself, and BEFORE the
-        # delete, because the outputs are unreadable once the stack is gone.
-        iid = ""
-        try:
-            iid = str(ec2.describe(tag, profile, region).get("instance_id") or "")
-        except Exception as e:
-            # Deliberately broad, and deliberately NOT falling back to a caller-supplied
-            # id: an empty id skips the unregister, leaving a stale registry row the user
-            # can see and remove. That is the safe direction to fail — the alternative
-            # risks dropping the registration of a crew that is still running.
-            # AWSError alone is not enough: describe shells out, so an exec/sandbox
-            # failure surfaces as an unrelated exception type.
-            logger.warning("Could not resolve the instance id for %s: %s", tag, e)
-        if not iid:
-            # `describe` cannot answer once the stack is gone — which is exactly the
-            # retry case after a teardown was cut short (a restart kills the watcher
-            # thread mid-wait). Without this the retry deletes an already-deleted stack
-            # as a no-op, resolves no id, and skips the unregister AGAIN, so the row can
-            # never be cleared from this panel. The launch job that created this tag
-            # persists its instance id: still server-owned state, never caller input.
-            iid = next((j.instance_id for j in store.list() if j.tag == tag and j.instance_id), "")
+        iid = _teardown_instance_id(store, tag, profile, region)
         # destroy: issue the delete and return; do not block the request on
         # DELETE_COMPLETE (minutes). A later status / the reaper reflects it.
         out = ec2.destroy(tag, profile, region, wait=False)

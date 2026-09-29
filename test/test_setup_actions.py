@@ -346,4 +346,7 @@ class TestNoKindWeakensTheClick:
         with pytest.raises(sc.CardRejected) as err:
             await setup_flow.decide(state, card.id, "teleport", card.payload_hash, {})
         assert err.value.code == "invalid_decision"
-        assert str(err.value) == "decision must be commit, decline, preview, aws_signin or region"
+        assert (
+            str(err.value)
+            == "decision must be commit, decline, preview, aws_signin, region or remove"
+        )

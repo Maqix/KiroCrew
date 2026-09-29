@@ -2,9 +2,11 @@
 
 One card carries the whole journey: Sign in to AWS (``aws_signin``), the region
 when AWS names none (``region``), Build, the home's own Kiro sign-in, then Move
-in. Its build runs in the background, so a pending home card neither holds other
-proposals back nor is held back by one. The first run shows one on its own right
-after privacy (payload ``offer``), which is the gateway's step, not the agent's.
+in. A build a gateway restart cut short leaves a failed card that can remove
+what it created (``remove``). Its build runs in the background, so a pending
+home card neither holds other proposals back nor is held back by one. The first
+run shows one on its own right after privacy (payload ``offer``), which is the
+gateway's step, not the agent's.
 The flow is ``dashboard/setup_flow.py``, ``setup_aws_signin.py``,
 ``home_signin.py`` and ``setup_move_in.py``.
 """
@@ -68,6 +70,19 @@ async def _region(
     return await sf._decide_home_region(state, card, card_hash, input_)
 
 
+async def _remove(
+    state: "DashboardState",
+    card: sc.SetupCard,
+    card_hash: str,
+    input_: dict[str, Any],
+    *,
+    same_machine: bool,
+) -> sc.SetupCard:
+    from kiro_crew.dashboard import setup_flow as sf
+
+    return await sf._decide_home_remove(state, card, card_hash, input_)
+
+
 async def _on_claim(card: sc.SetupCard, same_machine: bool) -> sc.SetupCard:
     # Whether a build started by this click may open the home's Kiro sign-in
     # page in the owner's browser (``home_signin``).
@@ -113,6 +128,9 @@ ACTION = SetupAction(
         ),
         sc.DECISION_REGION: Decision(
             run=_region, refusal="this card does not ask for a region", claimed=False
+        ),
+        sc.DECISION_REMOVE: Decision(
+            run=_remove, refusal="only a home card removes what its build created", claimed=False
         ),
     },
     on_claim=_on_claim,

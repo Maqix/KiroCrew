@@ -327,6 +327,22 @@ def _new_job_id() -> str:
     return uuid.uuid4().hex[:_JOB_ID_LEN]
 
 
+#: How :meth:`LaunchJobStore.reap_orphans` begins the error of a launch a gateway
+#: restart cut short before its crew was created; :func:`interrupted_by_restart`
+#: reads it back.
+RESTART_INTERRUPTED = "Interrupted — Kiro Crew restarted while this setup was running."
+
+
+def interrupted_by_restart(job: "LaunchJob") -> bool:
+    """Whether *job* failed because a gateway restart took its worker away."""
+    return job.status == FAILED and job.error.startswith(RESTART_INTERRUPTED)
+
+
+def stack_may_exist(job: "LaunchJob") -> bool:
+    """Whether a stack may exist for *job*'s tag: its provision step was reached."""
+    return bool(job.tag) and job.step(STEP_PROVISION).state != STEP_PENDING
+
+
 class LaunchJobStore:
     """One JSON file per job under ``<config_dir>/run/cloud-launch-jobs/``.
 
@@ -575,7 +591,7 @@ class LaunchJobStore:
                     step.state = STEP_FAILED
             job.status = FAILED
             job.error = (
-                "Interrupted — Kiro Crew restarted while this setup was running. "
+                f"{RESTART_INTERRUPTED} "
                 f"The {_resource_noun(job)} may still exist; check your crews before retrying."
             )
             job.signin = None
@@ -1160,13 +1176,13 @@ def run_launch(
             _abort_signin(started, job)
         # Captured before the loop below rewrites the step states: anything past
         # PENDING means a CloudFormation stack may already exist for this tag.
-        stack_may_exist = bool(job.tag) and job.step(STEP_PROVISION).state != STEP_PENDING
+        stack_left = stack_may_exist(job)
         for s in job.steps:
             if s.state == STEP_ACTIVE:
                 s.state = STEP_SKIPPED
         job.signin = None
         job.status = CANCELLED
-        if stack_may_exist:
+        if stack_left:
             _rollback_cancelled_stack(job, store, engine)
         store.save(job)
         return job

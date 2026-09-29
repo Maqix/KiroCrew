@@ -52,6 +52,9 @@ const ERROR_KEY = {
   home_spend_limit: 'components.setupCard.error_home_spend_limit',
   // A build the home card lost track of was stopped (setup_flow._stop_untracked_build).
   home_build_untracked: 'components.setupCard.error_home_build_untracked',
+  // Removing what a build a restart cut short left (setup_flow._decide_home_remove).
+  home_nothing_to_remove: 'components.setupCard.error_home_nothing_to_remove',
+  home_remove_running: 'components.setupCard.error_home_remove_running',
   // The home card's region picker (setup_flow._decide_home_region).
   home_region_not_offered: 'components.setupCard.error_home_region_not_offered',
   home_region_no_answer: 'components.setupCard.error_home_region_no_answer',
@@ -90,6 +93,55 @@ export function errorText(code: string | undefined, serverMessage: string): stri
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+
+/** What a home build a restart cut short may have left in AWS (`outcome.leftover`). */
+export interface HomeLeftover {
+  tag: string
+  stack: string
+  region: string
+}
+
+const LEFTOVER_TAG_RE = /^[a-zA-Z0-9-]{1,51}$/
+const LEFTOVER_REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d$/
+
+/**
+ * The stack a failed home card offers to remove, when its outcome names a
+ * well-formed one. The gateway checks it again against the build's own record
+ * before anything is deleted; this only decides what the card shows.
+ */
+export function homeLeftover(card: SetupCard): HomeLeftover | null {
+  if (card.kind !== 'home' || card.status !== 'failed') return null
+  const raw = card.outcome?.leftover
+  if (!raw || typeof raw !== 'object') return null
+  const l = raw as Record<string, unknown>
+  const tag = str(l.tag)
+  const region = str(l.region)
+  if (!LEFTOVER_TAG_RE.test(tag) || !LEFTOVER_REGION_RE.test(region) || str(l.stack) !== `kirocrew-${tag}`) return null
+  return { tag, stack: str(l.stack), region }
+}
+
+/** Where a removal of a build's leftovers stands: '', 'active', 'done' or 'failed'. */
+export function homeRemovalState(card: SetupCard): string {
+  const removal = card.outcome?.removal
+  return removal && typeof removal === 'object' ? str((removal as Record<string, unknown>).state) : ''
+}
+
+/**
+ * A failed card's sentence. A home build a restart cut short says it may have
+ * left billed parts in AWS and where to remove them, since no worker is left to
+ * roll them back; one stopped in this process keeps its own words.
+ */
+export function failedText(card: SetupCard): string {
+  const error = card.error
+  if (!error) return ''
+  if (card.kind === 'home') {
+    if (homeLeftover(card)) return i18nT('components.setupCard.error_home_build_leftover')
+    if (error.code === 'home_build_untracked' && card.outcome?.stopped !== true) {
+      return i18nT('components.setupCard.error_home_build_leftover_elsewhere')
+    }
+  }
+  return errorText(error.code, error.message)
+}
 
 /**
  * The first run's "Where should your crew live?" step: a home card the gateway

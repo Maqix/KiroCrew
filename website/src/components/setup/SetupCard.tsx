@@ -52,7 +52,8 @@ import {
 import ErrorNotice from '../ErrorNotice'
 import { Btn, SendBtn } from '../ui'
 import type { SetupActions, SetupFooter } from './SetupCardBodies'
-import { classicAction, errorText, resultStatusKey } from './setupCardCopy'
+import { HomeLeftoverRemoval } from './SetupCardBodies'
+import { classicAction, errorText, failedText, homeLeftover, homeRemovalState, resultStatusKey } from './setupCardCopy'
 import { cardTitle, committedDetail, SetupCardBody, setupCardEntry } from './setupCardRegistry'
 
 /** How often a `working` / `waiting` card re-reads itself, beside the WS push. */
@@ -102,8 +103,10 @@ export default function SetupCard({ cardId, placement = 'inline' }: { cardId: st
     queryFn: () => api.setupCard(cardId),
     refetchInterval: q => {
       if (decidingRef.current) return false
-      const status = q.state.data?.status
-      return status === 'working' || status === 'waiting' ? SETUP_CARD_POLL_MS : false
+      const data = q.state.data
+      const status = data?.status
+      if (status === 'working' || status === 'waiting') return SETUP_CARD_POLL_MS
+      return data && homeRemovalState(data) === 'active' ? SETUP_CARD_POLL_MS : false
     },
   })
   const card = query.data
@@ -132,9 +135,10 @@ export default function SetupCard({ cardId, placement = 'inline' }: { cardId: st
       decidingRef.current = true
       await qc.cancelQueries({ queryKey: setupCardQueryKey(cardId) })
       const previous = qc.getQueryData<SetupCardData>(setupCardQueryKey(cardId))
-      if (previous) {
+      if (previous && !isTerminalSetupStatus(previous.status)) {
         // Optimistic: the buttons disable and the spinner shows at once. Only a
-        // status flip; the payload and hash stay the server's.
+        // status flip; the payload and hash stay the server's. A decided card's
+        // own action (a home's removal) keeps its result line meanwhile.
         qc.setQueryData<SetupCardData>(setupCardQueryKey(cardId), { ...previous, status: 'working', error: null })
       }
       return { previous }
@@ -358,7 +362,13 @@ export default function SetupCard({ cardId, placement = 'inline' }: { cardId: st
       } ${high && !terminal ? 'border-accent ring-1 ring-accent/30' : 'border-border'}`}
     >
       {terminal ? (
-        <ResultLine card={card} title={title} />
+        <ResultLine
+          card={card}
+          title={title}
+          busy={decide.isPending}
+          actionError={decideMessage}
+          onRemove={tag => run('remove', { tag })}
+        />
       ) : (
         <>
           <header className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
@@ -387,8 +397,17 @@ export default function SetupCard({ cardId, placement = 'inline' }: { cardId: st
   )
 }
 
-/** The compact line a decided card collapses into. */
-function ResultLine({ card, title }: { card: SetupCardData; title: string }) {
+/**
+ * The compact line a decided card collapses into. A failed home card whose build
+ * a restart cut short also offers to remove what it left in AWS.
+ */
+function ResultLine({ card, title, busy, actionError, onRemove }: {
+  card: SetupCardData
+  title: string
+  busy: boolean
+  actionError: string
+  onRemove: (tag: string) => void
+}) {
   const { t } = useTranslation()
   const Icon =
     card.status === 'committed' ? CircleCheck
@@ -399,6 +418,8 @@ function ResultLine({ card, title }: { card: SetupCardData; title: string }) {
     card.status === 'committed' ? 'text-ok' : card.status === 'failed' ? 'text-danger' : 'text-muted'
   const detail = card.status === 'committed' ? committedDetail(card) : null
   const statusKey = resultStatusKey(card)
+  const leftover = homeLeftover(card)
+  const removal = leftover ? homeRemovalState(card) : ''
   return (
     <div className="flex flex-col gap-1 min-w-0" data-testid="setup-card-result">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0 text-[13px]">
@@ -408,12 +429,21 @@ function ResultLine({ card, title }: { card: SetupCardData; title: string }) {
       </div>
       {detail}
       {/* A failed card is settled server-side; the hand-off loses nothing. */}
-      {card.status === 'failed' && card.error && (
+      {card.status === 'failed' && card.error && removal !== 'done' && (
         <ErrorNotice
           variant="inline"
-          message={errorText(card.error.code, card.error.message)}
+          message={failedText(card)}
           askAgent
           testId="setup-card-failed-error"
+        />
+      )}
+      {leftover && (
+        <HomeLeftoverRemoval
+          leftover={leftover}
+          state={removal}
+          busy={busy}
+          error={actionError}
+          onRemove={() => onRemove(leftover.tag)}
         />
       )}
     </div>

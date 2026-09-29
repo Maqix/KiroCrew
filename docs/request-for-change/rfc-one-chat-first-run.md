@@ -480,8 +480,12 @@ locally meanwhile. When the home is healthy and signed in, the card turns into
 **Move in**: one click hands the crew over (memory, schedules, settings, SOUL.md
 and USER.md, and this chat) and the same conversation continues from the home.
 The build runs in AWS and in the gateway, not in the browser, so closing the tab
-or letting the laptop sleep does not stop it; a gateway restart mid-build is not
-resumed yet (the card is left waiting, an open item for Phase 2b).
+or letting the laptop sleep does not stop it. A gateway restart mid-build takes
+the build's worker along, so the card is picked up at boot and settled from the
+build's real outcome: built (Move in, or its sign-in first) or failed. A build
+cut short before the home registered is not driven on yet; since no worker is
+left to roll it back, its card says parts of it may still be in the AWS account
+and billing, and offers to remove them with the same teardown Remote Crew uses.
 
 ### 5.8 The first week: small steps, not a longer first run
 
@@ -766,8 +770,12 @@ first run any longer. Five rules shape it:
    on creating billed resources. Three unreadable reads in a row, or a crashed
    watcher, set the launch's own cancel (its stack rolls back at the next
    checkpoint) and fail the card. The watcher lives in the gateway, so a gateway
-   restart mid-build is not resumed yet: the launch job is reaped as the
-   Instances hub reaps any orphaned launch, and the card is left waiting.
+   restart takes it along: at boot the launch job is reaped as the Instances hub
+   reaps any orphaned launch, the card gets its watcher back, and the watcher
+   settles it from the job (built, not signed in yet, failed, or untracked). A
+   build cut short after its stack began has nothing left to roll it back, so
+   the card says it may still be billing and offers "Remove what it created",
+   the owner's click running the Instances hub's own destroy for that tag.
 2. **Money and credentials are the user's, and the user says yes.** Nothing is
    asked in the terminal, and nothing is built without the owner's click on a
    card that states the cost.
@@ -1101,8 +1109,9 @@ author's branch as a prototype for review, not as merged work, and none of the
 exits above has been measured. Verified by hand on Linux, with real AWS for
 the Lite home, the home sign-in page and the region reads. Still to do before
 any exit: a real end-to-end run with a person who approves the home's sign-in
-and moves in; macOS and Windows runs of the one-command installs; resuming a
-home build across a gateway restart; installing a home from the signed release
+and moves in; macOS and Windows runs of the one-command installs; driving a
+home build on after a gateway restart that cut it short before the home
+registered (today its card fails and offers to remove what it left); installing a home from the signed release
 wheel rather than from source; the background model role and job pre-filters
 of §6.7; and every Phase 0 test.
 

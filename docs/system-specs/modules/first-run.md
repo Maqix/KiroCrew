@@ -119,7 +119,7 @@ for a picked region), so a click carrying the old hash is refused.
 | `channel` | agent | the channel (Telegram, the one in `setup_cards.CHANNELS`) | stores the bot token typed into the card and turns the channel on, then goes `waiting` with a one-time pairing code; a `/pair <code>` DM to the bot allowlists that sender and commits. See [Channel pairing](#channel-pairing) |
 | `cron` | agent | name, prompt summary, schedule in words, timezone (the full prompt is private); at most hourly (`CRON_MIN_EVERY_SECS`) | `preview`: creates the job disabled and silent, runs it once and shows the output, then returns to `pending`. `commit` (Keep it): makes it non-silent and enables it, and lifts the card budget. `decline`: removes the preview job. See [Job previews](#job-previews) |
 | `service` | agent | platform, the command, whether a terminal is needed, installed | macOS: installs the launchd agent. Linux: verifies the unit exists (the owner runs `kirocrew stop && kirocrew service install`, which needs sudo) |
-| `home` | the gateway, as the first run's home step and for `kirocrew start --home cloud`; the agent, on request | provider, region, AWS profile, whether AWS is signed in and the account's last four digits, the account's plan, the size options, estimated monthly cost, who bills it, whether the run is simulated; the sign-up links when not signed in; the region picker when no region answers | one card for the whole journey, each step a decision on it: `aws_signin` ([Signing in to AWS](#signing-in-to-aws)), `region` ([Asking for the region](#asking-for-the-region)), then `commit` by phase: Build ([Building the home](#building-the-home)), Sign the home in to Kiro ([The home's Kiro sign-in](#the-homes-kiro-sign-in)), Move in ([Moving in](#moving-in)). Commits with `moved: true`; decline keeps the crew on this machine |
+| `home` | the gateway, as the first run's home step and for `kirocrew start --home cloud`; the agent, on request | provider, region, AWS profile, whether AWS is signed in and the account's last four digits, the account's plan, the size options, estimated monthly cost, who bills it, whether the run is simulated; the sign-up links when not signed in; the region picker when no region answers | one card for the whole journey, each step a decision on it: `aws_signin` ([Signing in to AWS](#signing-in-to-aws)), `region` ([Asking for the region](#asking-for-the-region)), then `commit` by phase: Build ([Building the home](#building-the-home)), Sign the home in to Kiro ([The home's Kiro sign-in](#the-homes-kiro-sign-in)), Move in ([Moving in](#moving-in)). Commits with `moved: true`; decline keeps the crew on this machine. A failed card whose build a restart cut short offers `remove` ([What a restart leaves in AWS](#what-a-restart-leaves-in-aws)) |
 
 ## Invariants
 
@@ -206,7 +206,7 @@ A kind is one module plus copy. The steps, in order:
    - `commit`, and any `decisions` beside commit and decline. A `Decision` with
      `claimed=True` runs exactly like a commit (the cron card's `preview`);
      `claimed=False` is the whole decision and does its own governance check and
-     hash-bound claim (the home card's `aws_signin` and `region`). Each has the
+     hash-bound claim (the home card's `aws_signin`, `region` and `remove`). Each has the
      `refusal` a card of another kind gets (`invalid_decision`), and its name
      goes in `setup_cards.DECISIONS`.
    - `title` and `result_detail`: what the model reads in the card's row and its
@@ -544,11 +544,64 @@ A build the card can no longer follow is stopped: its job unreadable or gone for
 `_UNTRACKED_POLLS` (3) polls in a row, or the watcher itself failing, sets the
 launch's own cancel event, whose worker rolls its stack back at the next
 checkpoint, and the card fails with `home_build_untracked`
-(`_stop_untracked_build`). A build nobody can see is one nobody would stop. The
-watcher lives in process memory and nothing re-arms it after a gateway restart:
-the launch job is reaped like any orphaned launch
-(`cloud/launch_job.py` `LaunchJobStore.reap_orphans`: failed before its connect
-step, parked unsigned after it), and the card stays `waiting`.
+(`_stop_untracked_build`). A build nobody can see is one nobody would stop.
+
+At most one watcher runs per card (`_start_home_watch`, keyed by card id), and
+it lives in process memory, so a gateway restart takes it and the launch worker
+along. At boot, after the session restore and next to the first-run session,
+`resume_home_builds` runs the launch store's once-per-process reap
+(`handlers_cloud._astore`, `cloud/launch_job.py`
+`LaunchJobStore.reap_orphans`: a job no worker here drives is failed before its
+connect step, and parked done, not signed in, after it) and starts the watcher
+again for every home card still `waiting` with a private `job_id`, with
+`may_open=False`: a watcher resumed after a restart never opens a page. The
+watcher then follows a build still driven in this process, and otherwise
+settles the card at its first poll from the job's real outcome: failed is
+`home_build_failed` with the job's reason (for a restart before the home
+registered, "Kiro Crew restarted while this setup was running", and the stack
+it may have left is the owner's to check in the crews list), done and signed in
+is `pending` and `ready`, done but not signed in is phase `signin` with
+`needs_signin`, and a job it cannot read is `home_build_untracked`
+(`test_home_resume.py`). A build cut short is not driven on from the new
+process.
+
+### What a restart leaves in AWS
+
+A build a restart cut short once its stack may have been created has no worker
+left to roll the stack back, and the stack keeps billing. The launch job says
+which: `launch_job.interrupted_by_restart` (the reap's `RESTART_INTERRUPTED`
+error) and `stack_may_exist` (a tag, and the provision step reached). The
+watcher that settles such a card adds `outcome.leftover: {tag, stack, region}`,
+and the card says, instead of the job's reason, "Kiro Crew lost track of this
+home's build when it restarted, so parts of it may still be in your AWS account
+and billing. Remove them here, or from Remote Crew." A `home_build_untracked`
+card is worded from `outcome.stopped`: `true` (this process's worker got the
+cancel and rolls the stack back) keeps "…so it stopped it; anything it had
+created in AWS is being removed", and `false` (no worker here: nothing rolls it
+back, and the tag is not known) says the same restart sentence ending "Remove
+them from Remote Crew."; the server's own message, which the agent reads, says
+the same.
+
+A card with `leftover` shows the stack and region it would delete and a **Remove
+what it created** button: the `remove` decision (`input.tag`), a `claimed=False`
+decision on the home action. Nothing runs before the click.
+`_decide_home_remove` checks governance and the payload hash, then reads the
+launch job again and acts on it alone, never on the card, whose store the
+agent's sandbox can write: the card must be `failed`, the job must satisfy both
+checks above (`home_nothing_to_remove` otherwise), and `input.tag` must be the
+job's tag (`card_hash_mismatch` otherwise). Under the store lock it records
+`outcome.removal: {state: active}`, so a second click while it runs or after it
+is done is `home_remove_running`, and runs the Instances hub's destroy in the
+background: `handlers_cloud.teardown_stack`, which is `ec2.destroy` (no wait),
+then `_teardown_after_delete`, the same code `DELETE /api/cloud/{tag}` runs
+(`wait_for_delete`, then the instance's registration and the uploaded source,
+only once AWS confirms the stack is gone). The card stays `failed`, keeps its
+error, and shows the removal running, then `done` ("Removed: AWS confirms the
+stack … is gone.") or `failed` with the button again. The AWS error goes to the
+log only, since it can carry the whole account id (SC4). A removal a restart cut
+short is marked `failed` at boot by `resume_home_builds`. Audited as
+`setup_card.remove` (tests: `test_home_leftover.py`,
+`SetupCardHomeLeftover.test.tsx`).
 
 ### The home's Kiro sign-in
 
