@@ -62,7 +62,22 @@ def _archive(state, caller, peer, *, messages=2, title="") -> str:
     key = peer.key
     asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=key))
     assert key not in state._slots
-    assert state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
+    meta = state.conversation_log.get_metadata(f"dashboard:{key}")
+    assert meta.get("closed")
+    # Backdate the close so it is strictly BEFORE any resume this test then runs.
+    #
+    # `clear_closed`'s compare-and-clear refuses when `closed_at >= resume_started_at`,
+    # deliberately conservative so a close landing at the resume's own boundary keeps its
+    # marker. Both values come from `time.time()`, whose granularity is the platform's:
+    # on Windows the ~15.6 ms interrupt clock, so a close and the resume microseconds
+    # behind it can read back the IDENTICAL float, the guard sees equal, and the marker
+    # survives -- the revive then reports a conflict. Whether any one test straddles a
+    # tick is luck, which makes that a flake rather than a signal. The precondition these
+    # tests mean is "this session was closed BEFORE the resume began", so state it
+    # outright instead of leaning on clock granularity to imply it.
+    state.conversation_log.update_metadata(
+        f"dashboard:{key}", {"closed_at": float(meta["closed_at"]) - 60.0}
+    )
     return key
 
 
