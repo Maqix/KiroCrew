@@ -16,8 +16,14 @@
  * than the card (`setupCardAtTail`) or the user scrolls up to read. The bar is
  * the same box, so the fold animates rather than swapping one thing for
  * another; the cards stay mounted (inert) inside it, so a half-filled card
- * keeps its input. It never folds under a focused field. When the card is the
- * newest thing, the tray shows it in full.
+ * keeps its input. When the card is the newest thing, the tray shows it in full.
+ *
+ * It never folds out from under someone using it. Once the user touches a card
+ * (a pointer press, a key, focus inside it), newer content no longer folds the
+ * tray until that card is decided, they hide it, or they scroll up themselves.
+ * That is keyed to the card, not to where focus happens to be: focus moves for
+ * reasons that are not the user leaving (a label's mousedown blurs the button
+ * before it, and a decided card's button unmounts without a blur).
  *
  * Same placement as PendingQuestionCard: mounted above the composer by the
  * single-chat view and by every grid pane, for that surface's own slot.
@@ -122,7 +128,9 @@ export default function PendingSetupCards({
   // An explicit Show / Hide. Holds until the transcript's tail changes (the
   // next card, or the first thing written after one) or the user scrolls up.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
-  const [focusInCards, setFocusInCards] = useState(false)
+  // The card the user is working in; holds only while that card is live.
+  const [engagedId, setEngagedId] = useState<string | null>(null)
+  const engaged = !!engagedId && live.some(c => c.id === engagedId)
   const lastIntentRef = useRef<ScrollIntent | null>(null)
   const atBottomRef = useRef(atBottom)
   atBottomRef.current = atBottom
@@ -130,6 +138,7 @@ export default function PendingSetupCards({
   useEffect(() => {
     setReadingBack(false)
     setUserOpen(null)
+    setEngagedId(null)
     lastIntentRef.current = null
   }, [slot])
 
@@ -157,6 +166,7 @@ export default function PendingSetupCards({
       if (dir === 'up') {
         setReadingBack(true)
         setUserOpen(null)
+        setEngagedId(null)
       } else if (atBottomRef.current) {
         setReadingBack(false)
       }
@@ -184,12 +194,12 @@ export default function PendingSetupCards({
     }
   }, [scrollerRef, hasLive])
 
-  // Focus inside a card (typing a token, picking a size) always holds it open.
-  const expanded = focusInCards || (userOpen ?? (cardIsNewest && !readingBack))
+  const expanded = engaged || (userOpen ?? (cardIsNewest && !readingBack))
   const showBar = !expanded || userOpen === true
 
   const toggle = useCallback(() => {
     setReadingBack(false)
+    if (expanded) setEngagedId(null)
     setUserOpen(!expanded)
   }, [expanded])
 
@@ -297,8 +307,6 @@ export default function PendingSetupCards({
         // Folded cards stay mounted, so a half-filled one keeps its input, but
         // out of reach: no focus, no reading.
         {...(expanded ? {} : { inert: '', 'aria-hidden': true })}
-        onFocus={() => setFocusInCards(true)}
-        onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusInCards(false) }}
         data-testid="setup-card-tray-cards"
       >
         {/* Creation order, so the newest card sits last, nearest the composer. */}
@@ -307,6 +315,10 @@ export default function PendingSetupCards({
             <motion.div
               key={card.id}
               className="min-w-0"
+              // Capture phase, so the card's own handlers cannot hide the touch.
+              onPointerDownCapture={() => setEngagedId(card.id)}
+              onKeyDownCapture={() => setEngagedId(card.id)}
+              onFocusCapture={() => setEngagedId(card.id)}
               initial={reduceMotion ? false : { opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={reduceMotion ? undefined : { opacity: 0 }}

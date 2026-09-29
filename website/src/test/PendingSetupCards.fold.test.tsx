@@ -18,7 +18,7 @@ import { server } from '../../integration/mocks/server'
 import PendingSetupCards from '../components/setup/PendingSetupCards'
 import SetupCardRow from '../components/setup/SetupCardRow'
 import { highlightSetupCardRow, setupCardAtTail } from '../components/setup/setupCardTray'
-import type { SetupCard as Card } from '../api/setupCards'
+import { applySetupCardUpdate, type SetupCard as Card } from '../api/setupCards'
 import type { ChatMessage } from '../types'
 
 const SLOT = 'chat-1-1790000000'
@@ -73,7 +73,7 @@ function renderSurface(props: SurfaceProps) {
     </QueryClientProvider>
   )
   const utils = render(wrap(props))
-  return { ...utils, update: (p: SurfaceProps) => utils.rerender(wrap(p)) }
+  return { ...utils, qc, update: (p: SurfaceProps) => utils.rerender(wrap(p)) }
 }
 
 const tray = () => screen.getByTestId('setup-card-tray')
@@ -163,13 +163,92 @@ describe('the tray folds while the user scrolls up to read', () => {
     expectOpen()
   })
 
-  it('never folds under a focused field', async () => {
-    const { update } = renderSurface({ messages: ASKED })
-    const full = await within(await screen.findByTestId('setup-card-tray')).findByTestId('setup-card')
-    act(() => within(full).getByTestId('setup-card-primary').focus())
-    update({ messages: [...ASKED, HERMES] })
+})
+
+// The home card's size step: radio rows and a "What's the difference?" toggle,
+// the controls the recording caught the tray folding out from under.
+const sizeOption = (key: string, label: string, monthly: number) => ({
+  key, label, note: 'many_chats', instance_type: 't4g.xlarge', vcpu: 2, ram_gb: 8, monthly_usd: monthly, free_plan_ok: true,
+})
+const HOME = card({
+  id: 'sc-home', kind: 'home', stakes: 'high', classic: { kind: 'route', target: '/settings' },
+  payload: {
+    provider: { id: 'aws_ec2', label: 'Your AWS account' }, simulated: false, region: 'us-east-1', profile: 'default',
+    size: { key: 'starter', label: 'Starter', instance_type: 'm7i-flex.large', ram_gb: 8, vcpu: 2 },
+    monthly_usd: 72, billed_by: 'AWS, to your own account', aws_signed_in: true, aws_account: '…1234',
+    sign_in_commands: ['aws login'],
+    size_options: [sizeOption('starter', 'Starter', 72), sizeOption('light', 'Standard', 101)],
+    size_default: 'starter', plan: { type: 'PAID' },
+  },
+})
+const HOME_ASKED = [say('Where should your crew live?'), cardRow('sc-home')]
+const radio = (key: string) => within(screen.getByTestId(`setup-card-home-size-${key}`)).getByRole('radio')
+
+describe('the tray never folds out from under someone using a card', () => {
+  beforeEach(() => serveCards([HOME]))
+
+  it('stays open through a size click, the blur it causes and newer content', async () => {
+    const { update } = renderSurface({ messages: HOME_ASKED })
+    const summary = await screen.findByText('What’s the difference?')
+    // The recording: open the disclosure, the agent writes on, then pick a size.
+    fireEvent.focus(summary)
+    update({ messages: [...HOME_ASKED, HERMES] })
     expectOpen()
-    act(() => (document.activeElement as HTMLElement).blur())
+    const standard = screen.getByTestId('setup-card-home-size-light')
+    fireEvent.pointerDown(standard)
+    // A label's mousedown blurs the focused summary with nothing to receive
+    // focus; that blur is not the user leaving.
+    fireEvent.blur(summary, { relatedTarget: null })
+    fireEvent.click(radio('light'))
+    expectOpen()
+    expect(radio('light')).toBeChecked()
+  })
+
+  it('holds for content that arrives after a press, with no focus involved', async () => {
+    const { update } = renderSurface({ messages: HOME_ASKED })
+    await screen.findByText('What’s the difference?')
+    fireEvent.pointerDown(screen.getByTestId('setup-card-home-size-light'))
+    update({ messages: [...HOME_ASKED, HERMES] })
+    expectOpen()
+    update({ messages: [...HOME_ASKED, HERMES, say('Also: which email should the morning brief go to?')] })
+    expectOpen()
+  })
+
+  it('still folds when the user scrolls up themselves', async () => {
+    const { update } = renderSurface({ messages: HOME_ASKED })
+    await screen.findByText('What’s the difference?')
+    fireEvent.keyDown(radio('starter'), { key: 'ArrowDown' })
+    update({ messages: [...HOME_ASKED, HERMES] })
+    expectOpen()
+    fireEvent.wheel(screen.getByTestId('scroller'), { deltaY: -120 })
+    expectFolded()
+  })
+
+  it('lets go once the card is decided, and folds for what was already newer', async () => {
+    serveCards([HOME, card({ id: 'sc-b', kind: 'profile', payload: { fields: { role: 'PM' } } })])
+    const { update, qc } = renderSurface({ messages: [...HOME_ASKED, cardRow('sc-b')] })
+    await screen.findByText('What’s the difference?')
+    fireEvent.pointerDown(screen.getByTestId('setup-card-home-size-light'))
+    update({ messages: [...HOME_ASKED, cardRow('sc-b'), HERMES] })
+    expectOpen()
+    act(() => { applySetupCardUpdate(qc, { ...HOME, status: 'committed' }, SLOT) })
+    await waitFor(() => expectFolded())
+  })
+
+  it('decides at open time: a tray that opens over newer content opens folded, and Show plus a press holds it', async () => {
+    const { update } = renderSurface({ messages: [...HOME_ASKED, HERMES] })
+    await screen.findByTestId('setup-card-tray')
+    expectFolded()
+    fireEvent.click(screen.getByRole('button', { name: 'Show' }))
+    expectOpen()
+    fireEvent.pointerDown(screen.getByTestId('setup-card-home-size-light'))
+    // A row naming some other card moves the tail and resets Show; the press still holds.
+    update({ messages: [...HOME_ASKED, HERMES, cardRow('sc-home-note'), say('One more thing.')] })
+    expectOpen()
+    // Hide is the user folding it: that releases the card too.
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }))
+    expectFolded()
+    update({ messages: [...HOME_ASKED, HERMES, say('And another.')] })
     expectFolded()
   })
 })
