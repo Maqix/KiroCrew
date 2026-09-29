@@ -6,26 +6,36 @@
 import { useSyncExternalStore } from 'react'
 
 import { setupCardRefOf } from '../../api/setupCards'
-import { REASONING_ROLES } from '../../pages/chat/groupDisplayItems'
+import { isSystemNoticeKind } from '../../lib/systemNotice'
+import { TURN_OPENER_ROLES } from '../../pages/chat/groupDisplayItems'
+import { injectOpensTurn } from '../../pages/chat/RecoveryCard'
 import type { ChatMessage } from '../../types'
 
-/** Rows a reader does not stop at: tool lines, reasoning, queued sends. */
-const QUIET_ROLES: ReadonlySet<string> = new Set<string>(['tool', 'queued', ...REASONING_ROLES])
+/**
+ * Whether a row moves the conversation past a card proposed before it: the
+ * user writing (a steer included), a row that opens a later turn (the same
+ * openers the turn grouping uses: a nudge, a sub-agent completion, a cron or
+ * setup-result inject...), or a notice. Rows of the proposing turn itself do
+ * not, whatever they say: the agent nearly always follows a card with "I've put
+ * a card on screen", then tool lines and its done marker.
+ */
+function movesPastCard(m: ChatMessage): boolean {
+  if (m.role === 'user' || m.role === 'notice') return true
+  if (TURN_OPENER_ROLES.has(m.role) || injectOpensTurn(m)) return true
+  return m.role === 'assistant' && isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))
+}
 
 /**
- * The card whose transcript row is the newest thing to read, or `null` when the
- * transcript has something newer (the agent kept writing, the user replied, a
- * notice landed). Walks back from the end past quiet rows and empty
- * placeholders, so a card followed only by tool lines or an empty streaming row
- * still counts as newest. With two cards in a row, the later one is returned.
+ * The card proposed in the transcript's latest turn, or `null` once the
+ * conversation has moved past it (see {@link movesPastCard}). With two cards in
+ * that turn, the later one is returned.
  */
 export function setupCardAtTail(messages: readonly ChatMessage[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     const ref = setupCardRefOf(m.meta)
     if (ref) return ref.id
-    if (m.role !== 'user' && (QUIET_ROLES.has(m.role) || !m.content?.trim())) continue
-    return null
+    if (movesPastCard(m)) return null
   }
   return null
 }

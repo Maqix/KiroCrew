@@ -12,16 +12,17 @@
  *
  * The tray must never crowd out what the agent is saying. It is capped at a
  * third of its chat pane (scrolling inside), and it folds to a one-line bar —
- * "<title> · needs you · Show" — whenever the transcript has something newer
- * than the card (`setupCardAtTail`) or the user scrolls up to read. The bar is
+ * "<title> · needs you · Show" — once the conversation moves past the card (a
+ * user message, a later turn or a notice: `setupCardAtTail`; the proposing
+ * turn's own trailing text does not count) or the user scrolls up to read. The bar is
  * the same box, so the fold animates rather than swapping one thing for
  * another; the cards stay mounted (inert) inside it, so a half-filled card
- * keeps its input. When the card is the newest thing, the tray shows it in full.
+ * keeps its input. A card proposed in the latest turn shows in full.
  *
  * It never folds out from under someone using it. Once the user touches a card
- * (a pointer press, a key, focus inside it), newer content no longer folds the
- * tray until that card is decided, they hide it, or they scroll up themselves.
- * That is keyed to the card, not to where focus happens to be: focus moves for
+ * (a pointer press, a key, focus inside it), the conversation moving on no
+ * longer folds the tray until that card is decided, they hide it, or they
+ * scroll up themselves. That is keyed to the card, not to where focus happens to be: focus moves for
  * reasons that are not the user leaving (a label's mousedown blurs the button
  * before it, and a decided card's button unmounts without a blur).
  *
@@ -126,7 +127,7 @@ export default function PendingSetupCards({
   // they are there, or by Show.
   const [readingBack, setReadingBack] = useState(false)
   // An explicit Show / Hide. Holds until the transcript's tail changes (the
-  // next card, or the first thing written after one) or the user scrolls up.
+  // next card, or the conversation moving past one) or the user scrolls up.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   // The card the user is working in; holds only while that card is live.
   const [engagedId, setEngagedId] = useState<string | null>(null)

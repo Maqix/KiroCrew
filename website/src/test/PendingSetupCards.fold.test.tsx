@@ -1,11 +1,12 @@
 /**
  * The tray must never crowd out what the agent is saying.
  *
- * It shows a live card in full while that card is the newest thing in the
- * transcript, folds to a one-line bar ("<title> · needs you · Show") once
- * something newer lands or the user scrolls up to read, opens again in one
- * click, never folds under a focused field, and caps itself at a third of its
- * chat pane. Driven through MSW with the real SetupCard.
+ * It shows a card in full while the card's own turn is the latest (the agent's
+ * "I've put a card on screen" after it does not count), folds to a one-line bar
+ * ("<title> · needs you · Show") once the conversation moves past it (a user
+ * message, the next turn, a notice) or the user scrolls up to read, opens again
+ * in one click, never folds out from under someone using a card, and caps
+ * itself at a third of its chat pane. Driven through MSW with the real SetupCard.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -89,24 +90,39 @@ const expectFolded = () => {
 }
 
 const ASKED = [say('Where should your crew live?'), cardRow('sc-a')]
+/** The proposing turn's own follow-up: part of the card's turn, never "newer". */
+const TRAILING = say('I’ve put a profile card on screen: check it and click Save when it looks right.')
+const USER_REPLY = { role: 'user', cls: '', content: 'Can I change it later?' } as ChatMessage
 const HERMES = say('While that builds: do you already use another agent, like Hermes? I can bring its memory over.')
+/** The next agent turn: a setup result opens it (the owner decided some card), then the reply. */
+const NEXT_TURN = [
+  { role: 'inject', cls: '', content: 'Setup result: kept.', meta: { injectKind: 'setup_result' } } as ChatMessage,
+  HERMES,
+]
 
 beforeEach(() => {
   serveCards([card({ id: 'sc-a', kind: 'profile', payload: { fields: { role: 'SRE' } } })])
 })
 
-describe('the tray folds when the transcript has something newer', () => {
-  it('shows the card in full while it is the newest thing', async () => {
-    renderSurface({ messages: ASKED })
+describe('the tray folds once the conversation moves past the card', () => {
+  it('shows a fresh card in full, with its own turn’s trailing text, tools and placeholder after it', async () => {
+    renderSurface({
+      messages: [
+        ...ASKED, TRAILING,
+        { role: 'tool', cls: '', content: '🔧 wait' } as ChatMessage,
+        { role: 'streaming', cls: '', content: '' } as ChatMessage,
+      ],
+    })
     await within(await screen.findByTestId('setup-card-tray')).findByTestId('setup-card')
     expectOpen()
     expect(screen.queryByTestId('setup-card-tray-bar')).toBeNull()
   })
 
-  it('folds to a one-line bar when a newer agent message arrives, and opens in one click', async () => {
-    const { update } = renderSurface({ messages: ASKED })
+  it('folds to a one-line bar once the user writes after it, and opens in one click', async () => {
+    const { update } = renderSurface({ messages: [...ASKED, TRAILING] })
     await within(await screen.findByTestId('setup-card-tray')).findByTestId('setup-card')
-    update({ messages: [...ASKED, HERMES] })
+    expectOpen()
+    update({ messages: [...ASKED, TRAILING, USER_REPLY] })
     expectFolded()
     const bar = screen.getByTestId('setup-card-tray-bar')
     expect(bar).toHaveTextContent('Your profile')
@@ -120,29 +136,30 @@ describe('the tray folds when the transcript has something newer', () => {
     // Opened by hand, the bar stays as its header so it can be folded again.
     expect(within(screen.getByTestId('setup-card-tray-bar')).getByRole('button', { name: 'Hide' }))
       .toHaveAttribute('aria-expanded', 'true')
-    // More of the same reply does not undo the click.
-    update({ messages: [...ASKED, { ...HERMES, content: `${HERMES.content} It takes a minute.` }] })
+    // The reply to that message, and more of it, do not undo the click.
+    update({ messages: [...ASKED, TRAILING, USER_REPLY, HERMES] })
+    update({ messages: [...ASKED, TRAILING, USER_REPLY, { ...HERMES, content: `${HERMES.content} It takes a minute.` }] })
     expectOpen()
   })
 
-  it('ignores quiet rows after the card: tool lines and an empty streaming placeholder', async () => {
-    renderSurface({
-      messages: [...ASKED, { role: 'tool', cls: '', content: '🔧 wait' } as ChatMessage, { role: 'streaming', cls: '', content: '' } as ChatMessage],
-    })
+  it('folds when the next agent turn starts', async () => {
+    const { update } = renderSurface({ messages: [...ASKED, TRAILING] })
     await within(await screen.findByTestId('setup-card-tray')).findByTestId('setup-card')
     expectOpen()
+    update({ messages: [...ASKED, TRAILING, ...NEXT_TURN] })
+    expectFolded()
   })
 
-  it('opens in full again when the next card becomes the newest thing', async () => {
+  it('opens in full again when the next card is proposed', async () => {
     serveCards([
       card({ id: 'sc-a', kind: 'profile', payload: { fields: { role: 'SRE' } } }),
       card({ id: 'sc-b', kind: 'profile', payload: { fields: { role: 'PM' } } }),
     ])
-    const { update } = renderSurface({ messages: [...ASKED, HERMES] })
+    const { update } = renderSurface({ messages: [...ASKED, USER_REPLY, HERMES] })
     await screen.findByTestId('setup-card-tray')
     await waitFor(() => expect(screen.getByTestId('setup-card-tray-bar')).toHaveTextContent('2 cards'))
     expectFolded()
-    update({ messages: [...ASKED, HERMES, cardRow('sc-b')] })
+    update({ messages: [...ASKED, USER_REPLY, HERMES, cardRow('sc-b'), TRAILING] })
     expectOpen()
   })
 })
@@ -187,12 +204,12 @@ const radio = (key: string) => within(screen.getByTestId(`setup-card-home-size-$
 describe('the tray never folds out from under someone using a card', () => {
   beforeEach(() => serveCards([HOME]))
 
-  it('stays open through a size click, the blur it causes and newer content', async () => {
+  it('stays open through a size click, the blur it causes and the next turn', async () => {
     const { update } = renderSurface({ messages: HOME_ASKED })
     const summary = await screen.findByText('What’s the difference?')
-    // The recording: open the disclosure, the agent writes on, then pick a size.
+    // The recording: open the disclosure, the next turn lands, then pick a size.
     fireEvent.focus(summary)
-    update({ messages: [...HOME_ASKED, HERMES] })
+    update({ messages: [...HOME_ASKED, ...NEXT_TURN] })
     expectOpen()
     const standard = screen.getByTestId('setup-card-home-size-light')
     fireEvent.pointerDown(standard)
@@ -204,13 +221,13 @@ describe('the tray never folds out from under someone using a card', () => {
     expect(radio('light')).toBeChecked()
   })
 
-  it('holds for content that arrives after a press, with no focus involved', async () => {
+  it('holds through the next agent turn once the card was touched, with no focus involved', async () => {
     const { update } = renderSurface({ messages: HOME_ASKED })
     await screen.findByText('What’s the difference?')
     fireEvent.pointerDown(screen.getByTestId('setup-card-home-size-light'))
-    update({ messages: [...HOME_ASKED, HERMES] })
+    update({ messages: [...HOME_ASKED, ...NEXT_TURN] })
     expectOpen()
-    update({ messages: [...HOME_ASKED, HERMES, say('Also: which email should the morning brief go to?')] })
+    update({ messages: [...HOME_ASKED, ...NEXT_TURN, USER_REPLY, say('Also: which email should the morning brief go to?')] })
     expectOpen()
   })
 
@@ -218,7 +235,7 @@ describe('the tray never folds out from under someone using a card', () => {
     const { update } = renderSurface({ messages: HOME_ASKED })
     await screen.findByText('What’s the difference?')
     fireEvent.keyDown(radio('starter'), { key: 'ArrowDown' })
-    update({ messages: [...HOME_ASKED, HERMES] })
+    update({ messages: [...HOME_ASKED, ...NEXT_TURN] })
     expectOpen()
     fireEvent.wheel(screen.getByTestId('scroller'), { deltaY: -120 })
     expectFolded()
@@ -229,26 +246,26 @@ describe('the tray never folds out from under someone using a card', () => {
     const { update, qc } = renderSurface({ messages: [...HOME_ASKED, cardRow('sc-b')] })
     await screen.findByText('What’s the difference?')
     fireEvent.pointerDown(screen.getByTestId('setup-card-home-size-light'))
-    update({ messages: [...HOME_ASKED, cardRow('sc-b'), HERMES] })
+    update({ messages: [...HOME_ASKED, cardRow('sc-b'), ...NEXT_TURN] })
     expectOpen()
     act(() => { applySetupCardUpdate(qc, { ...HOME, status: 'committed' }, SLOT) })
     await waitFor(() => expectFolded())
   })
 
-  it('decides at open time: a tray that opens over newer content opens folded, and Show plus a press holds it', async () => {
-    const { update } = renderSurface({ messages: [...HOME_ASKED, HERMES] })
+  it('decides at open time: a tray that opens after the conversation moved on opens folded, and Show plus a press holds it', async () => {
+    const { update } = renderSurface({ messages: [...HOME_ASKED, ...NEXT_TURN] })
     await screen.findByTestId('setup-card-tray')
     expectFolded()
     fireEvent.click(screen.getByRole('button', { name: 'Show' }))
     expectOpen()
     fireEvent.pointerDown(screen.getByTestId('setup-card-home-size-light'))
     // A row naming some other card moves the tail and resets Show; the press still holds.
-    update({ messages: [...HOME_ASKED, HERMES, cardRow('sc-home-note'), say('One more thing.')] })
+    update({ messages: [...HOME_ASKED, ...NEXT_TURN, cardRow('sc-home-note'), say('One more thing.')] })
     expectOpen()
     // Hide is the user folding it: that releases the card too.
     fireEvent.click(screen.getByRole('button', { name: 'Hide' }))
     expectFolded()
-    update({ messages: [...HOME_ASKED, HERMES, say('And another.')] })
+    update({ messages: [...HOME_ASKED, ...NEXT_TURN, USER_REPLY, say('And another.')] })
     expectFolded()
   })
 })
@@ -256,7 +273,7 @@ describe('the tray never folds out from under someone using a card', () => {
 describe('the bar points at the card’s own row', () => {
   it('asks the host to scroll to the row, smoothly unless motion is reduced', async () => {
     const onLocate = vi.fn()
-    renderSurface({ messages: [...ASKED, HERMES], onLocate })
+    renderSurface({ messages: [...ASKED, USER_REPLY, HERMES], onLocate })
     const locate = await screen.findByTestId('setup-card-tray-locate')
     expect(locate).toHaveAccessibleName('Find “Your profile” in the chat')
     fireEvent.click(locate)
@@ -301,16 +318,23 @@ describe('the tray is capped at a third of its pane', () => {
 })
 
 describe('setupCardAtTail', () => {
-  it('names the card when nothing a reader stops at follows it', () => {
+  it('names the card while its own turn is the latest, whatever that turn writes after it', () => {
     expect(setupCardAtTail(ASKED)).toBe('sc-a')
-    expect(setupCardAtTail([...ASKED, { role: 'thinking', cls: '', content: 'hmm' } as ChatMessage])).toBe('sc-a')
-    expect(setupCardAtTail([...ASKED, cardRow('sc-b')])).toBe('sc-b')
+    expect(setupCardAtTail([...ASKED, TRAILING, { role: 'tool', cls: '', content: '🔧 x' } as ChatMessage])).toBe('sc-a')
+    expect(setupCardAtTail([...ASKED, { role: 'thinking', cls: '', content: 'hmm' } as ChatMessage, HERMES])).toBe('sc-a')
+    expect(setupCardAtTail([...ASKED, { role: 'error', cls: '', content: 'limit' } as ChatMessage])).toBe('sc-a')
+    expect(setupCardAtTail([...ASKED, TRAILING, cardRow('sc-b'), TRAILING])).toBe('sc-b')
   })
 
-  it('is null once the agent, the user or a notice says something after it', () => {
-    expect(setupCardAtTail([...ASKED, HERMES])).toBeNull()
-    expect(setupCardAtTail([...ASKED, { role: 'user', cls: '', content: 'ok' } as ChatMessage])).toBeNull()
-    expect(setupCardAtTail([...ASKED, { role: 'notice', cls: '', content: 'Paused' } as ChatMessage])).toBeNull()
+  it('is null once the user writes, a later turn opens, or a notice lands', () => {
+    const after = (...rows: ChatMessage[]) => setupCardAtTail([...ASKED, TRAILING, ...rows])
+    expect(after(USER_REPLY)).toBeNull()
+    expect(after({ ...USER_REPLY, meta: { steer: true } })).toBeNull()
+    expect(after(...NEXT_TURN)).toBeNull()
+    expect(after({ role: 'inject', cls: '', content: '[Cron notification]', meta: { injectKind: 'cron' } } as ChatMessage, HERMES)).toBeNull()
+    expect(after({ role: 'nudge', cls: '', content: 'auto-nudge' } as ChatMessage)).toBeNull()
+    expect(after({ role: 'notice', cls: '', content: 'Paused' } as ChatMessage)).toBeNull()
+    expect(after({ ...say('The brief finished.'), meta: { kind: 'handoff_done' } })).toBeNull()
     expect(setupCardAtTail([])).toBeNull()
   })
 })
