@@ -356,3 +356,83 @@
 {"timestamp":"2026-09-29T03:46:11.758634004Z","action":"claim","task_id":117,"detail":"aws-signin-card"}
 {"timestamp":"2026-09-29T03:46:11.79313723Z","action":"edit","task_id":117,"detail":"PN.22 Resume a home build after a gateway restart"}
 {"timestamp":"2026-09-29T03:46:11.793363024Z","action":"release","task_id":117,"detail":"aws-signin-card"}
+{"timestamp":"2026-09-29T04:29:32.015383354Z","action":"edit","task_id":34,"detail":"P1.3 start.ps1 counterpart"}
+{"timestamp":"2026-09-29T04:29:32.017302245Z","action":"claim","task_id":34,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.053340833Z","action":"edit","task_id":35,"detail":"P1.4 start.sh install-path marker and heartbeat value"}
+{"timestamp":"2026-09-29T04:29:32.053528898Z","action":"claim","task_id":35,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.0960201Z","action":"edit","task_id":36,"detail":"P1.5 Desktop first run lands in the first-run session"}
+{"timestamp":"2026-09-29T04:29:32.096221207Z","action":"claim","task_id":36,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.137597085Z","action":"edit","task_id":38,"detail":"P2.1 Pending-action card store and commit/decline endpoints (S1)"}
+{"timestamp":"2026-09-29T04:29:32.137893867Z","action":"claim","task_id":38,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.180466754Z","action":"edit","task_id":39,"detail":"P2.2 Card renderer in the chat (frontend, i18n)"}
+{"timestamp":"2026-09-29T04:29:32.180815321Z","action":"claim","task_id":39,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.227748612Z","action":"edit","task_id":40,"detail":"P2.3 First-run session, state file (S6), privacy card first"}
+{"timestamp":"2026-09-29T04:29:32.227999949Z","action":"claim","task_id":40,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.280100035Z","action":"edit","task_id":41,"detail":"P2.4 crew-setup builtin skill"}
+{"timestamp":"2026-09-29T04:29:32.280396084Z","action":"claim","task_id":41,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.324757695Z","action":"edit","task_id":42,"detail":"P2.5 setup_status, profile_propose, soul_propose + SOUL/USER context block"}
+{"timestamp":"2026-09-29T04:29:32.325179199Z","action":"claim","task_id":42,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.360520729Z","action":"edit","task_id":43,"detail":"P2.6 SCOPE_CATALOG rows for setup tools (S3)"}
+{"timestamp":"2026-09-29T04:29:32.360736024Z","action":"claim","task_id":43,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.395515255Z","action":"edit","task_id":44,"detail":"P2.7 import_scan / import_propose"}
+{"timestamp":"2026-09-29T04:29:32.395738363Z","action":"claim","task_id":44,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.43391619Z","action":"edit","task_id":45,"detail":"P2.8 connect_propose (curated connection card)"}
+{"timestamp":"2026-09-29T04:29:32.434209424Z","action":"claim","task_id":45,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.470177026Z","action":"edit","task_id":46,"detail":"P2.9 credential_request + credential capture card (S2)"}
+{"timestamp":"2026-09-29T04:29:32.470415965Z","action":"claim","task_id":46,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.508189448Z","action":"edit","task_id":47,"detail":"P2.10 channel_propose with /pair pairing (Telegram first)"}
+{"timestamp":"2026-09-29T04:29:32.508430978Z","action":"claim","task_id":47,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.545230112Z","action":"edit","task_id":48,"detail":"P2.11 cron_propose: run once as a preview, then Keep it"}
+{"timestamp":"2026-09-29T04:29:32.545490633Z","action":"claim","task_id":48,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.581512142Z","action":"edit","task_id":49,"detail":"P2.12 service_propose (stay on)"}
+{"timestamp":"2026-09-29T04:29:32.581774167Z","action":"claim","task_id":49,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.617497594Z","action":"edit","task_id":50,"detail":"P2.13 Pasted-secret redaction before the model"}
+{"timestamp":"2026-09-29T04:29:32.617714094Z","action":"claim","task_id":50,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.653669187Z","action":"edit","task_id":51,"detail":"P2.14 S8: setup cards only from user-started turns outside the first run"}
+{"timestamp":"2026-09-29T04:29:32.65390979Z","action":"claim","task_id":51,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.693712659Z","action":"edit","task_id":53,"detail":"P2.16 Owning system spec for the first run"}
+{"timestamp":"2026-09-29T04:29:32.695325702Z","action":"claim","task_id":53,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.734649608Z","action":"edit","task_id":55,"detail":"D1 Demo: one command to the first-run chat"}
+{"timestamp":"2026-09-29T04:29:32.734879875Z","action":"claim","task_id":55,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.770332266Z","action":"edit","task_id":56,"detail":"D2 Demo: import, connect, preview job, keep it, stay on"}
+{"timestamp":"2026-09-29T04:29:32.770574375Z","action":"claim","task_id":56,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.808145026Z","action":"edit","task_id":57,"detail":"D3 Demo: credentials never reach the chat"}
+{"timestamp":"2026-09-29T04:29:32.808696785Z","action":"claim","task_id":57,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.846532521Z","action":"edit","task_id":60,"detail":"PN.2 Background launch job observable from the gateway"}
+{"timestamp":"2026-09-29T04:29:32.846869163Z","action":"claim","task_id":60,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.881405156Z","action":"edit","task_id":64,"detail":"PN.6 Simulated launch engine for the demo"}
+{"timestamp":"2026-09-29T04:29:32.881590489Z","action":"claim","task_id":64,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.915356557Z","action":"edit","task_id":67,"detail":"MC.1 Graduation: first-run chat becomes the main chat"}
+{"timestamp":"2026-09-29T04:29:32.915570458Z","action":"claim","task_id":67,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.950745528Z","action":"edit","task_id":68,"detail":"MC.2 [CREW OVERVIEW] in every main-chat turn"}
+{"timestamp":"2026-09-29T04:29:32.950948713Z","action":"claim","task_id":68,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:32.987046395Z","action":"edit","task_id":69,"detail":"MC.3 Landing, sidebar badge, main_chat notice (frontend)"}
+{"timestamp":"2026-09-29T04:29:32.987302327Z","action":"claim","task_id":69,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.023365523Z","action":"edit","task_id":70,"detail":"MC.4 'Make this my main chat' for installs without a first run"}
+{"timestamp":"2026-09-29T04:29:33.023598226Z","action":"claim","task_id":70,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.057839188Z","action":"edit","task_id":71,"detail":"MC.5 Delegation habit in crew-setup"}
+{"timestamp":"2026-09-29T04:29:33.058365545Z","action":"claim","task_id":71,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.097895665Z","action":"edit","task_id":73,"detail":"MS.1 Hosted-assistant import: portable profile prompt -\u003e soul card (USER.md)"}
+{"timestamp":"2026-09-29T04:29:33.098192266Z","action":"claim","task_id":73,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.136399732Z","action":"edit","task_id":74,"detail":"MS.2 Side-chat handoff etiquette in crew-setup"}
+{"timestamp":"2026-09-29T04:29:33.136613267Z","action":"claim","task_id":74,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.173193787Z","action":"edit","task_id":75,"detail":"MS.3 First-week note job (one note a day, never a card)"}
+{"timestamp":"2026-09-29T04:29:33.17339762Z","action":"claim","task_id":75,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.21145023Z","action":"edit","task_id":76,"detail":"MS.4 Persona evals for the first run (simulated engine + rubric)"}
+{"timestamp":"2026-09-29T04:29:33.21168283Z","action":"claim","task_id":76,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.24717885Z","action":"edit","task_id":77,"detail":"MS.5 MC.6 Controls elsewhere draft a main-chat message"}
+{"timestamp":"2026-09-29T04:29:33.247398603Z","action":"claim","task_id":77,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.282510568Z","action":"edit","task_id":82,"detail":"MC.7 Q13: mount kirocrew-dashboard for the main chat (session tools)"}
+{"timestamp":"2026-09-29T04:29:33.282763092Z","action":"claim","task_id":82,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.316749704Z","action":"edit","task_id":83,"detail":"MC.8 spawn_run rejected in the first-run chat"}
+{"timestamp":"2026-09-29T04:29:33.317042108Z","action":"claim","task_id":83,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.351460063Z","action":"edit","task_id":88,"detail":"Agent retried a rejected tool call (critical rule added)"}
+{"timestamp":"2026-09-29T04:29:33.351673696Z","action":"claim","task_id":88,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.385271047Z","action":"edit","task_id":90,"detail":"P2.17 Job preview approvals surface on the card"}
+{"timestamp":"2026-09-29T04:29:33.385500533Z","action":"claim","task_id":90,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.419918357Z","action":"edit","task_id":91,"detail":"PN.4b Home card shows what moved"}
+{"timestamp":"2026-09-29T04:29:33.420124242Z","action":"claim","task_id":91,"detail":"lead"}
+{"timestamp":"2026-09-29T04:29:33.457879662Z","action":"edit","task_id":94,"detail":"PN.11 Sign in to AWS from the home card (no terminal)"}
+{"timestamp":"2026-09-29T04:29:33.458490193Z","action":"claim","task_id":94,"detail":"lead"}
+{"timestamp":"2026-09-29T04:30:24.785863028Z","action":"edit","task_id":114,"detail":"D7 Narrated end-to-end product demo of the first run"}
+{"timestamp":"2026-09-29T04:30:24.819115408Z","action":"edit","task_id":1,"detail":"Review the one-chat first-run RFC draft"}

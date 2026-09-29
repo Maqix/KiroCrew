@@ -1,15 +1,17 @@
 ---
 id: 114
 title: D7 Narrated end-to-end product demo of the first run
-status: in-progress
+status: done
 priority: medium
 created: 2026-09-29T02:24:13.341550692Z
-updated: 2026-09-29T02:24:13.341550692Z
+updated: 2026-09-29T04:30:24.785581534Z
 tags:
     - demo
 claimed_by: onboarding-video
-claimed_at: 2026-09-29T02:24:13.341568647Z
+claimed_at: 2026-09-29T04:30:24.785580342Z
 class: standard
 ---
 
 A narrated end-to-end product demo for a product and UI/UX audience: the real UI flow click by click, in plain product language, with a warm female presenter voice (Amazon Polly). Output: /tmp/kc-demo/release/share/kiro-crew-onboarding-demo-narrated.mp4 (5-7 min, captions), its .script.md and a README section. Fresh footage from setup.sh --demo; isolated homes, MCP servers off, simulated home, masks.
+
+Duplicate of #116: the recording agent ran out of context right after rendering; the lead finished the script, README and card as #116 (kiro-crew-onboarding-demo-narrated.mp4, 5:34, Danielle voice).

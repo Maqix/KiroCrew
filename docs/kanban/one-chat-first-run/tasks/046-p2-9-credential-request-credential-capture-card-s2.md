@@ -4,7 +4,7 @@ title: P2.9 credential_request + credential capture card (S2)
 status: review
 priority: critical
 created: 2026-09-27T21:54:51.056926654Z
-updated: 2026-09-27T22:54:56.528328875Z
+updated: 2026-09-29T04:29:32.469924171Z
 tags:
     - phase-2
     - backend
@@ -13,8 +13,8 @@ tags:
 parent: 17
 depends_on:
     - 38
-claimed_by: claude
-claimed_at: 2026-09-27T22:54:56.527716674Z
+claimed_by: lead
+claimed_at: 2026-09-29T04:29:32.469573443Z
 class: standard
 ---
 
@@ -22,3 +22,5 @@ Secret typed into a card goes straight to the vault; model gets secret://NAME on
 
 [[2026-09-27]] Sun 22:54
 Backend implemented and unit-tested (test_setup_cards.py, test_setup_flow.py, test_setup_cards_api.py, test_setup_mcp_tools.py, test_secret_capture.py); waiting on the frontend card renderer and an end-to-end demo.
+
+Result (board audit 2026-09-29, branch feat/one-chat-first-run): setup_actions/credential.py and the vault; the model receives only secret://NAME (SC2). Tests: test_setup_flow.py, test_secret_capture.py.

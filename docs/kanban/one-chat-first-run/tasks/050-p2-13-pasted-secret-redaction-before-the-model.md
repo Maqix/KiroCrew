@@ -4,14 +4,14 @@ title: P2.13 Pasted-secret redaction before the model
 status: review
 priority: high
 created: 2026-09-27T21:54:51.171050125Z
-updated: 2026-09-27T22:54:56.720340721Z
+updated: 2026-09-29T04:29:32.617243303Z
 tags:
     - phase-2
     - backend
     - security
 parent: 17
-claimed_by: claude
-claimed_at: 2026-09-27T22:54:56.720196982Z
+claimed_by: lead
+claimed_at: 2026-09-29T04:29:32.617023636Z
 class: standard
 ---
 
@@ -19,3 +19,5 @@ Detect credential shapes in user messages, move to the vault, replace with secre
 
 [[2026-09-27]] Sun 22:54
 Backend implemented and unit-tested (test_setup_cards.py, test_setup_flow.py, test_setup_cards_api.py, test_setup_mcp_tools.py, test_secret_capture.py); waiting on the frontend card renderer and an end-to-end demo.
+
+Result (board audit 2026-09-29, branch feat/one-chat-first-run): dashboard/secret_capture.py: a pasted credential is vaulted and replaced by secret://NAME before the message is stored or reaches the model; AWS and private keys are removed, never stored. Tests: test_secret_capture.py. Shown in the demos.
