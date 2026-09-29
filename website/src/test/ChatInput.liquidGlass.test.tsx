@@ -9,7 +9,7 @@
  * is always mounted: toggling it would remount the editor and drop the draft's
  * focus when an approval lands.
  */
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 vi.mock('@radix-ui/react-dropdown-menu', async () => await import('./__mocks__/@radix-ui/react-dropdown-menu'))
@@ -21,6 +21,13 @@ import type { RootState } from '../store'
 
 const INDEX_CSS = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
 const CHAT_INPUT_SRC = readFileSync(resolve(process.cwd(), 'src/components/ChatInput.tsx'), 'utf-8')
+// The composer's owners under chat-input/ carry its markup too: a focus form must
+// not come back through any of them.
+const COMPOSER_OWNERS_DIR = resolve(process.cwd(), 'src/components/chat-input')
+const COMPOSER_SRCS = [
+  CHAT_INPUT_SRC,
+  ...readdirSync(COMPOSER_OWNERS_DIR).map(f => readFileSync(resolve(COMPOSER_OWNERS_DIR, f), 'utf-8')),
+]
 const SETTINGS_SEARCH_SRC = readFileSync(resolve(process.cwd(), 'src/pages/settings/SettingsSearch.tsx'), 'utf-8')
 const FOLLOW_UP_BAR_SRC = readFileSync(resolve(process.cwd(), 'src/components/FollowUpBar.tsx'), 'utf-8')
 const DISPLAY_PANEL_SRC = readFileSync(resolve(process.cwd(), 'src/pages/settings/DisplayPanel.tsx'), 'utf-8')
@@ -211,8 +218,11 @@ describe('composer liquid glass', () => {
     expect(INDEX_CSS).not.toContain('--glass-tint-focus')
     expect(INDEX_CSS).not.toContain('composer-halo')
     expect(INDEX_CSS).not.toMatch(/\.glass-shadow[^{]* \{[^}]*--accent/)
-    expect(CHAT_INPUT_SRC).not.toContain('composer-halo')
-    expect(CHAT_INPUT_SRC).not.toContain('focus-within:border-accent')
+    expect(COMPOSER_SRCS.length).toBeGreaterThan(1)
+    for (const src of COMPOSER_SRCS) {
+      expect(src).not.toContain('composer-halo')
+      expect(src).not.toContain('focus-within:border-accent')
+    }
     // The Settings search bar follows the same rule: its boxed input keeps the
     // shared `focus-ring` shape but swaps the accent for a neutral border + halo.
     expect(SETTINGS_SEARCH_SRC).toMatch(/className="settings-search relative shrink-0"/)

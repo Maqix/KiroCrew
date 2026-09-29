@@ -428,6 +428,8 @@ is the point — a channel-local store would have had to reimplement every one o
 
 **Deny-on-silence can be SPOKEN.** `open_approval(..., on_timeout=…)` takes an optional coroutine that `PendingApproval.wait` awaits when the window closes, before it returns `DENY`, so the channel can resolve the prompt still sitting on the user's screen: `approval.TIMEOUT_NOTICE` is the text. Without it the refusal is invisible: the turn moves on and a live-looking prompt remains, which a later `1` can no longer answer (it finds no open entry and gets `RECEIPT_EXPIRED`). It is a callback rather than a transport because this module never learns what a channel is, and only the renderer that posted the prompt knows which message to edit. It must not raise: the verdict is already `DENY`, and `_announce_timeout` logs and swallows anything but cancellation, because a notice that could not be posted must never become an approval. WhatsApp is the first channel wired onto it.
 
+**The dashboard composer answers the same prompts for a web chat slot.** `useToolApproval` (`website/src/components/chat-input/approval.ts`) owns the decision its approval bar submits: a trust verb goes to the slot-scoped `api.approveChatSlot` only when the composer has a slot; from an unattended source (`UNATTENDED_APPROVAL_SOURCES`: cron, heartbeat, taskrunner), whose Trust controls are withheld, it is deliberately downgraded to a one-shot `approve` on `api.resolveApproval`; every other decision goes to `api.resolveApproval` through the shared fail-closed `toApiDecision` mapping (`website/src/utils/approvalDecision.ts`), which sends any verb that endpoint cannot honor as `reject`. `website/src/components/ChatInput.tsx` renders the bar, and `SpawnApprovalCard.tsx` beside the hook renders the slot's pending sub-agent spawns. `ChatInput.approval.test.tsx` and `ChatInput.trustOneShot.test.tsx` pin the routing.
+
 ### Channel-neutral spawn-approval delivery (`spawn_approval_delivery.py`)
 
 The ladder above governs a MID-RUN tool prompt, which every channel's `TurnDriver`
@@ -1643,6 +1645,17 @@ backend echo.
 Attachments force the queue path on Discord: `_session/steer` carries text only,
 so a mid-turn message with files would lose them.
 
+**The dashboard composer makes the same choice per send.** While a web chat
+slot is busy, `useComposerSend` (`website/src/components/chat-input/busySend.tsx`)
+decides what Enter and the send button do: the split button's per-slot mode
+picks between steering the running turn, queueing, and `Auto (Jev)` (the gateway
+decides; offered only when the host passes `jevAutoAvailable`); in the Enter send
+mode, ⌘↩ / Ctrl+Enter performs the other action for that one send; and a
+`steer-only` surface (a member DM thread) has no queue and always steers.
+`BusySendControls` in the same file renders that slot. `ChatInput.test.tsx` pins
+steer versus queue, the one-send flip and the persisted mode, and
+`ChatPane.steerOnly.test.tsx` the steer-only surface.
+
 ### `queue`: one collapsing receipt, then ONE combined turn
 
 In `queue` mode (or under a per-message override, or when steer is unavailable)
@@ -2126,6 +2139,15 @@ and escalates to a hard kill plus eager respawn only on timeout or error. See
 
 On a shared runtime the cooperative cancel cannot force-kill a co-tenant
 process, which is why the soft path exists at all rather than always killing.
+
+**The dashboard composer renders the same soft-then-hard stop.** While a turn
+runs, `BusySendControls` (`website/src/components/chat-input/busySend.tsx`)
+replaces the send button with the stop for the phase the host reports: an armed
+Stop, a pulsing force-kill while the soft stop is pending, a disabled spinner
+while the kill runs, and a force-reset once `useStopEscapeHatch` sees that kill
+outlive 15 s. Every press is the host's `onStop`; the composer only renders the
+phase. `ChatInput.test.tsx` and `integration/ChatFooter.integration.test.tsx` pin
+the phases, and `stopButtonEscalation.test.tsx` the 15 s force-reset.
 
 ### Where a command handler splits
 

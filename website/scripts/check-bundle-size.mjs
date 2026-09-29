@@ -223,7 +223,8 @@ export const CHUNK_BUDGETS = {
   // Route-only pages (settings, capabilities, schedule, artifacts, apps, ...) load
   // through React.lazy in their own chunks, so this chunk holds the shell and the
   // chat route; the ceiling keeps the ~5% margin the lines above prescribe.
-  App: 1978 * KB, // measured 1,929,378 B with route-only pages lazy (~5% headroom)
+  // F06 chat-input composition (#15284): +16.8 KB unmangled owner property names; measured 2,027,630 B
+  App: 1990 * KB, // measured 1,929,378 B with route-only pages lazy (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.
