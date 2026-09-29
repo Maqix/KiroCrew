@@ -1,16 +1,16 @@
 ---
 id: 59
 title: 'PN.1 Egg home choice: here / my AWS account / later'
-status: review
+status: done
 priority: high
 created: 2026-09-27T22:54:57.290317462Z
-updated: 2026-09-27T23:35:34.758674427Z
+updated: 2026-09-28T23:30:43.252468316Z
 tags:
     - parallel-nest
     - installer
 parent: 58
-claimed_by: claude
-claimed_at: 2026-09-27T23:35:34.758506255Z
+claimed_by: lead
+claimed_at: 2026-09-28T23:30:43.25230024Z
 class: standard
 ---
 
@@ -18,3 +18,5 @@ kirocrew start asks once (skippable, --home flag). AWS: detect the AWS CLI and c
 
 [[2026-09-27]] Sun 23:35
 kirocrew start --home here|cloud|later: aws login (browser OAuth+PKCE), region from the profile, cost line; recorded in first-run state (presentation only).
+
+Superseded 2026-09-28: the terminal home question is gone (EG.6, #93). The choice is the first-run chat's own 'Where should your crew live?' step, and --home stays only for scripts.

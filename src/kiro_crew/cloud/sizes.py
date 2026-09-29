@@ -127,7 +127,7 @@ _TIERS: tuple[SizeTier, ...] = (
         vcpu=2,
         ram_gb=8,
         disk_gb=30,
-        approx_usd_per_hr=0.0958,
+        approx_usd_per_hr=0.09576,
         free_plan_ok=True,
     ),
     # The paid plan's cheapest tier that fits: 8 GB on burstable Graviton.
@@ -149,7 +149,7 @@ _TIERS: tuple[SizeTier, ...] = (
         vcpu=4,
         ram_gb=16,
         disk_gb=40,
-        approx_usd_per_hr=0.134,
+        approx_usd_per_hr=0.1344,
     ),
     SizeTier(
         key="balanced",
@@ -207,6 +207,51 @@ _TIERS: tuple[SizeTier, ...] = (
 
 TIERS_BY_KEY: dict[str, SizeTier] = {t.key: t for t in _TIERS}
 
+# Per-region prices for the tiers the first-run home card offers, so its figures
+# match the region the home is built in: us-east-1, plus the three regions AWS's
+# newest sign-up pins a new account to (local_signin.HOME_REGION_CANDIDATES).
+# On-demand Linux USD per hour from AWS's public price list, the data behind
+# https://aws.amazon.com/ec2/pricing/on-demand/ ; gp3 storage USD per GB-month
+# from https://aws.amazon.com/ebs/pricing/ . Refresh both from there. Display
+# only, like approx_usd_per_hr.
+PRICE_FALLBACK_REGION = "us-east-1"
+ON_DEMAND_USD_PER_HR: dict[str, dict[str, float]] = {
+    "us-east-1": {
+        "t4g.small": 0.0168,
+        "t4g.medium": 0.0336,
+        "t4g.large": 0.0672,
+        "t4g.xlarge": 0.1344,
+        "m7i-flex.large": 0.09576,
+    },
+    "us-east-2": {
+        "t4g.small": 0.0168,
+        "t4g.medium": 0.0336,
+        "t4g.large": 0.0672,
+        "t4g.xlarge": 0.1344,
+        "m7i-flex.large": 0.09576,
+    },
+    "eu-north-1": {
+        "t4g.small": 0.0172,
+        "t4g.medium": 0.0344,
+        "t4g.large": 0.0688,
+        "t4g.xlarge": 0.1376,
+        "m7i-flex.large": 0.10175,
+    },
+    "ap-southeast-2": {
+        "t4g.small": 0.0212,
+        "t4g.medium": 0.0424,
+        "t4g.large": 0.0848,
+        "t4g.xlarge": 0.1696,
+        "m7i-flex.large": 0.1197,
+    },
+}
+GP3_USD_PER_GB_MONTH: dict[str, float] = {
+    "us-east-1": 0.08,
+    "us-east-2": 0.08,
+    "eu-north-1": 0.0836,
+    "ap-southeast-2": 0.096,
+}
+
 DEFAULT_TIER_KEY = "balanced"
 
 # The tiers only the first-run home card offers (``setup_cards.HOME_PLAN_SIZES``).
@@ -241,6 +286,19 @@ def get_tier(key: str) -> SizeTier:
 def default_tier() -> SizeTier:
     """The recommended default tier."""
     return TIERS_BY_KEY[DEFAULT_TIER_KEY]
+
+
+def region_prices(tier: SizeTier, region: str) -> tuple[float, float, str]:
+    """*tier*'s USD/hour and gp3 USD/GB-month in *region*, and the region they are from.
+
+    A region or type not in the table gets the PRICE_FALLBACK_REGION figures, and
+    a type not in that either gets the tier's own ``approx_usd_per_hr``.
+    """
+    for where in (region, PRICE_FALLBACK_REGION):
+        hourly = ON_DEMAND_USD_PER_HR.get(where, {}).get(tier.instance_type)
+        if hourly is not None:
+            return hourly, GP3_USD_PER_GB_MONTH[where], where
+    return tier.approx_usd_per_hr, GP3_USD_PER_GB_MONTH[PRICE_FALLBACK_REGION], ""
 
 
 def monthly_estimate(tier: SizeTier, hours_per_day: float = 24.0) -> float:

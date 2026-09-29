@@ -587,7 +587,10 @@ first run any longer. Five rules shape it:
    card finds the account's own region with one read-only
    `ec2 describe-availability-zones` per region: the profile's region first,
    then us-east-2, eu-north-1 and ap-southeast-2, taking the first that answers;
-   there is no us-east-1 fallback. It also reads the account's plan (read-only
+   there is no us-east-1 fallback. When none answers, the card asks: "AWS didn't
+   say which region this account uses. Pick the one shown in your AWS console."
+   The owner's pick is checked on the server, probed read-only, and the card is
+   shown again for it under a new hash. It also reads the account's plan (read-only
    `freetier get-account-plan-state`: FREE or PAID, the Free plan's remaining
    credits; an account older than the plans is PAID) and never changes it. The
    home card states the size options with what each runs, costs and needs, the
@@ -665,7 +668,11 @@ slower, and it runs a few things at once. On the paid plan Economy follows
 8 GB, about $51/month), preselected, then Standard (`t4g.xlarge`, 16 GB, about
 $101/month); on a new account's Free plan Starter follows (`m7i-flex.large`,
 8 GB, about $72/month, paid from its credits), preselected as the full size that
-plan runs, with Standard marked as needing the paid plan.
+plan runs, with Standard marked as needing the paid plan. Every price is the
+card's region's: us-east-1 and a new account's three home regions are priced from
+AWS's public on-demand price list (Sydney runs about a quarter above Virginia), a
+region outside those shows the us-east-1 figure, and each is "about". Whether
+Starter joins the paid plan's list is decided with those regional prices.
 
 A simulated launch engine walks the same progress steps without AWS, so the
 experience can be reviewed and tested before anyone spends money; it is labelled

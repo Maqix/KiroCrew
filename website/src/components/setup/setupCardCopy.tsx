@@ -54,6 +54,9 @@ const ERROR_KEY = {
   home_spend_limit: 'components.setupCard.error_home_spend_limit',
   // A build the home card lost track of was stopped (setup_flow._stop_untracked_build).
   home_build_untracked: 'components.setupCard.error_home_build_untracked',
+  // The home card's region picker (setup_flow._decide_home_region).
+  home_region_not_offered: 'components.setupCard.error_home_region_not_offered',
+  home_region_no_answer: 'components.setupCard.error_home_region_no_answer',
   // The live move-in's refusals (dashboard/setup_move_in.py). Each leaves the
   // card pending; the failed step's own detail on the card keeps the server's
   // specifics (the tunnel error, the home's refusal code).

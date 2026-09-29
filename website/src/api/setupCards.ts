@@ -42,7 +42,7 @@ export type SetupCardStatus =
   | 'expired'
 
 /** `aws_signin` is the home card's "Sign in to AWS"; `input.cancel` stops it. */
-export type SetupDecision = 'commit' | 'decline' | 'preview' | 'aws_signin'
+export type SetupDecision = 'commit' | 'decline' | 'preview' | 'aws_signin' | 'region'
 
 export interface SetupCardError {
   code: string

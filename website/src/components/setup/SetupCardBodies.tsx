@@ -22,6 +22,7 @@ import ErrorNotice from '../ErrorNotice'
 import MarkdownRenderer from '../MarkdownRenderer'
 import SegmentedControl from '../SegmentedControl'
 import { Checkbox, IconButton, Input } from '../ui'
+import { NativeSelect, NativeSelectOption } from '../ui/native-select'
 import {
   PrivacyCommandList,
   PrivacyDisclosureSections,
@@ -687,6 +688,9 @@ function StepList({ steps, testId }: { steps: HomeStep[]; testId: string }) {
   )
 }
 
+/** An AWS region code, the shape setup_cards.build_home accepts. */
+const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d$/
+
 /**
  * A permanent home in the owner's AWS account (RFC §10.1), in two phases:
  * build it (the chat carries on meanwhile), then move in. Every figure the
@@ -694,8 +698,11 @@ function StepList({ steps, testId }: { steps: HomeStep[]; testId: string }) {
  * is on the card before the first click, and a simulated run says so in plain
  * sight.
  */
-function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
+function HomeBody({ card, busy, run, footer, compact }: SetupBodyProps) {
   const { t } = useTranslation()
+  const regionSelectId = useId()
+  // The region the owner picked on the card while AWS named none.
+  const [pickedRegion, setPickedRegion] = useState<string | null>(null)
   // The owner opened the AWS sign-up in another tab. Local and untimed: only
   // they know when the account exists, so the card waits for their click.
   const [creatingAccount, setCreatingAccount] = useState(false)
@@ -868,7 +875,17 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
   const signupUrl = signedIn ? null : safeConsentUrl(p.signup_url)
   const creating = creatingAccount && !!signupUrl
   const cliMissing = !signedIn && p.aws_cli_installed === false
-  const primary = signedIn
+  // No region answered for this account: the owner picks one, and the gateway
+  // checks it and shows the card again for it. After a pick AWS did not answer
+  // either, the owner may still build in it.
+  const regionChoices = signedIn && !simulated && p.region_unknown === true
+    ? strList(p.region_choices).filter(r => REGION_RE.test(r))
+    : []
+  const cardRegion = str(p.region)
+  const region = pickedRegion ?? (regionChoices.includes(cardRegion) ? cardRegion : regionChoices[0] ?? '')
+  const askRegion = regionChoices.length > 0
+    && !(region === cardRegion && card.status === 'pending' && card.error?.code === 'home_region_no_answer')
+  const buildOrSignIn = signedIn
     ? { label: t('components.setupCard.home_build'), onClick: build }
     : creating
       ? {
@@ -881,6 +898,9 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
       : remoteCommand
         ? { label: t('components.setupCard.home_build_signed_in'), onClick: build }
         : { label: t('components.setupCard.home_aws_signin'), onClick: () => run('aws_signin') }
+  const primary = askRegion
+    ? { label: t('components.setupCard.home_region_use'), onClick: () => run('region', { region }), disabled: !region }
+    : buildOrSignIn
   // The first run's own "Where should your crew live?" step: declining it keeps
   // the crew on this machine, so the decline says so.
   const offer = isHomeOffer(card)
@@ -923,7 +943,7 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
             </dd>
           </div>
         )}
-        {str(p.region) && (
+        {str(p.region) && regionChoices.length === 0 && (
           <div className="contents">
             <dt className="text-muted">{t('components.setupCard.home_region_label')}</dt>
             <dd className="text-text min-w-0 break-words mb-1 sm:mb-0" translate="no">{str(p.region)}</dd>
@@ -936,6 +956,24 @@ function HomeBody({ card, run, footer, compact }: SetupBodyProps) {
           </div>
         )}
       </dl>
+      {regionChoices.length > 0 && (
+        <div className="mt-3 flex flex-col gap-1.5 min-w-0" data-testid="setup-card-home-region-pick">
+          <label htmlFor={regionSelectId} className="text-[13px] text-text">
+            {t('components.setupCard.home_region_unknown')}
+          </label>
+          <NativeSelect
+            id={regionSelectId}
+            value={region}
+            disabled={busy}
+            onChange={e => setPickedRegion(e.target.value)}
+            translate="no"
+            wrapperStyle={{ maxWidth: '16rem' }}
+            data-testid="setup-card-home-region-select"
+          >
+            {regionChoices.map(r => <NativeSelectOption key={r} value={r}>{r}</NativeSelectOption>)}
+          </NativeSelect>
+        </div>
+      )}
       {!signedIn && (
         <div className="mt-3 flex flex-col gap-2 min-w-0" data-testid="setup-card-home-aws-signin">
           {creating ? (

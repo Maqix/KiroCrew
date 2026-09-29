@@ -94,8 +94,10 @@ DECISION_DECLINE = "decline"
 DECISION_PREVIEW = "preview"
 #: The home card's "Sign in to AWS" (``dashboard/setup_aws_signin.py``).
 DECISION_AWS_SIGNIN = "aws_signin"
+#: The home card's region picker, shown when no region answers (``setup_flow``).
+DECISION_REGION = "region"
 DECISIONS: frozenset[str] = frozenset(
-    {DECISION_COMMIT, DECISION_DECLINE, DECISION_PREVIEW, DECISION_AWS_SIGNIN}
+    {DECISION_COMMIT, DECISION_DECLINE, DECISION_PREVIEW, DECISION_AWS_SIGNIN, DECISION_REGION}
 )
 
 #: Largest SOUL.md / USER.md a card may carry. Small by design: the files are
@@ -675,8 +677,6 @@ _WEEKS_PER_MONTH = 52 / 12
 HOME_DEFAULT_REGION = "us-east-1"
 #: Hours in an average month, for turning an hourly price into a monthly one.
 _HOURS_PER_MONTH = 730
-#: Illustrative gp3 price per GB-month, for the estimate's disk share.
-_GP3_USD_PER_GB_MONTH = 0.08
 _REGION_RE = re.compile(r"^[a-z]{2}(?:-[a-z]+)+-\d$")
 _PROFILE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
@@ -699,33 +699,55 @@ def build_home(args: dict[str, Any]) -> dict[str, Any]:
     return {"region": region, "profile": profile, "size": size}
 
 
-def monthly_estimate_usd(size_key: str) -> int:
-    """A rounded monthly on-demand estimate for *size_key*: instance plus disk."""
-    from kiro_crew.cloud.sizes import get_tier
+def validate_home_region(region: Any) -> str:
+    """The owner's pick of a home's region, checked on the server.
+
+    It must have the shape :func:`build_home` accepts and be one of the regions a
+    home can be built in (``cloud.local_signin.HOME_REGIONS``), the list the
+    card's picker shows.
+    """
+    from kiro_crew.cloud.local_signin import HOME_REGIONS
+
+    value = region.strip() if isinstance(region, str) else ""
+    if not _REGION_RE.match(value) or value not in HOME_REGIONS:
+        raise CardRejected("choose one of the regions on the card", "home_region_not_offered")
+    return value
+
+
+def monthly_estimate_usd(size_key: str, region: str = "") -> int:
+    """A rounded monthly on-demand estimate for *size_key* in *region*: instance plus disk.
+
+    Priced from ``cloud/sizes.py``'s per-region table; a region not in it gets the
+    us-east-1 figure, which the card shows as "about" like every other.
+    """
+    from kiro_crew.cloud.sizes import get_tier, region_prices
 
     tier = get_tier(size_key)
-    monthly = tier.approx_usd_per_hr * _HOURS_PER_MONTH + tier.disk_gb * _GP3_USD_PER_GB_MONTH
-    return int(round(monthly))
+    hourly, gp3, _where = region_prices(tier, region)
+    return int(round(hourly * _HOURS_PER_MONTH + tier.disk_gb * gp3))
 
 
-def home_size_options(plan: dict[str, Any] | None) -> tuple[list[dict[str, Any]], str]:
+def home_size_options(
+    plan: dict[str, Any] | None, region: str = ""
+) -> tuple[list[dict[str, Any]], str]:
     """The size options a home card offers, cheapest first, and the one preselected.
 
     *plan* is the account's AWS plan (``cloud.local_signin.account_plan``), or
     ``None`` when not signed in; which sizes each plan gets is
-    :data:`HOME_PLAN_SIZES`. A Free-plan size also carries how many weeks the
-    plan's remaining credits pay for it.
+    :data:`HOME_PLAN_SIZES`. Every price is *region*'s, so whether a Free-plan
+    size is dearer than the paid plan's default is decided there. A Free-plan size
+    also carries how many weeks the plan's remaining credits pay for it.
     """
     from kiro_crew.cloud.sizes import get_tier
 
     plan_type = str((plan or {}).get("type") or "")
     keys, default = HOME_PLAN_SIZES.get(plan_type, HOME_PLAN_SIZES[_HOME_PLAN_NOT_KNOWN])
     credits = (plan or {}).get("credits_usd")
-    ceiling = monthly_estimate_usd(default)
+    ceiling = monthly_estimate_usd(default, region)
     options: list[dict[str, Any]] = []
     for key in keys:
         tier = get_tier(key)
-        monthly = monthly_estimate_usd(key)
+        monthly = monthly_estimate_usd(key, region)
         if plan_type == "PAID" and tier.free_plan_ok and key != default and monthly > ceiling:
             continue
         option: dict[str, Any] = {

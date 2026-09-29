@@ -288,3 +288,40 @@
 {"timestamp":"2026-09-28T21:10:23.704047867Z","action":"release","task_id":102,"detail":"aws-signin-card"}
 {"timestamp":"2026-09-28T21:10:23.704574507Z","action":"edit","task_id":103,"detail":"PN.18 Lite (2 GB, ~$12) and Economy (4 GB, ~$25) homes"}
 {"timestamp":"2026-09-28T21:10:23.704729678Z","action":"release","task_id":103,"detail":"aws-signin-card"}
+{"timestamp":"2026-09-28T23:30:43.154034126Z","action":"edit","task_id":54,"detail":"Demos: end-to-end first run"}
+{"timestamp":"2026-09-28T23:30:43.154250621Z","action":"claim","task_id":54,"detail":"lead"}
+{"timestamp":"2026-09-28T23:30:43.188350076Z","action":"edit","task_id":58,"detail":"Parallel nest: build the home in the background during the first run"}
+{"timestamp":"2026-09-28T23:30:43.188538832Z","action":"claim","task_id":58,"detail":"lead"}
+{"timestamp":"2026-09-28T23:30:43.220066641Z","action":"edit","task_id":66,"detail":"Main chat: the one place the user works from (RFC 6.9)"}
+{"timestamp":"2026-09-28T23:30:43.220263987Z","action":"claim","task_id":66,"detail":"lead"}
+{"timestamp":"2026-09-28T23:30:43.253250154Z","action":"edit","task_id":59,"detail":"PN.1 Egg home choice: here / my AWS account / later"}
+{"timestamp":"2026-09-28T23:30:43.253448205Z","action":"claim","task_id":59,"detail":"lead"}
+{"timestamp":"2026-09-28T23:30:43.286949892Z","action":"edit","task_id":87,"detail":"D4 Team demo video v1 (3 min, captions, simulated home)"}
+{"timestamp":"2026-09-28T23:30:43.287174493Z","action":"claim","task_id":87,"detail":"lead"}
+{"timestamp":"2026-09-28T23:30:43.320847712Z","action":"edit","task_id":63,"detail":"PN.5 Starter tier: measure the smallest instance a home runs on"}
+{"timestamp":"2026-09-28T23:30:43.321032361Z","action":"claim","task_id":63,"detail":"lead"}
+{"timestamp":"2026-09-28T23:31:11.41008381Z","action":"create","task_id":104,"detail":"EG.7 setup.sh: the one-command, ask-nothing install from source"}
+{"timestamp":"2026-09-28T23:31:11.448093625Z","action":"create","task_id":105,"detail":"D5 Re-record the demos for the home step and the size choice"}
+{"timestamp":"2026-09-28T23:31:11.48118927Z","action":"create","task_id":106,"detail":"PN.19 Ask the owner for the home's region when no region answers"}
+{"timestamp":"2026-09-28T23:31:11.516585822Z","action":"create","task_id":107,"detail":"PN.20 Per-region prices on the home card"}
+{"timestamp":"2026-09-28T23:31:11.549602625Z","action":"create","task_id":108,"detail":"PN.21 Cap live chat sessions by memory on small homes"}
+{"timestamp":"2026-09-28T23:31:11.582729009Z","action":"create","task_id":109,"detail":"QA.1 A real end-to-end run with a person: sign the home in, then move in"}
+{"timestamp":"2026-09-28T23:31:11.618045703Z","action":"create","task_id":110,"detail":"QA.2 macOS and Windows runs of the one-command install"}
+{"timestamp":"2026-09-28T23:31:45.012645Z","action":"edit","task_id":106,"detail":"PN.19 Ask the owner for the home's region when no region answers"}
+{"timestamp":"2026-09-28T23:31:45.012902343Z","action":"claim","task_id":106,"detail":"aws-signin-card"}
+{"timestamp":"2026-09-28T23:31:45.013490264Z","action":"edit","task_id":107,"detail":"PN.20 Per-region prices on the home card"}
+{"timestamp":"2026-09-28T23:31:45.0136345Z","action":"claim","task_id":107,"detail":"aws-signin-card"}
+{"timestamp":"2026-09-28T23:32:11.195890243Z","action":"move","task_id":108,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-28T23:33:04.648532111Z","action":"edit","task_id":105,"detail":"D5 Re-record the demos for the home step and the size choice"}
+{"timestamp":"2026-09-28T23:33:04.648738999Z","action":"claim","task_id":105,"detail":"onboarding-video"}
+{"timestamp":"2026-09-28T23:38:49.656079962Z","action":"edit","task_id":103,"detail":"PN.18 Lite (2 GB, ~$12) and Economy (4 GB, ~$25) homes"}
+{"timestamp":"2026-09-28T23:38:49.656374438Z","action":"claim","task_id":103,"detail":"lead"}
+{"timestamp":"2026-09-28T23:38:49.692729075Z","action":"edit","task_id":102,"detail":"PN.17 Skip the on-box dashboard build (prebuilt dashboard in the home)"}
+{"timestamp":"2026-09-28T23:38:49.692957678Z","action":"claim","task_id":102,"detail":"lead"}
+{"timestamp":"2026-09-29T00:04:46.33559433Z","action":"edit","task_id":105,"detail":"D5 Re-record the demos for the home step and the size choice"}
+{"timestamp":"2026-09-29T00:04:51.450228465Z","action":"edit","task_id":106,"detail":"PN.19 Ask the owner for the home's region when no region answers"}
+{"timestamp":"2026-09-29T00:04:51.612794885Z","action":"edit","task_id":107,"detail":"PN.20 Per-region prices on the home card"}
+{"timestamp":"2026-09-29T00:04:51.811488603Z","action":"edit","task_id":106,"detail":"PN.19 Ask the owner for the home's region when no region answers"}
+{"timestamp":"2026-09-29T00:04:51.812086939Z","action":"release","task_id":106,"detail":"aws-signin-card"}
+{"timestamp":"2026-09-29T00:04:51.813721078Z","action":"edit","task_id":107,"detail":"PN.20 Per-region prices on the home card"}
+{"timestamp":"2026-09-29T00:04:51.816821553Z","action":"release","task_id":107,"detail":"aws-signin-card"}

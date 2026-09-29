@@ -70,7 +70,7 @@ whose payload no longer hashes to its `payload_hash` is read back `expired` with
 | `channel` | agent | the channel (Telegram) | stores the bot token typed into the card as `TELEGRAM_BOT_TOKEN` in `.env` through the Settings save's own helper (`messaging.commit_telegram_writes`), turns `telegram.enabled` on and reconnects the channel, then goes `waiting` with a one-time 4-digit pairing code. A `/pair <code>` DM to the bot adds that sender's id to `telegram.allowed_user_ids` and commits with `{channel, paired, username}`; five wrong codes fail the card, and ten unpaired minutes expire it. See [Channel pairing](#channel-pairing) |
 | `cron` | agent | name, prompt summary, schedule in words, timezone (the full prompt is private) | `preview`: creates the job disabled and silent, runs it once, shows the output (status `success`, `failure` or `timeout`, mapped from the cron run's own status, and `failure` with `reason: approval_not_given` when an approval the run asked for was rejected or went unanswered), returns to `pending`. While it runs, the card shows the run's pending approvals with Allow once and Reject; after a run that asked, `approvals` counts them and the card says the job will ask on every run, in Notifications. See [Job previews](#job-previews). `commit` (Keep it): makes it non-silent and enables it. `decline`: removes the preview job |
 | `service` | agent | platform, the command, whether a terminal is needed, installed | macOS: installs the launchd agent. Linux: verifies the unit exists (the owner runs `kirocrew stop && kirocrew service install`, which needs sudo) |
-| `home` | agent, or the gateway when a script passed `kirocrew start --home cloud` | provider, region (the account's own, once AWS answers), AWS profile, the size options with what each costs and whether it needs AWS's paid plan (see [The home's size](#the-homes-size)), the account's plan when signed in, estimated monthly cost, who bills it, whether AWS is signed in, whether the run is simulated | two decisions on one card, after **Sign in to AWS** when AWS was not signed in: the `aws_signin` decision runs `aws login` from the card, goes `waiting`, and returns to `pending` with `aws_signed_in: true` in the outcome once AWS answers (see [Signing in to AWS](#signing-in-to-aws)). **Build my home** (`input.size`, one of the offered sizes): records whether the owner's browser is on this machine, checks the size against the plan and the vCPU quota, starts the launch job (`handlers_cloud.start_launch_job`), goes `waiting`, and a watcher mirrors the build's steps onto the card until it is done (`pending`, `ready`) or fails; while the build waits on the home's own Kiro sign-in, see [The home's Kiro sign-in](#the-homes-kiro-sign-in). A build that finished without that sign-in is not `ready`: the card is `pending` in phase `signin` with `needs_signin`, and its commit is **Sign the home in to Kiro** (`handlers_cloud.restart_signin`). **Move in**: a simulated home walks four steps and moves nothing; a live one is handed the crew and this chat, see [Moving in](#moving-in). Commits with `moved: true` |
+| `home` | agent, or the gateway when a script passed `kirocrew start --home cloud` | provider, region (the account's own, once AWS answers), AWS profile, the size options with what each costs and whether it needs AWS's paid plan (see [The home's size](#the-homes-size)), the account's plan when signed in, estimated monthly cost, who bills it, whether AWS is signed in, whether the run is simulated | two decisions on one card, after **Sign in to AWS** when AWS was not signed in: the `aws_signin` decision runs `aws login` from the card, goes `waiting`, and returns to `pending` with `aws_signed_in: true` in the outcome once AWS answers (see [Signing in to AWS](#signing-in-to-aws)). When no region answers, **Use this region** (the `region` decision, `input.region`) re-issues the card for the owner's pick (see [Asking for the region](#asking-for-the-region)). **Build my home** (`input.size`, one of the offered sizes): records whether the owner's browser is on this machine, checks the size against the plan and the vCPU quota, starts the launch job (`handlers_cloud.start_launch_job`), goes `waiting`, and a watcher mirrors the build's steps onto the card until it is done (`pending`, `ready`) or fails; while the build waits on the home's own Kiro sign-in, see [The home's Kiro sign-in](#the-homes-kiro-sign-in). A build that finished without that sign-in is not `ready`: the card is `pending` in phase `signin` with `needs_signin`, and its commit is **Sign the home in to Kiro** (`handlers_cloud.restart_signin`). **Move in**: a simulated home walks four steps and moves nothing; a live one is handed the crew and this chat, see [Moving in](#moving-in). Commits with `moved: true` |
 
 ## Invariants
 
@@ -232,12 +232,15 @@ two tiers below 8 GB run a slimmed home instead (the tier's `home_profile`; see
 cloud.md "Slimmed homes"), and count on the launcher shipping the dashboard it
 built (cloud.md "The prebuilt dashboard").
 
+The "About" column is us-east-1; the card prices each option in the card's own
+region (see [Prices per region](#prices-per-region)).
+
 | Option | Tier | Shape | About | Offered on |
 |---|---|---|---|---|
 | Lite | `lite` | `t4g.small`, arm64, 2 vCPU, 2 GB | $14/month | both (`free_plan_ok`); it gives up meaning-based memory search (keyword only), dictation (no local speech-to-text), a warm first reply after a quiet spell, and runs a few things at once, which its card line says |
 | Economy | `economy` | `t4g.medium`, arm64, 2 vCPU, 4 GB | $26/month | the paid plan; everything on, idle chats end after 30 minutes |
 | Small | `small` | `t4g.large`, arm64, 2 vCPU, 8 GB | $51/month | the paid plan (its default) |
-| Starter | `starter` | `m7i-flex.large`, x86_64, 2 vCPU, 8 GB | $72/month | the Free plan (its default; `free_plan_ok`: the Free plan's EC2 launches free-tier types only), and the paid plan only when it is no dearer than Small |
+| Starter | `starter` | `m7i-flex.large`, x86_64, 2 vCPU, 8 GB | $72/month | the Free plan (its default; `free_plan_ok`: the Free plan's EC2 launches free-tier types only), and the paid plan only when it is no dearer than Small in the card's region |
 | Standard | `light` | `t4g.xlarge`, arm64, 4 vCPU, 16 GB | $101/month | both; on the Free plan it is marked as needing the paid plan |
 
 Which sizes each plan gets, and its default, is data: `setup_cards.HOME_PLAN_SIZES`
@@ -264,6 +267,51 @@ but its own), which becomes the card's `region` and the build's; and the plan
 (`account_plan`: `freetier get-account-plan-state` gives `{type: FREE|PAID|unknown,
 credits_usd?, expires?}`; an account older than the plans answers
 `ResourceNotFoundException` and is PAID). The plan is never changed from here.
+
+### Asking for the region
+
+When no region answers (`resolve_home_region` returns `""`), the payload carries
+`region_unknown: true` and `region_choices`, the regions a home can be built in
+(`local_signin.HOME_REGIONS`: the commercial regions every account has without an
+opt-in), and its `region` becomes the one the profile names in `~/.aws/config` when
+that is one of them. The card shows a native select of those regions, preselecting
+`region`, under "AWS didn't say which region this account uses. Pick the one
+shown in your AWS console." Its primary button is **Use this region**, the
+`region` decision with `input.region`. `_decide_home_region` refuses a card that
+does not ask (`invalid_decision`), a stale hash and a governance denial like any
+decision, and a region that fails `setup_cards.validate_home_region` (the
+`build_home` region shape and `HOME_REGIONS`: `home_region_not_offered`), before
+anything is sent to AWS. It then probes that one region read-only
+(`local_signin.probe_region`, one `ec2 describe-availability-zones`), reads the
+plan again, and re-issues the card for the pick through `replace_payload`, under a
+new hash and with that region's prices. A pick that answered drops
+`region_unknown`, so the card shows Build. A pick that did not answer is kept as
+the card's region, with the picker still shown and the recoverable error
+`home_region_no_answer`; while the select still shows that region, the primary
+button is Build, so an owner whose console shows it can build there (tests:
+`test_home_region.py::TestNoRegionAnswers`, `TestTheRegionDecision`,
+`SetupCardHomeRegion.test.tsx`).
+
+### Prices per region
+
+`setup_cards.monthly_estimate_usd(key, region)` is the instance's on-demand Linux
+hourly price times 730 plus its disk at the region's gp3 price, rounded to whole
+dollars. The prices are data in `cloud/sizes.py` (`ON_DEMAND_USD_PER_HR`,
+`GP3_USD_PER_GB_MONTH`, via `region_prices`) for us-east-1 and a new account's
+three home regions, from AWS's public price list (published 2026-09-25). A region
+not in the table gets the us-east-1 figure (`PRICE_FALLBACK_REGION`), which the
+card shows as "about" like every price. `home_size_options(plan, region)` prices
+every option in the card's region, so the rule that Starter joins the paid plan's
+list only when it is no dearer than Small is decided per region. Monthly figures,
+instance plus disk:
+
+| Size | us-east-1 | us-east-2 | eu-north-1 | ap-southeast-2 |
+|---|---|---|---|---|
+| Lite | $14 | $14 | $14 | $17 |
+| Economy | $26 | $26 | $27 | $33 |
+| Small | $51 | $51 | $53 | $65 |
+| Starter | $72 | $72 | $77 | $90 |
+| Standard | $101 | $101 | $104 | $128 |
 
 The Build click posts `input.size`. `_chosen_home_size` refuses a size the card
 did not offer (`home_size_not_offered`), a paid-plan size on the Free plan

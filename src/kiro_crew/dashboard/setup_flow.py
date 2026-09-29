@@ -413,8 +413,16 @@ def _service_payload() -> dict[str, Any]:
     }
 
 
-def _home_payload(settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """What the home card shows before the owner agrees to spend money."""
+def _home_payload(
+    settings: dict[str, Any], *, picked: str | None = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """What the home card shows before the owner agrees to spend money.
+
+    *picked* is what :func:`local_signin.probe_region` found for a region the
+    owner chose on the card (``settings["region"]``): that region is kept, and
+    no other is tried.
+    """
+    from kiro_crew.cloud import local_signin
     from kiro_crew.cloud.simulated_engine import simulation_enabled
     from kiro_crew.cloud.sizes import get_tier
 
@@ -434,13 +442,25 @@ def _home_payload(settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, A
             logger.warning("AWS reachability probe failed", exc_info=True)
             signed_in = False
     plan: dict[str, Any] | None = None
+    region_unknown = False
     if not simulated and signed_in:
         # The account's own region (a new sign-up account works in one region
         # only) and its AWS plan (the Free plan launches Starter only).
-        resolved, plan = _account_facts(settings["profile"], settings["region"])
-        if resolved:
-            settings = {**settings, "region": resolved}
-    options, default_size = sc.home_size_options(plan)
+        if picked is not None:
+            _none, plan = _account_facts(settings["profile"], settings["region"], find_region=False)
+            region_unknown = picked != local_signin.REGION_OK
+        else:
+            resolved, plan = _account_facts(settings["profile"], settings["region"])
+            if resolved:
+                settings = {**settings, "region": resolved}
+            else:
+                # No region answered: the card asks the owner, starting from the
+                # region the profile names.
+                region_unknown = True
+                own = local_signin.configured_region(settings["profile"])
+                if own in local_signin.HOME_REGIONS:
+                    settings = {**settings, "region": own}
+    options, default_size = sc.home_size_options(plan, settings["region"])
     payload = {
         "provider": {"id": "aws_ec2", "label": "Your AWS account"},
         "simulated": simulated,
@@ -453,7 +473,7 @@ def _home_payload(settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, A
             "ram_gb": tier.ram_gb,
             "vcpu": tier.vcpu,
         },
-        "monthly_usd": sc.monthly_estimate_usd(tier.key),
+        "monthly_usd": sc.monthly_estimate_usd(tier.key, settings["region"]),
         "billed_by": "AWS, to your own account",
         "aws_signed_in": signed_in,
         "aws_account": account,
@@ -463,13 +483,14 @@ def _home_payload(settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, A
     }
     if plan is not None:
         payload["plan"] = plan
+    if region_unknown:
+        payload["region_unknown"] = True
+        payload["region_choices"] = list(local_signin.HOME_REGIONS)
     if not simulated and not signed_in:
         # A machine with no AWS sign-in may have no AWS account either: the card
         # links the sign-up (the Builder ID one when Kiro signs in with Builder
         # ID) and says when the AWS CLI is missing. A signed-in machine's payload
         # stays as it is, and runs no whoami.
-        from kiro_crew.cloud import local_signin
-
         builder_id = local_signin.kiro_signs_in_with_builder_id()
         payload["signup_url"] = local_signin.signup_url(builder_id)
         payload["signup_builder_id"] = builder_id
@@ -477,17 +498,26 @@ def _home_payload(settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, A
     return payload, {"settings": settings, "phase": "build"}
 
 
-def _account_facts(profile: str, preferred_region: str) -> tuple[str, dict[str, Any]]:
-    """The account's buildable region and its AWS plan, asked side by side (read-only)."""
+def _account_facts(
+    profile: str, preferred_region: str, *, find_region: bool = True
+) -> tuple[str, dict[str, Any]]:
+    """The account's buildable region and its AWS plan, asked side by side (read-only).
+
+    Without *find_region* only the plan is asked, and the region is ``""``.
+    """
     from concurrent.futures import ThreadPoolExecutor
 
     from kiro_crew.cloud import local_signin
 
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="home-facts") as pool:
-        region = pool.submit(local_signin.resolve_home_region, profile, preferred_region)
+        region = (
+            pool.submit(local_signin.resolve_home_region, profile, preferred_region)
+            if find_region
+            else None
+        )
         plan = pool.submit(local_signin.account_plan, profile)
         try:
-            resolved = region.result()
+            resolved = region.result() if region is not None else ""
         except Exception:
             logger.warning("home region probe failed", exc_info=True)
             resolved = ""
@@ -499,6 +529,18 @@ def _account_facts(profile: str, preferred_region: str) -> tuple[str, dict[str, 
     return resolved, found
 
 
+async def _reissue_home(
+    card: sc.SetupCard, settings: dict[str, Any], *, picked: str | None = None
+) -> sc.SetupCard:
+    """Recompute a pending home card's payload for *settings* and show it under a new hash."""
+    payload, private = await asyncio.to_thread(_home_payload, settings, picked=picked)
+    if card.payload.get(HOME_STEP_KEY):
+        payload[HOME_STEP_KEY] = True
+    return await asyncio.to_thread(
+        sc.replace_payload, card.id, payload, settings=private["settings"]
+    )
+
+
 async def refresh_home_payload(card: sc.SetupCard) -> sc.SetupCard:
     """Recompute a pending home card's payload once AWS answers for its profile.
 
@@ -507,16 +549,52 @@ async def refresh_home_payload(card: sc.SetupCard) -> sc.SetupCard:
     returned unchanged when it moved on or the recompute fails.
     """
     try:
-        settings = sc.build_home(dict(card.private.get("settings") or {}))
-        payload, private = await asyncio.to_thread(_home_payload, settings)
-        if card.payload.get(HOME_STEP_KEY):
-            payload[HOME_STEP_KEY] = True
-        return await asyncio.to_thread(
-            sc.replace_payload, card.id, payload, settings=private["settings"]
-        )
+        return await _reissue_home(card, sc.build_home(dict(card.private.get("settings") or {})))
     except Exception:
         logger.warning("home card %s: payload refresh failed", card.id, exc_info=True)
         return card
+
+
+async def _decide_home_region(
+    state: "DashboardState", card: sc.SetupCard, card_hash: str, input_: dict[str, Any]
+) -> sc.SetupCard:
+    """The home card's ``region`` decision: the owner names the account's region.
+
+    Offered only while no region answered (``payload.region_unknown``). The pick
+    is checked on the server (:func:`sc.validate_home_region`), probed read-only,
+    and the card re-issued for it under a new hash, with that region's prices. A
+    pick that does not answer either stays the owner's to build in, and the card
+    keeps its picker and says so.
+    """
+    import hmac
+
+    from kiro_crew.cloud import local_signin
+
+    if card.kind != sc.KIND_HOME or card.payload.get("region_unknown") is not True:
+        raise sc.CardRejected("this card does not ask for a region", "invalid_decision")
+    if card.status != sc.STATUS_PENDING:
+        raise sc.CardRejected("this card is not waiting for a decision", "card_not_pending")
+    if not hmac.compare_digest(str(card_hash), card.payload_hash):
+        raise sc.CardRejected("this card changed since it was shown", "card_hash_mismatch")
+    denial = await asyncio.to_thread(_governance_denial, card.kind, card.session_key)
+    if denial:
+        raise sc.CardRejected(f"blocked by policy: {denial}", "governance_denied")
+    region = sc.validate_home_region(input_.get("region"))
+    settings = {**sc.build_home(dict(card.private.get("settings") or {})), "region": region}
+    answer = await asyncio.to_thread(local_signin.probe_region, settings["profile"], region)
+    card = await _reissue_home(card, settings, picked=answer)
+    if answer == local_signin.REGION_OK:
+        card = await _finish(card, sc.STATUS_PENDING)
+    else:
+        card = await _back_to_pending(
+            card,
+            "home_region_no_answer",
+            f"AWS did not answer for this account in {region} either; build there if it "
+            "is the region your AWS console shows, or pick another",
+        )
+    broadcast(state, card)
+    _audit("setup_card.region", answer, card.session_key, f"kind:home card:{card.id}")
+    return card
 
 
 # ── decide ──────────────────────────────────────────────────────────────────
@@ -539,7 +617,7 @@ async def decide(
     """
     if decision not in sc.DECISIONS:
         raise sc.CardRejected(
-            "decision must be commit, decline, preview or aws_signin", "invalid_decision"
+            "decision must be commit, decline, preview, aws_signin or region", "invalid_decision"
         )
     found = await asyncio.to_thread(sc.get_card, card_id)
     if found is None:
@@ -549,6 +627,8 @@ async def decide(
         from kiro_crew.dashboard.setup_aws_signin import decide_signin
 
         return await decide_signin(state, card, card_hash, input_, same_machine=same_machine)
+    if decision == sc.DECISION_REGION:
+        return await _decide_home_region(state, card, card_hash, input_)
     if decision == sc.DECISION_DECLINE:
         card = await asyncio.to_thread(
             sc.claim_pending, card_id, card_hash, to_status=sc.STATUS_DECLINED

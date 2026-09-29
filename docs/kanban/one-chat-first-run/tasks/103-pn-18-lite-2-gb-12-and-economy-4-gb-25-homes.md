@@ -4,12 +4,14 @@ title: PN.18 Lite (2 GB, ~$12) and Economy (4 GB, ~$25) homes
 status: review
 priority: high
 created: 2026-09-28T19:39:39.753952385Z
-updated: 2026-09-28T21:10:23.704435013Z
+updated: 2026-09-28T23:38:49.655739406Z
 tags:
     - parallel-nest
     - aws
     - home
     - perf
+claimed_by: lead
+claimed_at: 2026-09-28T23:38:49.655738755Z
 class: standard
 ---
 
@@ -17,3 +19,5 @@ Spike 2026-09-28 (measured, isolated homes; notes /tmp/kc-sizing/REPORT.md). Idl
 
 
 Done (uncommitted, for review): tiers lite (t4g.small, 2 GB, 20 GB disk, free_plan_ok, about $14/month with disk) and economy (t4g.medium, 4 GB, 20 GB disk, paid only, about $26/month), each with a home_profile the template takes as HomeProfile (standard|lite|economy). Lite: no voice extra, KIROCREW_SKIP_MODEL_DOWNLOAD=1 in the unit, and session.eager_spawn=false, session.lazy_background=true, session.timeout_secs=900 written with kirocrew config set. Economy: session.timeout_secs=1800. New config key session.lazy_background (default false, restart=True): start_pool skips the boot _ensure_background, and get_or_create(BACKGROUND_KEY) starts it first as the background agent. HOME_PLAN_SIZES: FREE lite, starter, light (default starter); PAID lite, economy, small, light (default small). The card's Lite line says what it gives up; the note codes are lite_tradeoffs and all_on, in 12 catalogs. Not done: (7), a memory-sized cap on live chat sessions. Real Lite boot NOT yet verified: AWS CLI calls are denied in this agent's session.
+
+Real verification 2026-09-28 (default AWS account, us-east-1, t4g.small, stack kirocrew-kc-lite-1790637896): ready for Kiro sign-in in 441 s (the earlier real home took ~10.8 min); on-box bootstrap 1 min 43 s. It used the prebuilt dashboard and no Node was installed. The Lite profile applied: KIROCREW_SKIP_MODEL_DOWNLOAD=1 in the unit, and eager_spawn false, lazy_background true, timeout_secs 900. Idle memory 477–499 MB used of 1841 MB, 1.2 GB available, no swap; gateway RSS ~190 MB, no kiro-cli sessions. No chat turn was measured, because the Kiro sign-in was not approved. Stack, source object and bucket were deleted and confirmed gone; cost under a cent. Report: /tmp/kc-demo/lite-verify-kc-lite-1790637896.json.

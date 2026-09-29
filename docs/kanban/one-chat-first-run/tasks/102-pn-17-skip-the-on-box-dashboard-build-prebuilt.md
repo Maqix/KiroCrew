@@ -4,11 +4,13 @@ title: PN.17 Skip the on-box dashboard build (prebuilt dashboard in the home)
 status: review
 priority: medium
 created: 2026-09-28T19:12:39.682844255Z
-updated: 2026-09-28T21:10:23.703542409Z
+updated: 2026-09-28T23:38:49.691685636Z
 tags:
     - parallel-nest
     - installer
     - perf
+claimed_by: lead
+claimed_at: 2026-09-28T23:38:49.691685276Z
 class: standard
 ---
 
@@ -16,3 +18,5 @@ Sizing research 2026-09-28: the home's first boot installs Node and runs npm ci 
 
 
 Done (uncommitted, for review): source.py ships src/kiro_crew/static/dist in the tarball when index.html is present, not a symlink and no older than website/src and website/index.html (regular files only, credential-name filters apply). install.sh skips Node and the frontend build under KIROCREW_PREBUILT_FRONTEND=1 when static/dist/index.html is there. The template downloads the S3 tarball as root before the Node step, skips Node when the tarball lists static/dist/index.html, exports the flag to install.sh, and keeps the DIST_INDEX check. Worst-case UserData 14264 of 14336 bytes (comments moved to the rationale block). Tests: test_cloud_source.py::TestPrebuiltDashboard, test_cloud_ec2.py::TestPrebuiltDashboard. Spec: cloud.md 'The prebuilt dashboard'. Staged-tree check: a 145.6 MB tarball with 2692 dist entries, built in 57 s. Not yet run on a real home.
+
+Verified on the real Lite home 2026-09-28: the tarball carried static/dist, the bootstrap logged 'using the prebuilt dashboard', and neither node nor node_modules exist on the box. Ready for sign-in in 441 s.

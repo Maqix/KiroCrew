@@ -129,6 +129,30 @@ def configured_region(profile: str = "") -> str:
 #: Where AWS's newest sign-up pins a new account, by the owner's country. Tried in
 #: this order when the profile's own region refuses.
 HOME_REGION_CANDIDATES: tuple[str, ...] = ("us-east-2", "eu-north-1", "ap-southeast-2")
+#: The regions a home can be built in, which the home card offers when no region
+#: answers: the commercial regions enabled on every account by default, where the
+#: EC2 template's Amazon Linux 2023 AMI alias and Session Manager both exist. A
+#: region that needs an opt-in is left out. A size the chosen region does not
+#: offer is refused at launch (``ec2.discover_network``).
+HOME_REGIONS: tuple[str, ...] = (
+    "us-east-1",
+    "us-east-2",
+    "us-west-1",
+    "us-west-2",
+    "ca-central-1",
+    "sa-east-1",
+    "eu-west-1",
+    "eu-west-2",
+    "eu-west-3",
+    "eu-central-1",
+    "eu-north-1",
+    "ap-south-1",
+    "ap-northeast-1",
+    "ap-northeast-2",
+    "ap-northeast-3",
+    "ap-southeast-1",
+    "ap-southeast-2",
+)
 #: The Free plan's API answers in us-east-1 only.
 _PLAN_REGION = "us-east-1"
 #: EC2's "Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances" vCPU quota.
@@ -138,6 +162,10 @@ _PROBE_TIMEOUT_SECS = 20
 PLAN_FREE = "FREE"
 PLAN_PAID = "PAID"
 PLAN_UNKNOWN = "unknown"
+#: What one region probe found: the account builds there, refuses it, or nothing is known.
+REGION_OK = "ok"
+REGION_REFUSED = "refused"
+REGION_UNKNOWN = "unknown"
 
 
 def _denied(err: str) -> bool:
@@ -146,33 +174,47 @@ def _denied(err: str) -> bool:
     return aws.is_access_denied(err) or "AuthFailure" in err or "OptInRequired" in err
 
 
-def resolve_home_region(profile: str, preferred: str = "") -> str:
-    """The region this account can build in, or ``""`` when none answers.
+def probe_region(profile: str, region: str) -> str:
+    """Whether this account answers in *region*: REGION_OK, REGION_REFUSED or REGION_UNKNOWN.
 
-    One read-only ``ec2 describe-availability-zones`` per region: *preferred*,
-    then the profile's own region, then :data:`HOME_REGION_CANDIDATES`. Only an
-    access refusal moves on to the next region (a new sign-up account refuses
-    every region but its own); any other failure means nothing is known.
+    One read-only ``ec2 describe-availability-zones``. An access refusal is
+    REGION_REFUSED (a new sign-up account refuses every region but its own); any
+    other failure is REGION_UNKNOWN.
     """
     from kiro_crew.cloud import aws
 
+    if not _REGION_RE.match(region or ""):
+        return REGION_UNKNOWN
+    try:
+        rc, _out, err = aws.run_aws(
+            ["ec2", "describe-availability-zones", "--output", "json"],
+            profile,
+            region,
+            timeout=_PROBE_TIMEOUT_SECS,
+        )
+    except Exception:
+        return REGION_UNKNOWN
+    if rc == 0:
+        return REGION_OK
+    return REGION_REFUSED if _denied(err) else REGION_UNKNOWN
+
+
+def resolve_home_region(profile: str, preferred: str = "") -> str:
+    """The region this account can build in, or ``""`` when none answers.
+
+    :func:`probe_region` per region: *preferred*, then the profile's own region,
+    then :data:`HOME_REGION_CANDIDATES`. Only a refusal moves on to the next
+    region; anything else unknown means nothing is known.
+    """
     seen: list[str] = []
     for region in (preferred, configured_region(profile), *HOME_REGION_CANDIDATES):
         if not region or region in seen or not _REGION_RE.match(region):
             continue
         seen.append(region)
-        try:
-            rc, _out, err = aws.run_aws(
-                ["ec2", "describe-availability-zones", "--output", "json"],
-                profile,
-                region,
-                timeout=_PROBE_TIMEOUT_SECS,
-            )
-        except Exception:
-            return ""
-        if rc == 0:
+        found = probe_region(profile, region)
+        if found == REGION_OK:
             return region
-        if not _denied(err):
+        if found != REGION_REFUSED:
             return ""
     return ""
 

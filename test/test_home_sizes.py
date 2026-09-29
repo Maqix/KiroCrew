@@ -167,7 +167,8 @@ class TestSizeOptions:
         assert starter["free_plan_ok"] is True and standard["free_plan_ok"] is False
         assert starter["label"] == "Starter" and standard["label"] == "Standard"
         assert (starter["note"], standard["note"]) == ("free_plan_credits", "many_chats")
-        assert starter["monthly_usd"] == sc.monthly_estimate_usd("starter")
+        # Priced in the account's own region.
+        assert starter["monthly_usd"] == sc.monthly_estimate_usd("starter", "eu-north-1") == 77
         weeks = int(187.5 / (starter["monthly_usd"] / (52 / 12)))
         assert starter["credit_weeks"] == weeks and starter["credits_usd"] == 187.5
         assert payload["size_default"] == "starter"
@@ -198,21 +199,13 @@ class TestSizeOptions:
     def test_a_free_plan_size_no_dearer_than_small_joins_the_paid_list(self, monkeypatch):
         from kiro_crew.cloud import sizes
 
-        cheap = sizes.SizeTier(
-            key="starter",
-            label="Starter",
-            instance_type="m7i-flex.large",
-            arch=sizes.ARCH_X86_64,
-            vcpu=2,
-            ram_gb=8,
-            disk_gb=30,
-            approx_usd_per_hr=0.05,
-            free_plan_ok=True,
-        )
-        monkeypatch.setitem(sizes.TIERS_BY_KEY, "starter", cheap)
-        options, default = sc.home_size_options({"type": "PAID"})
+        # Starter cheaper than Small in one region only: the rule is decided there.
+        monkeypatch.setitem(sizes.ON_DEMAND_USD_PER_HR["us-east-2"], "m7i-flex.large", 0.05)
+        options, default = sc.home_size_options({"type": "PAID"}, "us-east-2")
         assert [o["key"] for o in options] == ["lite", "economy", "starter", "small", "light"]
         assert default == "small"
+        options, _ = sc.home_size_options({"type": "PAID"}, "us-east-1")
+        assert "starter" not in [o["key"] for o in options]
 
     def test_lite_says_what_it_gives_up_and_what_the_credit_buys(self):
         options, _ = sc.home_size_options({"type": "FREE", "credits_usd": 100})
