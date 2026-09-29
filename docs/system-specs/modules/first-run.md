@@ -491,6 +491,11 @@ per load and never persisted: the rail and sessions toggles write `mc-nav` and
 `mc-sidebar-pinned` as they always do, and a stored value wins. Any other load,
 including the main chat after graduation, keeps the stored or default layout.
 
+While the first run is under way (first-run slot known, no main chat yet) the
+dashboard holds its generic feature tips in every chat, so the setup cards and
+notices are the only guidance. Tips resume on their own cadence once graduation
+sets the main chat, and the user's tips opt-out still wins.
+
 Committing the privacy card dispatches the `[First run]` kickoff turn
 (`FIRST_RUN_PREFIX` in `dashboard/state.py`, `injectKind: "first_run"`), whose
 text carries facts the gateway gathered (other agents detected, curated

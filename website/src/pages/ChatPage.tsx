@@ -23,7 +23,7 @@ import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, useAppStore, store } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { useOptionalTheme } from '../hooks/useTheme'
-import { firstRunLayoutActive, useFirstRunLayout } from '../hooks/useFirstRunLayout'
+import { firstRunInProgress, firstRunLayoutActive, useFirstRunLayout } from '../hooks/useFirstRunLayout'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
@@ -794,7 +794,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Temporary sessions ("no memory reads or writes") must never show
   // memory-personalized tips.
   const tipTemporary = useAppSelector(s => s.dashboard.slots.find(sl => sl.key === s.chat.activeSlot)?.memory_mode === 'temporary')
-  const tipBlocked = tipTemporary || splitMode || embedMode === 'sessions'
+  // Optional: embedded hosts and tests mount this page without the provider.
+  const themeCtx = useOptionalTheme()
+  // While the one-chat first run is under way, its setup cards and notices are
+  // the only guidance: a generic tip there lands under a live card. Held in
+  // every chat until graduation sets the main chat, then tips resume on their
+  // own cadence (nothing is fetched or marked shown while held). The user's
+  // opt-out is the backend's and still wins either way.
+  const tipFirstRun = firstRunInProgress(themeCtx?.firstRunSlot ?? null, themeCtx?.mainSlot ?? null)
+  const tipBlocked = tipTemporary || tipFirstRun || splitMode || embedMode === 'sessions'
   const { tip: activeTip, dismiss: dismissTip } = useTipTrigger(!!slotRunning, tipSuppressed, activeSlot, tipBlocked)
   const slotState = useAppSelector(s => s.chat.slotState)
   const contextPct = useAppSelector(s => s.chat.slotContextPct[s.chat.activeSlot ?? ''] ?? 0)
@@ -2315,8 +2323,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // New content while following is handled inside the virtualizer (RO re-pin
   // for in-place growth + append layout-effect pin for new items), so ChatPage
   // does not run its own message-length scroll effect.
-  // Optional: embedded hosts and tests mount this page without the provider.
-  const themeCtx = useOptionalTheme()
   const session = useChatPageSessionController({
     activeSlot,
     activeSlotRef,

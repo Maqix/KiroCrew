@@ -293,6 +293,38 @@ describe('useTipTrigger', () => {
     expect(screen.getByTestId('tip-out').textContent).toBe('none')
   })
 
+  it('lifting the block mid-turn re-arms the gate, with nothing spent while held', async () => {
+    // The first-run hold lifts on graduation, often during a running turn.
+    const { api: mockApi } = await import('../api/client')
+    ;(mockApi.tipsNext as ReturnType<typeof vi.fn>).mockResolvedValue({ tip: mockTip, glow: true })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <BlockedHarness blocked={true} />
+      </QueryClientProvider>,
+    )
+    await act(async () => {
+      vi.advanceTimersByTime(12000)
+      await Promise.resolve()
+    })
+    expect(mockApi.tipsNext).not.toHaveBeenCalled()
+    expect(mockApi.tipsFeedback).not.toHaveBeenCalled()
+    expect(localStorage.getItem('kirocrew.tips.lastShownAt')).toBeNull()
+
+    rerender(
+      <QueryClientProvider client={qc}>
+        <BlockedHarness blocked={false} />
+      </QueryClientProvider>,
+    )
+    await act(async () => {
+      vi.advanceTimersByTime(11000)
+    })
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync()
+    })
+    expect(screen.getByTestId('tip-out').textContent).toBe(mockTip.title)
+  })
+
   it('hook suppressed=true hides tip (never fetches)', async () => {
     const { api: mockApi } = await import('../api/client')
     ;(mockApi.tipsNext as ReturnType<typeof vi.fn>).mockResolvedValue({ tip: mockTip, glow: true })

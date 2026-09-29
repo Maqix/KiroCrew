@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  firstRunLayoutVerdict, settleFirstRunLayout, firstRunLayoutActive, __resetFirstRunLayout,
+  firstRunInProgress, firstRunLayoutVerdict, settleFirstRunLayout, firstRunLayoutActive, __resetFirstRunLayout,
   type FirstRunLayoutInputs,
 } from '../hooks/useFirstRunLayout'
 
@@ -38,6 +38,14 @@ describe('firstRunLayoutVerdict', () => {
 
   it('leaves mobile to its drawers', () => {
     expect(firstRunLayoutVerdict(opening({ isMobile: true }))).toBe(false)
+  })
+})
+
+describe('firstRunInProgress', () => {
+  it('holds from the first-run slot until a main chat exists', () => {
+    expect(firstRunInProgress(FIRST_RUN, null)).toBe(true)
+    expect(firstRunInProgress(FIRST_RUN, FIRST_RUN)).toBe(false)
+    expect(firstRunInProgress(null, null)).toBe(false)
   })
 })
 

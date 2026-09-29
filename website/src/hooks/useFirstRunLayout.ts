@@ -29,15 +29,24 @@ export interface FirstRunLayoutInputs {
   isMobile: boolean
 }
 
+/**
+ * The one-chat first run is under way: its slot is known and nothing has
+ * become the main chat yet. A main chat means the first run graduated (or the
+ * user picked one by hand), and the dashboard is the everyday one from then on.
+ * Live, unlike the layout verdict: `mainSlot` arrives mid-session on graduation.
+ */
+export function firstRunInProgress(firstRunSlot: string | null, mainSlot: string | null): boolean {
+  return !!firstRunSlot && !mainSlot
+}
+
 /** `true`/`false` once decidable, `null` while an input is still loading. */
 export function firstRunLayoutVerdict({
   themeBootReady, firstRunSlot, mainSlot, pathname, activeSlot, isMobile,
 }: FirstRunLayoutInputs): boolean | null {
   if (!themeBootReady) return null
-  // A main chat means the first run graduated (or the user picked one by hand):
-  // the dashboard is the everyday one now and opens with today's defaults.
-  // Mobile keeps its drawers.
-  if (!firstRunSlot || mainSlot || isMobile) return false
+  // After graduation the dashboard opens with today's defaults. Mobile keeps
+  // its drawers.
+  if (!firstRunInProgress(firstRunSlot, mainSlot) || isMobile) return false
   // Only the page load that OPENS on the chat. One that opens elsewhere keeps
   // its layout when the user later walks into the chat.
   if (pathname !== '/chat' && !pathname.startsWith('/chat/')) return false

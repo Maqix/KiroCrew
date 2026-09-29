@@ -333,3 +333,4 @@
 {"timestamp":"2026-09-29T00:22:40.655655499Z","action":"move","task_id":111,"detail":"in-progress -\u003e review"}
 {"timestamp":"2026-09-29T00:22:40.656464085Z","action":"handoff","task_id":111,"detail":"P2.19 No generic dashboard tips during the first run"}
 {"timestamp":"2026-09-29T00:22:40.656824534Z","action":"release","task_id":111,"detail":"P2.19 No generic dashboard tips during the first run"}
+{"timestamp":"2026-09-29T00:29:52.324462447Z","action":"create","task_id":112,"detail":"D6 Update the narrated explainer for setup.sh and the home step"}
