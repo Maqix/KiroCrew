@@ -1,0 +1,48 @@
+diff --git a/website/capture/members-page.tsx b/website/capture/members-page.tsx
+index b9b4243668..226262d693 100644
+--- a/website/capture/members-page.tsx
++++ b/website/capture/members-page.tsx
+@@ -37,8 +37,20 @@ function busyFrame(slot: string) {
+   return sseChatMessage({ slot, role: 'tool', content: '🔧 gh issue list --state open', ts: '2026-08-27T01:00:06Z', meta: { kind: 'shell' } })
+ }
+ window.addEventListener('capture:frame', (e) => {
+-  const d = (e as CustomEvent<{ kind: string; slot: string; text?: string; sendId?: string }>).detail
++  const d = (e as CustomEvent<{ kind: string; slot: string; text?: string; sendId?: string; seq?: number }>).detail
+   if (d.kind === 'busy') store.dispatch(busyFrame(d.slot))
++  // A crewmate's COMPLETE reply landing while its turn is over -- the shape a
++  // worker's report or a `send_message` row takes in a DM: no chunk stream, no
++  // run-state flip, one assistant row appended to an IDLE slot. What the
++  // idle-follow capture (capture-chatpane-idle-follow.mjs) photographs.
++  if (d.kind === 'reply') {
++    store.dispatch(sseChatMessage({ slot: d.slot, role: 'assistant', content: d.text ?? '', ts: new Date().toISOString(), meta: { mid: d.sendId ?? `cap-${Date.now().toString(36)}` } }))
++  }
++  // One streamed delta of a LIVE reply -- the same `chunk` frame the WS
++  // delivers; `seq` moves the replay floor so every delta lands. `done` is the
++  // terminal frame that turns the streaming row into a stored assistant row.
++  if (d.kind === 'chunk') store.dispatch(sseChatMessage({ slot: d.slot, role: 'chunk', content: d.text ?? '', seq: d.seq }))
++  if (d.kind === 'done') store.dispatch(sseChatMessage({ slot: d.slot, role: '_done', content: '' }))
+   if (d.kind === 'steer-echo') {
+     // The server echoes the sendId it received in the POST's meta; mirror that
+     // by reusing the id of the slot's latest optimistic steer bubble, so the
+@@ -62,6 +74,12 @@ const nav = params.get('nav') === '1'
+ // member slot's stream state, which is what the pane's composer reads to
+ // decide its busy affordance. Documents the steer-only composer.
+ const busy = params.get('busy') === '1'
++// ?idle=1 — radar's DM thread has NO turn running (the slot frame says
++// `running: false`). The follow policy gates its automatic pin on the slot's
++// liveness, so a message that lands while idle -- a worker's report, a
++// `send_message` row -- is the case the idle-follow capture must photograph
++// with the run signal genuinely off, not the roster's default "working".
++const idle = params.get('idle') === '1'
+ document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
+ 
+ // Live presence rides the WS `slots` frames; seed the same shape so the
+@@ -79,7 +97,7 @@ store.dispatch(
+       key: 'member-radar',
+       title: 'Radar',
+       messages: 4,
+-      running: true,
++      running: !idle,
+       mode: 'member',
+       agent: 'radar',
+     },
