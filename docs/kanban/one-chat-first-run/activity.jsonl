@@ -453,3 +453,7 @@
 {"timestamp":"2026-09-29T16:38:52.249357702Z","action":"move","task_id":121,"detail":"in-progress -\u003e review"}
 {"timestamp":"2026-09-29T16:38:52.249784839Z","action":"handoff","task_id":121,"detail":"P2.22 Pending setup cards must not crowd the chat"}
 {"timestamp":"2026-09-29T16:38:52.250081483Z","action":"release","task_id":121,"detail":"P2.22 Pending setup cards must not crowd the chat"}
+{"timestamp":"2026-09-29T17:42:47.241997334Z","action":"create","task_id":124,"detail":"D8 Demo video of user actions (no narration)"}
+{"timestamp":"2026-09-29T17:42:55.504676236Z","action":"move","task_id":124,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-29T17:43:10.58912193Z","action":"move","task_id":124,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-29T17:43:10.589306049Z","action":"handoff","task_id":124,"detail":"D8 Demo video of user actions (no narration)"}

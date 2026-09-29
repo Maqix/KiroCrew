@@ -834,6 +834,39 @@ class TestMainChat:
         assert block.count("[End of crew overview]") == 1
         assert len(block) <= setup_flow.OVERVIEW_MAX_CHARS
 
+    @pytest.mark.asyncio
+    async def test_a_building_home_is_not_reported_as_awaiting_the_user(self, state):
+        # Seen in a recording: "what's going on?" said the home card still
+        # waited for a decision while the home was building.
+        first_run.record_main("chat-1-1")
+        card = sc.create_card(
+            slot="chat-1-1",
+            session_key="dashboard:chat-1-1",
+            kind=sc.KIND_HOME,
+            payload={"region": "us-east-1", "size": {"key": "lite"}},
+            private={},
+        )
+
+        def _building(c: sc.SetupCard) -> None:
+            c.status = sc.STATUS_WAITING
+            c.outcome = {
+                "steps": [{"key": "create", "label": "Create the instance", "state": "active"}]
+            }
+
+        sc.update_card(card.id, _building)
+        block = await setup_flow.crew_overview(state, state.slots["chat-1-1"])
+        assert "building in the background: Create the instance" in block
+        assert "nothing needed from the user" in block
+        assert "waiting for the user's decision" not in block
+
+        def _asking(c: sc.SetupCard) -> None:
+            c.status = sc.STATUS_PENDING
+            c.outcome = {}
+
+        sc.update_card(card.id, _asking)
+        block = await setup_flow.crew_overview(state, state.slots["chat-1-1"])
+        assert "waiting for the user's decision" in block
+
 
 class TestImportResult:
     def test_the_result_names_the_imported_jobs_and_only_those(self):

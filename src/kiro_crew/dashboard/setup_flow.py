@@ -1939,6 +1939,41 @@ def _slot_status(slot: Any) -> str:
     return "idle"
 
 
+def _card_state(card: sc.SetupCard) -> str:
+    """A card's status in words the model reads correctly.
+
+    The raw ``waiting`` means the card's own work is running (a build, a
+    sign-in, a preview), not that the user owes it an answer; printed as is,
+    the main chat told the user a home that was building still awaited them.
+    """
+    if card.status == sc.STATUS_PENDING:
+        return "waiting for the user's decision"
+    if card.status in (sc.STATUS_WAITING, sc.STATUS_WORKING):
+        return "in progress, nothing needed from the user"
+    return card.status
+
+
+def _home_state(card: sc.SetupCard) -> str:
+    """Where the newest home card stands, for the overview's home line."""
+    outcome = card.outcome or {}
+    if outcome.get("moved"):
+        return "moved in"
+    if outcome.get("ready"):
+        return "ready to move in (the card offers Move in)"
+    if outcome.get("needs_signin"):
+        return "built, waiting for the user to sign it in to Kiro on its card"
+    if outcome.get("stayed"):
+        return "not wanted: the user keeps the crew on this machine"
+    if card.status in (sc.STATUS_WAITING, sc.STATUS_WORKING):
+        steps = [s for s in outcome.get("steps") or [] if isinstance(s, dict)]
+        active = next((s for s in steps if s.get("state") == "active"), None)
+        where = f": {_plain(str(active.get('label') or ''))}" if active else ""
+        return f"building in the background{where}; nothing needed from the user"
+    if card.status == sc.STATUS_PENDING:
+        return "waiting for the user's decision on its card"
+    return card.status
+
+
 async def crew_overview(state: "DashboardState", slot: "_ChatSlot") -> str:
     """The ``[CREW OVERVIEW]`` block for the main chat's next turn, or ``""``.
 
@@ -1969,7 +2004,8 @@ async def crew_overview(state: "DashboardState", slot: "_ChatSlot") -> str:
     open_cards = [c for c in cards if not c.terminal]
     if open_cards:
         items = "; ".join(
-            f"{_plain(_card_title(c))} ({c.status}{'' if c.slot == slot.key else ', another chat'})"
+            f"{_plain(_card_title(c))} ({_card_state(c)}"
+            f"{'' if c.slot == slot.key else ', another chat'})"
             for c in open_cards[-5:]
         )
         lines.append(f"- Setup cards open: {items}.")
@@ -1995,12 +2031,7 @@ async def crew_overview(state: "DashboardState", slot: "_ChatSlot") -> str:
             lines.append(f"- Scheduled jobs ({len(jobs)}), next due first: {names}.")
     home = next((c for c in reversed(cards) if c.kind == sc.KIND_HOME), None)
     if home is not None:
-        state_word = (
-            "moved in"
-            if (home.outcome or {}).get("moved")
-            else "ready to move in" if (home.outcome or {}).get("ready") else home.status
-        )
-        lines.append(f"- Home in the cloud: {state_word}.")
+        lines.append(f"- Home in the cloud: {_home_state(home)}.")
     from kiro_crew.context import _neutralize_structural_markers
 
     # Chat and job titles are user- and agent-authored; a forged block marker in

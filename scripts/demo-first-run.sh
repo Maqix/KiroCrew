@@ -264,20 +264,18 @@ cat <<EOF
 What to show:
   1. The terminal asks nothing; the browser opens on the first-run chat (nav collapsed).
   2. Privacy card -> Continue.
-  3. "Where should your crew live?" -> Build my home (it builds in the background),
-     or Keep it on this machine.
-  4. The hello found a Hermes agent -> Bring it over (memories, a skill, a persona;
+  3. The hello found a Hermes agent -> Bring it over (memories, a skill, a persona;
      its jobs arrive switched off).
-  5. Say: "Call yourself Nova and reply in English" -> save the profile card.
-  6. Connect GitHub -> declining is fine; the agent moves on.
-  7. Say: "Set up a weekday 8am dev brief on $SAMPLE and preview it"
+  4. Connect GitHub -> declining is fine; the agent moves on.
+  5. Say: "Set up a weekday 8am dev brief on $SAMPLE and preview it"
      -> Run a preview now -> Allow once on the card -> Keep it.
      The chat becomes your main chat.
-  8. Say: "What's going on?"   Then paste: "my token is $TOKEN"
+  6. Right after Keep: "Where should your crew live?" -> In the cloud -> Continue
+     -> pick a size ("What's the difference?" explains them) -> Build my home
+     (simulated: it builds in the background).
+  7. Say: "What's going on?"   Then paste: "my token is $TOKEN"
      (a fake token: it is moved to the vault before the model sees it).
-  9. Say: "Look into the TODOs in $SAMPLE in its own chat"
-     -> a note arrives here when that chat finishes.
- 10. When the home card says the home is ready -> Move in.
+  8. When the home card says the home is ready -> Move in.
 
 When you are done: bash $0 --stop
 EOF
