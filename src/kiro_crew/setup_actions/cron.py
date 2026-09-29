@@ -39,6 +39,12 @@ async def _commit(
     return await sf._commit_cron(state, card, input_)
 
 
+async def _after_report(state: "DashboardState", card: sc.SetupCard) -> None:
+    from kiro_crew.dashboard import setup_flow as sf
+
+    await sf.offer_home_after_job(state, card)
+
+
 async def _preview(
     state: "DashboardState", card: sc.SetupCard, input_: dict[str, Any]
 ) -> sc.SetupCard:
@@ -102,6 +108,7 @@ ACTION = SetupAction(
     },
     on_decline=_on_decline,
     result_detail=_result_detail,
+    after_report=_after_report,
     scopes=(SETUP_SCOPE, CRON_SCOPE),
     vet=_vet,
     lifts_budget=True,

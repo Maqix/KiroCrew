@@ -651,6 +651,22 @@ class TestWhereTheCrewLives:
         return homes[0]
 
     @pytest.mark.asyncio
+    async def test_the_choice_card_comes_after_the_kept_jobs_result(self, monkeypatch):
+        # Shown before the result turn, the tray read the new card as one the
+        # chat had moved past and opened it folded.
+        seen_at_dispatch: list[int] = []
+
+        async def _record(state_, slot, text, inject_kind):
+            homes = [c for c in sc.list_cards(slot.key) if c.kind == sc.KIND_HOME]
+            seen_at_dispatch.append(len(homes))
+
+        monkeypatch.setattr(setup_flow, "_dispatch_envelope_turn", _record)
+        st = FakeState()
+        slot_key = await self._keep_first_job(st, None)
+        assert seen_at_dispatch[-1] == 0, "the home card was shown before the job's result"
+        assert self._home(slot_key).payload["step"] == "choose"
+
+    @pytest.mark.asyncio
     async def test_the_first_kept_job_brings_the_choice_card_once(self, dispatched, monkeypatch):
         from kiro_crew.cloud import iam
 

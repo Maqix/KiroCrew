@@ -227,7 +227,9 @@ A kind is one module plus copy. The steps, in order:
      `stack_exempt` (a pending card holds no other proposal back, nor is held
      back), `lifts_budget` (a committed card lifts the card budget),
      `gateway_card` (which of its cards are the gateway's own step, outside the
-     budget and the one-at-a-time rule), `on_claim`, `on_decline`, and `scopes`
+     budget and the one-at-a-time rule), `on_claim`, `on_decline`,
+     `after_report` (runs after the `[Setup card result]` turn, for a card that
+     must appear after it), and `scopes`
      plus `vet` for a governance scope beyond `capabilities.setup`.
      `governed=False` and `reported=False` are for a gateway-only kind only.
 
@@ -342,8 +344,11 @@ terminal, and asked when it matters: once the first job is kept, because that jo
 runs only while Kiro Crew runs. (User testing: shown right after privacy, the
 question arrived with too little context and the card was too big.) When the
 first job's cron card commits and `graduate` turns the chat into the main chat,
-`_commit_cron` calls `_offer_home_choice`, which shows a home card with payload
-`offer: true` (`setup_actions.home.HOME_STEP_KEY`) and `step: "choose"`
+`_commit_cron` marks the step due (`outcome.home_choice`), and the cron action's
+`after_report` (`offer_home_after_job`) calls `_offer_home_choice` once the kept
+job's `[Setup card result]` is in the chat. Shown before that turn, the tray read
+the card as one the chat had moved past and opened it folded. It is a home card
+with payload `offer: true` (`setup_actions.home.HOME_STEP_KEY`) and `step: "choose"`
 (`HOME_PHASE_KEY`, `HOME_CHOICE_STEP`; private `phase: "choose"`): "Where should
 your crew live?". The gateway shows it itself, so the step always happens, once:
 not when the chat already has a home card (the agent proposed one) or a script

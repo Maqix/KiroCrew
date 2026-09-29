@@ -4,11 +4,11 @@ title: D8 Demo video of user actions (no narration)
 status: review
 priority: medium
 created: 2026-09-29T17:42:47.241473165Z
-updated: 2026-09-29T18:31:41.225243848Z
+updated: 2026-09-29T19:17:37.346921392Z
 tags:
     - demo
 claimed_by: demo-video
-claimed_at: 2026-09-29T18:31:41.225243517Z
+claimed_at: 2026-09-29T19:17:37.346921148Z
 class: standard
 ---
 
@@ -19,3 +19,6 @@ Done: /tmp/kc-demo/release/share/kiro-crew-first-run-actions.mp4, 3:33, 1440x900
 
 [[2026-09-29]] Tue 18:31
 Re-recorded at 1e81f5567: /tmp/kc-demo/release/share/kiro-crew-first-run-actions.mp4, 3:40, 1440x900, H.264, no audio track; decodes to the end. The first cut is kept as kiro-crew-first-run-actions-v1.mp4. One clean take (an earlier attempt was stopped for a driver stall, and one full take was set aside for stale caption flashes). The tray stayed open through the size choice (expanded=true after each click on the home card), and 'What's going on?' said the home was building and nothing was needed from the user. The tray opened folded for each new card (import, connect, job, home) because the agent had already written below it; one Show opened it each time, and nothing was scrolled to cause a fold. Waits play at 4-5x under a fast-forward tag. README section updated.
+
+[[2026-09-29]] Tue 19:17
+Final take at 4c9af006b: /tmp/kc-demo/release/share/kiro-crew-first-run-actions.mp4, 3:14, 1440x900, H.264, no audio track; decodes to the end. The previous cut is kept as kiro-crew-first-run-actions-v2.mp4. The import, connect and job cards opened in full; 1 Show click was still needed, for the home card. The gateway shows that card before the kept job's '[Setup card result]' inject, and the inject opens the agent's next turn, so the tray folds as the card appears. It did so in both takes. The tray stayed open through the size choice, and 'What's going on?' said the home was building and nothing was needed from the user. One earlier take was set aside because the transcript stopped following the status answer (a Scroll to bottom arrow showed and the answer sat under the fold). README section updated.

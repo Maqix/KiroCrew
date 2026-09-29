@@ -609,6 +609,8 @@ async def decide(
     _audit("setup_card.decide", card.status, card.session_key, f"kind:{card.kind} card:{card.id}")
     if card.terminal and action.reported:
         await _report(state, card)
+    if card.terminal and action.after_report is not None:
+        await action.after_report(state, card)
     return card
 
 
@@ -729,6 +731,14 @@ async def _show_chosen_home(state: "DashboardState", slot: "_ChatSlot", session_
     home = _scripted_home()
     if home is not None and home.get("choice") == HOME_CLOUD:
         await _show_home_card(state, slot, session_key, _home_payload, home)
+
+
+async def _home_choice_due(slot: "_ChatSlot") -> bool:
+    """Whether the first kept job should bring the home question (no card, no script)."""
+    if _scripted_home() is not None:
+        return False
+    existing = await asyncio.to_thread(sc.list_cards, slot.key)
+    return not any(c.kind == sc.KIND_HOME for c in existing)
 
 
 async def _offer_home_choice(
@@ -1119,12 +1129,27 @@ async def _commit_cron(
     card = await _finish(card, sc.STATUS_COMMITTED, outcome=outcome)
     slot = state.get_slot(card.slot)
     if await graduate(state, card.slot) and slot is not None:
-        if await _offer_home_choice(state, slot, card.session_key) is not None:
-            # The kept job's result tells the agent the question is on screen.
+        if await _home_choice_due(slot):
+            # The kept job's result tells the agent the question is on screen; the
+            # card itself is shown right after that result (offer_home_after_job).
             card = await _finish(
                 card, sc.STATUS_COMMITTED, outcome={**outcome, "home_choice": True}
             )
     return card
+
+
+async def offer_home_after_job(state: "DashboardState", card: sc.SetupCard) -> None:
+    """The cron action's ``after_report``: the home question, after the job's result.
+
+    Shown once the ``[Setup card result]`` turn has started, so the card belongs
+    to that turn: the tray shows it in full instead of reading it as a card the
+    chat has already moved past.
+    """
+    if card.status != sc.STATUS_COMMITTED or not (card.outcome or {}).get("home_choice"):
+        return
+    slot = state.get_slot(card.slot)
+    if slot is not None:
+        await _offer_home_choice(state, slot, card.session_key)
 
 
 async def _discard_preview_job(state: "DashboardState", card: sc.SetupCard) -> None:

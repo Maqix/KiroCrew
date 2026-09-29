@@ -85,6 +85,10 @@ class SetupAction:
     on_claim: Callable[[SetupCard, bool], Awaitable[SetupCard]] | None = None
     #: The committed card's detail sentence in the ``[Setup card result]`` turn.
     result_detail: Callable[[SetupCard], str] | None = None
+    #: Runs after the ``[Setup card result]`` turn is dispatched, for what must
+    #: appear AFTER it in the chat (the home question after a kept job: shown
+    #: before the result, the tray read it as a card the chat had moved past).
+    after_report: Callable[["DashboardState", SetupCard], Awaitable[None]] | None = None
     #: Every governance scope the kind answers to. ``capabilities.setup`` always
     #: applies (the flow checks it for every kind); a further scope needs *vet*.
     scopes: tuple[str, ...] = (SETUP_SCOPE,)
