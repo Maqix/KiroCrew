@@ -36,7 +36,7 @@ import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import RecoveryCard, { injectOpensTurn, resolveInjectCard } from './RecoveryCard'
-import SetupCard from '../../components/setup/SetupCard'
+import SetupCardRow from '../../components/setup/SetupCardRow'
 import SetupGuardrailNotice, { isSetupGuardrailRow } from '../../components/setup/SetupGuardrailNotice'
 import HandoffDoneNotice, { isHandoffDoneRow } from './HandoffDoneNotice'
 import { setupCardRefOf } from '../../api/setupCards'
@@ -422,7 +422,7 @@ export function createTranscriptRenderers(
       render: (m, ctx) => {
         const ref = setupCardRefOf(m.meta)
         if (!ref) return null
-        return ctx.row(<SetupCard key={ctx.key} cardId={ref.id} placement={o.setupCardTray ? 'transcript' : 'inline'} />)
+        return ctx.row(<SetupCardRow key={ctx.key} cardId={ref.id} placement={o.setupCardTray ? 'transcript' : 'inline'} />)
       },
     },
     {

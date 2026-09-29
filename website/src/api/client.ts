@@ -2489,6 +2489,12 @@ export interface KiroPrerequisiteStatus {
   repair_required: boolean
   docs_url: string
   /**
+   * Kiro's documented install one-liner for the gateway host's platform, shown
+   * beside `docs_url` for the user to copy and run. Empty where Kiro names none,
+   * for a non-owner, and absent from a gateway older than the field.
+   */
+  install_command?: string
+  /**
    * The command the USER runs to sign in (`kiro-cli login`). Supplied by the
    * gateway and rendered verbatim in a `<code>` — never a catalog value, because
    * a translated command cannot be typed.

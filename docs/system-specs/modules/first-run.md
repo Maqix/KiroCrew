@@ -14,7 +14,7 @@ this spec is the contract the code keeps.
 
 | Piece | Where | Role |
 |---|---|---|
-| One-command start | `src/kiro_crew/cli_start.py`, `start.sh`, `start.ps1`, `setup.sh` | `kirocrew start` checks the harness, starts or reuses the gateway and opens the first-run or main chat, asking nothing; the three scripts install and then run it. The contract is in [cli](cli.md#start-command). |
+| One-command start | `src/kiro_crew/cli_start.py`, `start.sh`, `start.ps1`, `setup.sh` | `kirocrew start` checks the harness (on a terminal a missing kiro-cli is left to the browser), starts or reuses the gateway and opens the first-run or main chat, asking nothing; the three scripts install and then run it. The contract is in [cli](cli.md#start-command). |
 | First-run state | `src/kiro_crew/first_run.py` | `data_home()/setup/first-run.json`: the first-run slot key, the stages done, the main chat, first-week tip state, held hand-off notices, and a home answer `kirocrew start --home` recorded for a script. Every change to one key goes through `update_state`, which serializes read-change-write in the gateway process so two writers cannot drop each other's keys. Presentation only. |
 | Card store | `src/kiro_crew/setup_cards.py` | The `SetupCard` record, the durable store `data_home()/setup/cards.json`, the kinds it accepts (`CARD_KINDS`), payload hashing, per-kind argument validation, the home's size and price data, the persona files. |
 | Setup actions | `src/kiro_crew/setup_actions/` | One module per kind, each a `SetupAction`: its tool arguments and their MCP-side check, its builder, committer, extra decisions, the model-facing title and result sentence, and the flags the flow reads instead of branching on the kind (see [Adding a setup action](#adding-a-setup-action)). |
@@ -22,7 +22,7 @@ this spec is the contract the code keeps.
 | HTTP | `src/kiro_crew/dashboard/handlers/setup_cards.py` | `GET /api/setup/first-run`, `POST /api/setup/first-run/retry`, `GET /api/setup/cards?slot=`, `GET /api/setup/cards/{id}`, `GET /api/setup/cards/{id}/approvals`, `POST /api/setup/cards/{id}/decide`, `POST /api/setup/main-chat`. All owner-only. |
 | Guardrails | `src/kiro_crew/dashboard/setup_guardrails.py` | The stall watchdog, the kickoff notice and the quota pause (see [Guardrails](#guardrails)). |
 | MCP tools | `src/kiro_crew/mcp_tools/setup.py` | `setup_card` (a session directive) and `setup_status` (read-only). The `setup_card` kind enum, argument properties and description are generated from the proposable setup actions. |
-| Card faces | `website/src/components/setup/` | `setupCardRegistry.tsx`: kind → body, title key and flags (`draft`, `refreshesBoot`); a kind with no entry draws `FallbackBody`: the generic title, Approve and Not now, nothing from the payload. `SetupCard.tsx` draws a card, `SetupCardBodies.tsx` holds the bodies, and `PendingSetupCards.tsx` is the tray above the composer that keeps every live card of the chat in view while its transcript row folds to a one-line pointer. |
+| Card faces | `website/src/components/setup/` | `setupCardRegistry.tsx`: kind → body, title key and flags (`draft`, `refreshesBoot`); a kind with no entry draws `FallbackBody`: the generic title, Approve and Not now, nothing from the payload. `SetupCard.tsx` draws a card, `SetupCardBodies.tsx` holds the bodies, and `PendingSetupCards.tsx` is the tray above the composer that keeps every live card of the chat in view while its transcript row folds to a one-line pointer. The tray is capped at a third of its chat pane and scrolls inside. It folds to a one-line bar (title, "needs you", Show; a count when several) whenever the transcript has something newer than the card (`setupCardTray.ts` `setupCardAtTail`) or the user scrolls up to read, and shows the card in full when the card is the newest row. A folded card stays mounted but inert, and the tray never folds while focus is inside a card. The bar's title scrolls the transcript to the card's row (`SetupCardRow.tsx`), opening a folded turn first. |
 | Channel pairing | `src/kiro_crew/dashboard/setup_channel.py` | The `channel` card's commit (the bot token) and its `/pair` code, which lives in process memory only. |
 | Job preview | `src/kiro_crew/dashboard/setup_preview.py` | The `cron` card's preview run: the approvals it waits on, shown on the card, and a verdict that counts how they ended (see [Job previews](#job-previews)). |
 | The account a home lives in | `src/kiro_crew/cloud/local_signin.py`, `src/kiro_crew/cloud/sizes.py` | Read-only AWS facts (who the CLI signs in as, the account's region, its plan, its vCPU quota), the sign-up links, and the size tiers with their per-region prices (see [The home](#the-home)). |
@@ -49,6 +49,16 @@ restarts. `_theme_payload` reports `first_run_slot`, which the SPA uses to keep
 the classic chapters from opening by themselves; `/onboarding` still opens them.
 `kirocrew start` lands on the main chat when there is one, else on this chat.
 
+On a fresh install whose kiro-cli is missing or signed out, the dashboard's
+prerequisite gate stands in front of this chat. `kirocrew start` on a terminal
+still starts the gateway and opens the browser ([cli](cli.md#start-command));
+the gate shows Kiro's install command and the sign-in, checks again on its own,
+and lifts once kiro-cli is ready, and the chat then opens on its privacy card.
+The chat's own transcript does not count as an established install until a main
+chat is recorded, so a restart before then keeps the gate
+([learn-cron-dashboard](learn-cron-dashboard.md)). Installing kiro-cli for the
+user is RFC Q2, still open.
+
 On a desktop-width page load that opens on the first-run chat before
 graduation, the dashboard starts with the nav rail collapsed to its icons and
 the session list hidden (`hooks/useFirstRunLayout.ts`). The rule is decided once
@@ -62,12 +72,14 @@ nothing, so the setup cards and notices are the only guidance. Tips resume on
 their own cadence once graduation sets the main chat, and the user's tips
 opt-out still wins.
 
-Committing the privacy card first shows the home step (see
-[The home step](#the-home-step)), then dispatches the `[First run]` kickoff turn
+Committing the privacy card dispatches the `[First run]` kickoff turn
 (`FIRST_RUN_PREFIX` in `dashboard/state.py`, `injectKind: "first_run"`), whose
 text carries facts the gateway gathered (other agents detected, curated
-connections, whether the service is installed, and the home step on screen) and
-the `$crew-setup` token, so the skill body is expanded into that turn.
+connections, whether the service is installed, and a `--home cloud` answer) and
+the `$crew-setup` token, so the skill body is expanded into that turn. Only a
+`kirocrew start --home cloud` answer puts a home card on screen at this point;
+every other first run asks where the crew lives once its first job is kept (see
+[The home step](#the-home-step)).
 
 ## Lifecycle of a card
 
@@ -110,7 +122,7 @@ for a picked region), so a click carrying the old hash is refused.
 
 | Kind | Proposed by | Payload shown | Commit does |
 |---|---|---|---|
-| `privacy` | the gateway only | the privacy disclosure (frontend strings) | sets `dashboard.privacy_acked`; `telemetry.beacon_enabled = false` when the owner turned telemetry off; shows the home step and starts the first model turn |
+| `privacy` | the gateway only | the privacy disclosure (frontend strings) | sets `dashboard.privacy_acked`; `telemetry.beacon_enabled = false` when the owner turned telemetry off; shows the home card a `--home cloud` answer asked for, and starts the first model turn |
 | `profile` | agent | `fields`: bot_name, language, timezone, technical_level, role | writes those config keys through `update_config_locked` under `run_config_write`, then a hot apply |
 | `soul` | agent | `file` (`SOUL`/`USER`), `content` (≤ `SOUL_MAX_CHARS`, 3000), `previous` | writes `data_home()/persona/<file>.md` |
 | `import` | agent | detected sources and categories with counts | `onboarding_import.run_import_apply` — the same lock order and re-scan as the Import chapter; imported jobs arrive disabled, and the result names them (name, schedule, a prompt excerpt) because the chat's session-scoped job tools do not list jobs the import created |
@@ -119,7 +131,7 @@ for a picked region), so a click carrying the old hash is refused.
 | `channel` | agent | the channel (Telegram, the one in `setup_cards.CHANNELS`) | stores the bot token typed into the card and turns the channel on, then goes `waiting` with a one-time pairing code; a `/pair <code>` DM to the bot allowlists that sender and commits. See [Channel pairing](#channel-pairing) |
 | `cron` | agent | name, prompt summary, schedule in words, timezone (the full prompt is private); at most hourly (`CRON_MIN_EVERY_SECS`) | `preview`: creates the job disabled and silent, runs it once and shows the output, then returns to `pending`. `commit` (Keep it): makes it non-silent and enables it, and lifts the card budget. `decline`: removes the preview job. See [Job previews](#job-previews) |
 | `service` | agent | platform, the command, whether a terminal is needed, installed | macOS: installs the launchd agent. Linux: verifies the unit exists (the owner runs `kirocrew stop && kirocrew service install`, which needs sudo) |
-| `home` | the gateway, as the first run's home step and for `kirocrew start --home cloud`; the agent, on request | provider, region, AWS profile, whether AWS is signed in and the account's last four digits, the account's plan, the size options, estimated monthly cost, who bills it, whether the run is simulated; the sign-up links when not signed in; the region picker when no region answers | one card for the whole journey, each step a decision on it: `aws_signin` ([Signing in to AWS](#signing-in-to-aws)), `region` ([Asking for the region](#asking-for-the-region)), then `commit` by phase: Build ([Building the home](#building-the-home)), Sign the home in to Kiro ([The home's Kiro sign-in](#the-homes-kiro-sign-in)), Move in ([Moving in](#moving-in)). Commits with `moved: true`; decline keeps the crew on this machine. A failed card whose build a restart cut short offers `remove` ([What a restart leaves in AWS](#what-a-restart-leaves-in-aws)) |
+| `home` | the gateway, as the first run's home step at its first kept job and for `kirocrew start --home cloud`; the agent, on request | while it asks where the crew lives (`step: "choose"`): the region and the price floor (`from_usd`) only; then provider, region, AWS profile, whether AWS is signed in and the account's last four digits, the account's plan, the size options, estimated monthly cost, who bills it, whether the run is simulated; the sign-up links when not signed in; the region picker when no region answers | one card for the whole journey, each step a decision on it: `choose` ([The home step](#the-home-step)), `aws_signin` ([Signing in to AWS](#signing-in-to-aws)), `region` ([Asking for the region](#asking-for-the-region)), then `commit` by phase: Build ([Building the home](#building-the-home)), Sign the home in to Kiro ([The home's Kiro sign-in](#the-homes-kiro-sign-in)), Move in ([Moving in](#moving-in)). Commits with `moved: true`, or with `stayed: true` when the owner keeps the crew on this machine; decline ("Not now") answers nothing. A failed card whose build a restart cut short offers `remove` ([What a restart leaves in AWS](#what-a-restart-leaves-in-aws)) |
 
 ## Invariants
 
@@ -155,7 +167,7 @@ offers classic setup (`/onboarding`).
 
 | Guardrail | Trigger | What the user sees | Then |
 |---|---|---|---|
-| Card budget | `CARD_BUDGET_BEFORE_FIRST_JOB` (8) proposals without a kept job; the gateway's own cards (privacy, the home step) do not count | nothing; `propose` tells the model to stop proposing | the budget is lifted by the first kept job |
+| Card budget | `CARD_BUDGET_BEFORE_FIRST_JOB` (8) proposals without a kept job; the gateway's own cards (privacy, the home question) do not count | nothing; `propose` tells the model to stop proposing | the budget is lifted by the first kept job |
 | One at a time | a card of a kind that is not `stack_exempt` is still `pending` | nothing; `propose` tells the model to end its turn | the owner decides the waiting card; the home card is exempt both ways, since its build runs in the background |
 | Stall | a first-run turn whose progress markers have not moved for `FIRST_RUN_STALL_SECS` (90 s) with nothing to wait on | `setup_stalled`, `reason: no_output`: stop the reply and send again, or use classic setup | at most one per turn |
 | Kickoff | the `[First run]` kickoff ends with no reply (and no retry or queued turn follows it), or cannot be dispatched | `setup_stalled`, `reason: kickoff_failed`, with Try again | Try again posts `POST /api/setup/first-run/retry` |
@@ -316,9 +328,9 @@ lookup.
 
 A home is a crew in the owner's own AWS account, built by the existing launch
 engine (`handlers_cloud.start_launch_job`, the EC2 template) while setup carries
-on locally. One `home` card carries the whole journey, in this order: the home
-step, an AWS sign-in if needed, the region if AWS names none, the size and Build,
-the home's own Kiro sign-in, then Move in. A simulated home
+on locally. One `home` card carries the whole journey, in this order: where the
+crew lives (the first run's own card), an AWS sign-in if needed, the region if AWS
+names none, the size and Build, the home's own Kiro sign-in, then Move in. A simulated home
 ([Pieces](#pieces)) walks the same card without AWS. The card's facts come from
 `_home_payload`, which reads them read-only and side by side through
 `aws.run_aws` and never changes anything in the account.
@@ -326,28 +338,57 @@ the home's own Kiro sign-in, then Move in. A simulated home
 ### The home step
 
 Where the crew lives is a step of its own, asked in the chat, never in the
-terminal. When the privacy card commits, before the kickoff turn,
-`_offer_home_step` shows a home card with payload `offer: true`
-(`setup_actions.home.HOME_STEP_KEY`) on every first run: "Where should your crew
-live?". A question asked only in the Hello's prose is easy to miss next to the
-first card on screen, which is why the step is a card. Its payload is the
-ordinary home card's (`_home_payload`: one read-only reachability check against
-the profile, whose region comes from `local_signin.configured_region`, else
-`HOME_DEFAULT_REGION`), so a signed-in machine sees the account's last four
-digits, its region, its plan and the sizes it can build, and a signed-out one
-gets the sign-in and account-creation path (see
-[Signing in to AWS](#signing-in-to-aws)). Declining it ("Keep it on this
-machine") keeps the crew on this machine; a home stays one "move me to the
-cloud" away in any later chat, where the agent proposes `kind: "home"`.
+terminal, and asked when it matters: once the first job is kept, because that job
+runs only while Kiro Crew runs. (User testing: shown right after privacy, the
+question arrived with too little context and the card was too big.) When the
+first job's cron card commits and `graduate` turns the chat into the main chat,
+`_commit_cron` calls `_offer_home_choice`, which shows a home card with payload
+`offer: true` (`setup_actions.home.HOME_STEP_KEY`) and `step: "choose"`
+(`HOME_PHASE_KEY`, `HOME_CHOICE_STEP`; private `phase: "choose"`): "Where should
+your crew live?". The gateway shows it itself, so the step always happens, once:
+not when the chat already has a home card (the agent proposed one) or a script
+answered `--home`. Its payload asks nothing of AWS (`_choice_payload`): the
+region (the profile's, else `HOME_DEFAULT_REGION`) and `from_usd`, the cheapest
+monthly estimate of any size a plan offers, in that region. The card is two
+native radio rows, "This machine: free · runs while it's on" and "In the cloud:
+always on · from $14/mo", with a lead sentence saying why it matters now, and
+**Continue** (disabled until a row is picked) and **Not now**.
 
-The kickoff fact (`_home_step_fact`) tells the Hello to point to the card in one
-sentence, quoting the cheapest size it offers, not to ask again in prose, and to
-guide the owner through the card's AWS steps when they choose the cloud. The
-step card is the gateway's (`gateway_card`), so it counts toward neither the
-agent's card budget nor the one-at-a-time rule. A script's
-`kirocrew start --home cloud` shows the same card without the step framing, with
-`--aws-region` or the profile's own region and no fallback region;
-`--home here|later` shows none.
+Continue is the `choose` decision (`input.where`), a claimed decision on the home
+action (`setup_actions/home.py`), so it is hash-bound and governed like a commit
+(`_choose_home`). `here` commits the card with `outcome: {stayed: true}`: its
+result line reads "Staying on this machine", and its `[Setup card result]` asks
+the agent to offer the keep-running service card. `cloud` moves the SAME card on:
+it recomputes the ordinary home payload (`_home_payload`: one read-only
+reachability check, the account's region and plan, the sizes), keeps `offer`,
+drops `step`, sets private `phase: "build"`, and re-issues it with
+`replace_payload` under a new hash, so the card shows its AWS state, the sizes
+and Build (see [Signing in to AWS](#signing-in-to-aws)). A Build before the
+answer is refused (`home_choose_first`), an unknown answer is
+`home_choice_invalid`, and `choose` on a card past the question is
+`invalid_decision`. Not now declines it; a home stays one "move me to the cloud"
+away in any later chat, where the agent proposes `kind: "home"`.
+
+The kept job's own result tells the agent the question is on screen
+(`outcome.home_choice` on the cron card, worded by `setup_actions/cron.py`): say
+in one sentence why it matters now, do not ask it again in prose, and guide the
+cloud's steps one at a time. The card is the gateway's (`gateway_card`), so it
+counts toward neither the agent's card budget nor the one-at-a-time rule. A
+script's `kirocrew start --home cloud` shows the build card right after privacy
+instead (`_show_chosen_home`), with `--aws-region` or the profile's own region and
+no fallback region; `--home here|later` shows none, and no question is asked
+later.
+
+The build card is compact: one muted line with the AWS sign-in, the account and
+the region ("AWS: signed in ✓ …5281 · eu-north-1"), or the sign-in and
+account-creation steps first when AWS is not signed in; then one row per size
+("Lite · 2 GB · $14/mo", badged "recommended" for `size_default` or "Needs the
+paid plan"), one line saying the prices are approximate and billed by AWS, and
+each size's trade-offs, instance and upgrade link behind one "What's the
+difference?" disclosure; then Build. The Simulated badge is small, and a card
+without size options keeps its single size and cost line (tests:
+`test_setup_flow.py::TestWhereTheCrewLives`, `SetupCardHomeOffer.test.tsx`,
+`SetupCardHomeSizes.test.tsx`).
 
 ### Signing in to AWS
 
@@ -452,9 +493,10 @@ in, or an unreadable plan) gets the Free plan's list, since a new account starts
 on it and Starter builds on every plan. The options are sorted cheapest first,
 and each carries `key`, `label`, `note`, `instance_type`, `vcpu`, `ram_gb`,
 `monthly_usd` and `free_plan_ok`; a Free-plan size also carries `credits_usd` and
-`credit_weeks` when the plan's remaining credits are known. The card heads each
-option with its label and monthly cost ("Small · about $51/month") and
-preselects `size_default`. A card on a machine not signed in to AWS adds a note
+`credit_weeks` when the plan's remaining credits are known. Each option is one
+row with its label, memory and monthly cost ("Small · 8 GB · $51/mo"), its notes
+behind the "What's the difference?" disclosure, and the card preselects and
+badges `size_default`. A card on a machine not signed in to AWS adds a note
 that a brand-new account starts on the Free plan. The `crew-setup` skill explains
 the options when asked and never picks for the owner.
 

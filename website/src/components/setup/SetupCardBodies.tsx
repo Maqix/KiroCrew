@@ -31,7 +31,7 @@ import {
   type BeaconStatus,
 } from '../PrivacyDisclosure'
 import CronPreviewApprovals from './CronPreviewApprovals'
-import { isHomeOffer, safeConsentUrl, soulFileName, type HomeLeftover } from './setupCardCopy'
+import { safeConsentUrl, soulFileName, type HomeLeftover } from './setupCardCopy'
 
 export interface SetupAction {
   label: string
@@ -765,6 +765,8 @@ const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d$/
 export function HomeBody({ card, busy, run, footer, compact }: SetupBodyProps) {
   const { t } = useTranslation()
   const regionSelectId = useId()
+  // Where the owner picked, while the card asks where the crew lives.
+  const [where, setWhere] = useState<'' | 'here' | 'cloud'>('')
   // The region the owner picked on the card while AWS named none.
   const [pickedRegion, setPickedRegion] = useState<string | null>(null)
   // The owner opened the AWS sign-up in another tab. Local and untimed: only
@@ -791,10 +793,10 @@ export function HomeBody({ card, busy, run, footer, compact }: SetupBodyProps) {
 
   const badge = simulated && (
     <p
-      className="mt-1 inline-flex items-center gap-1.5 self-start rounded-md border border-border bg-bg px-2 py-0.5 text-[12px] font-medium text-warn"
+      className="mt-1 inline-flex items-center gap-1 self-start rounded border border-border bg-bg px-1.5 text-[11px] font-medium text-warn"
       data-testid="setup-card-simulated"
     >
-      <FlaskConical className="lucide-inline" aria-hidden="true" />
+      <FlaskConical className="lucide-inline" size={12} aria-hidden="true" />
       {t('components.setupCard.home_simulated')}
     </p>
   )
@@ -920,6 +922,65 @@ export function HomeBody({ card, busy, run, footer, compact }: SetupBodyProps) {
     )
   }
 
+  // The first run's own question, asked when its first job is kept: this
+  // machine settles the card, the cloud moves the same card on to its steps.
+  if (p.step === 'choose' && (card.status === 'pending' || card.status === 'working')) {
+    const fromUsd = typeof p.from_usd === 'number' ? p.from_usd : null
+    const rows: { key: 'here' | 'cloud'; label: string; hint: string }[] = [
+      {
+        key: 'here',
+        label: t('components.setupCard.home_choice_here'),
+        hint: t('components.setupCard.home_choice_here_hint'),
+      },
+      {
+        key: 'cloud',
+        label: t('components.setupCard.home_choice_cloud'),
+        hint: fromUsd !== null
+          ? t('components.setupCard.home_choice_cloud_hint', { amount: fmtCurrency(fromUsd, 'USD', { maximumFractionDigits: 0 }) })
+          : t('components.setupCard.home_choice_cloud_hint_no_price'),
+      },
+    ]
+    return (
+      <>
+        {badge}
+        <p className={LEAD}>{t('components.setupCard.home_choice_lead')}</p>
+        <fieldset className="mt-2 min-w-0" data-testid="setup-card-home-choice">
+          <legend className="sr-only">{t('components.setupCard.title_home_offer')}</legend>
+          <div className="flex flex-col gap-1.5 min-w-0">
+            {rows.map(row => (
+              <label
+                key={row.key}
+                className={`flex items-center gap-2 rounded-md border px-3 py-2 text-[13px] cursor-pointer min-w-0 ${where === row.key ? 'border-accent bg-bg' : 'border-border'}`}
+                data-testid={`setup-card-home-choice-${row.key}`}
+              >
+                <input
+                  type="radio"
+                  name={`home-choice-${card.id}`}
+                  className="shrink-0"
+                  aria-label={row.label}
+                  checked={where === row.key}
+                  disabled={busy}
+                  onChange={() => setWhere(row.key)}
+                />
+                <span className="flex flex-wrap items-baseline gap-x-2 min-w-0 break-words">
+                  <span className="font-medium text-text">{row.label}</span>
+                  <span className="text-muted">{row.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        {footer({
+          primary: {
+            label: t('components.setupCard.home_choice_continue'),
+            onClick: () => run('choose', { where }),
+            disabled: !where,
+          },
+        })}
+      </>
+    )
+  }
+
   // Not built yet: everything the owner is agreeing to, then the build button.
   const sizeOptions = readSizeOptions(p.size_options)
   const selected = sizeOptions.find(opt => opt.key === pickedSize)
@@ -965,81 +1026,22 @@ export function HomeBody({ card, busy, run, footer, compact }: SetupBodyProps) {
   const primary = askRegion
     ? { label: t('components.setupCard.home_region_use'), onClick: () => run('region', { region }), disabled: !region }
     : buildOrSignIn
-  // The first run's own "Where should your crew live?" step: declining it keeps
-  // the crew on this machine, so the decline says so.
-  const offer = isHomeOffer(card)
-  const declineLabel = offer ? t('components.setupCard.home_offer_decline') : undefined
+  // One muted line: the AWS sign-in, the account and where the home is built.
+  const meta = simulated
+    ? cardRegion
+    : !signedIn
+      ? t('components.setupCard.home_meta_not_signed_in', { region: cardRegion })
+      : account
+        ? t('components.setupCard.home_meta_signed_in', { account, region: cardRegion })
+        : t('components.setupCard.home_meta_signed_in_plain', { region: cardRegion })
   return (
     <>
       {badge}
-      {offer && <p className={LEAD} data-testid="setup-card-home-offer">{t('components.setupCard.home_offer_lead')}</p>}
-      <p className={LEAD}>{str((p.provider as Record<string, unknown> | undefined)?.label) || t('components.setupCard.home_provider_fallback')}</p>
-      {monthly !== null && (
-        <p className="mt-1 text-[13px] font-medium text-text break-words" data-testid="setup-card-home-cost">
-          {t('components.setupCard.home_cost', {
-            amount: fmtCurrency(monthly, 'USD', { maximumFractionDigits: 0 }),
-            billedBy: str(p.billed_by),
-          })}
-        </p>
-      )}
-      {sizeOptions.length > 0 && selected && (
-        <HomeSizeOptions
-          name={`home-size-${card.id}`}
-          options={sizeOptions}
-          selected={selected.key}
-          onPick={setPickedSize}
-          planType={plan ? str(plan.type) : ''}
-          signedIn={signedIn}
-          errorCode={card.status === 'pending' ? str(card.error?.code) : ''}
-        />
-      )}
-      <dl className="mt-2 grid grid-cols-1 sm:grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[13px]">
-        {sizeOptions.length === 0 && (str(size.label) || str(size.instance_type)) && (
-          <div className="contents">
-            <dt className="text-muted">{t('components.setupCard.home_size_label')}</dt>
-            <dd className="text-text min-w-0 break-words mb-1 sm:mb-0" data-testid="setup-card-home-size">
-              {t('components.setupCard.home_size', {
-                label: str(size.label) || str(size.instance_type),
-                instanceType: str(size.instance_type),
-                vcpu: vcpu !== null ? fmtNumber(vcpu) : '—',
-                ram: ram !== null ? fmtUnit(ram, 'gigabyte') : '—',
-              })}
-            </dd>
-          </div>
-        )}
-        {str(p.region) && regionChoices.length === 0 && (
-          <div className="contents">
-            <dt className="text-muted">{t('components.setupCard.home_region_label')}</dt>
-            <dd className="text-text min-w-0 break-words mb-1 sm:mb-0" translate="no">{str(p.region)}</dd>
-          </div>
-        )}
-        {signedIn && account && (
-          <div className="contents">
-            <dt className="text-muted">{t('components.setupCard.home_account_label')}</dt>
-            <dd className="text-text min-w-0 break-words mb-1 sm:mb-0" translate="no">{account}</dd>
-          </div>
-        )}
-      </dl>
-      {regionChoices.length > 0 && (
-        <div className="mt-3 flex flex-col gap-1.5 min-w-0" data-testid="setup-card-home-region-pick">
-          <label htmlFor={regionSelectId} className="text-[13px] text-text">
-            {t('components.setupCard.home_region_unknown')}
-          </label>
-          <NativeSelect
-            id={regionSelectId}
-            value={region}
-            disabled={busy}
-            onChange={e => setPickedRegion(e.target.value)}
-            translate="no"
-            wrapperStyle={{ maxWidth: '16rem' }}
-            data-testid="setup-card-home-region-select"
-          >
-            {regionChoices.map(r => <NativeSelectOption key={r} value={r}>{r}</NativeSelectOption>)}
-          </NativeSelect>
-        </div>
+      {meta && (
+        <p className="mt-1 text-[12px] text-muted min-w-0 break-words" data-testid="setup-card-home-meta">{meta}</p>
       )}
       {!signedIn && (
-        <div className="mt-3 flex flex-col gap-2 min-w-0" data-testid="setup-card-home-aws-signin">
+        <div className="mt-2 flex flex-col gap-2 min-w-0" data-testid="setup-card-home-aws-signin">
           {creating ? (
             <p className="text-[13px] text-text" role="status" data-testid="setup-card-home-aws-creating">
               {t('components.setupCard.home_aws_signup_creating')}
@@ -1089,9 +1091,57 @@ export function HomeBody({ card, busy, run, footer, compact }: SetupBodyProps) {
           )}
         </div>
       )}
+      {sizeOptions.length === 0 && monthly !== null && (
+        <p className="mt-1 text-[13px] font-medium text-text break-words" data-testid="setup-card-home-cost">
+          {t('components.setupCard.home_cost', {
+            amount: fmtCurrency(monthly, 'USD', { maximumFractionDigits: 0 }),
+            billedBy: str(p.billed_by),
+          })}
+        </p>
+      )}
+      {sizeOptions.length === 0 && (str(size.label) || str(size.instance_type)) && (
+        <p className="mt-1 text-[13px] text-text min-w-0 break-words" data-testid="setup-card-home-size">
+          {t('components.setupCard.home_size', {
+            label: str(size.label) || str(size.instance_type),
+            instanceType: str(size.instance_type),
+            vcpu: vcpu !== null ? fmtNumber(vcpu) : '—',
+            ram: ram !== null ? fmtUnit(ram, 'gigabyte') : '—',
+          })}
+        </p>
+      )}
+      {sizeOptions.length > 0 && selected && (
+        <HomeSizeOptions
+          name={`home-size-${card.id}`}
+          options={sizeOptions}
+          selected={selected.key}
+          suggested={str(p.size_default)}
+          onPick={setPickedSize}
+          planType={plan ? str(plan.type) : ''}
+          signedIn={signedIn}
+          errorCode={card.status === 'pending' ? str(card.error?.code) : ''}
+        />
+      )}
+      {regionChoices.length > 0 && (
+        <div className="mt-3 flex flex-col gap-1.5 min-w-0" data-testid="setup-card-home-region-pick">
+          <label htmlFor={regionSelectId} className="text-[13px] text-text">
+            {t('components.setupCard.home_region_unknown')}
+          </label>
+          <NativeSelect
+            id={regionSelectId}
+            value={region}
+            disabled={busy}
+            onChange={e => setPickedRegion(e.target.value)}
+            translate="no"
+            wrapperStyle={{ maxWidth: '16rem' }}
+            data-testid="setup-card-home-region-select"
+          >
+            {regionChoices.map(r => <NativeSelectOption key={r} value={r}>{r}</NativeSelectOption>)}
+          </NativeSelect>
+        </div>
+      )}
       {footer(creating
-        ? { primary, secondary: { label: t('components.setupCard.home_aws_signup_back'), onClick: () => setCreatingAccount(false) }, declineLabel }
-        : { primary, declineLabel })}
+        ? { primary, secondary: { label: t('components.setupCard.home_aws_signup_back'), onClick: () => setCreatingAccount(false) } }
+        : { primary })}
     </>
   )
 }
@@ -1149,15 +1199,19 @@ const HOME_SIZE_LABEL_KEY: Record<string, string> = {
 }
 
 /**
- * The home's size, chosen by the owner: one radio per option with what it runs,
- * its monthly cost, and whether it needs AWS's paid plan. The paid-plan mark
- * shows unless the account is known to be on the paid plan; the upgrade link
- * shows when it is known to be on the Free plan.
+ * The home's size, chosen by the owner: one compact radio row per option (its
+ * name, memory and monthly price, and a badge for the suggested size or one that
+ * needs AWS's paid plan), with what each runs and gives up behind one "What's the
+ * difference?" disclosure. The paid-plan badge shows unless the account is known
+ * to be on the paid plan; the upgrade link shows when it is known to be on the
+ * Free plan.
  */
-function HomeSizeOptions({ name, options, selected, onPick, planType, signedIn, errorCode }: {
+function HomeSizeOptions({ name, options, selected, suggested, onPick, planType, signedIn, errorCode }: {
   name: string
   options: HomeSizeOption[]
   selected: string
+  /** The size the gateway preselects (`size_default`), badged "recommended". */
+  suggested: string
   onPick: (key: string) => void
   planType: string
   signedIn: boolean
@@ -1166,6 +1220,7 @@ function HomeSizeOptions({ name, options, selected, onPick, planType, signedIn, 
   const { t } = useTranslation()
   const legendId = useId()
   const link = 'inline-flex items-center gap-1 text-accent underline underline-offset-2 hover:text-text'
+  const badge = 'rounded border px-1.5 text-[11px] font-medium'
   const note = (opt: HomeSizeOption): string => {
     if (opt.note === 'free_plan_credits') {
       return opt.credit_weeks !== null && opt.credits_usd !== null
@@ -1188,54 +1243,46 @@ function HomeSizeOptions({ name, options, selected, onPick, planType, signedIn, 
     if (opt.note === 'many_chats') return t('components.setupCard.home_size_standard_note')
     return ''
   }
+  const labelOf = (opt: HomeSizeOption) => (HOME_SIZE_LABEL_KEY[opt.key] ? t(HOME_SIZE_LABEL_KEY[opt.key]) : opt.label)
+  const needsPaid = (opt: HomeSizeOption) => !opt.free_plan_ok && planType !== 'PAID'
   return (
-    <fieldset className="mt-3 min-w-0" aria-labelledby={legendId} data-testid="setup-card-home-sizes">
-      <legend id={legendId} className="text-[13px] text-muted">{t('components.setupCard.home_size_label')}</legend>
-      <div className="mt-1.5 flex flex-col gap-1.5 min-w-0">
+    <fieldset className="mt-2 min-w-0" aria-labelledby={legendId} data-testid="setup-card-home-sizes">
+      <legend id={legendId} className="text-[12px] text-muted">{t('components.setupCard.home_size_label')}</legend>
+      <div className="mt-1 flex flex-col gap-1 min-w-0">
         {options.map(opt => {
           const checked = opt.key === selected
-          const needsPaid = !opt.free_plan_ok && planType !== 'PAID'
-          const text = note(opt)
-          const label = HOME_SIZE_LABEL_KEY[opt.key] ? t(HOME_SIZE_LABEL_KEY[opt.key]) : opt.label
+          const label = labelOf(opt)
           return (
             <label
               key={opt.key}
-              className={`flex items-start gap-2 rounded-md border px-3 py-2 text-[13px] cursor-pointer min-w-0 ${checked ? 'border-accent bg-bg' : 'border-border'}`}
+              className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[13px] cursor-pointer min-w-0 ${checked ? 'border-accent bg-bg' : 'border-border'}`}
               data-testid={`setup-card-home-size-${opt.key}`}
               data-checked={checked}
             >
               <input
                 type="radio"
                 name={name}
-                className="mt-0.5 shrink-0"
+                className="shrink-0"
                 checked={checked}
                 aria-label={label}
                 onChange={() => onPick(opt.key)}
               />
-              <span className="min-w-0 break-words">
-                <span className="block font-medium text-text">
-                  {t('components.setupCard.home_size_option_heading', {
+              <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0 break-words">
+                <span className="font-medium text-text">
+                  {t('components.setupCard.home_size_row', {
                     label,
+                    ram: fmtUnit(opt.ram_gb, 'gigabyte', { unitDisplay: 'short' }),
                     amount: fmtCurrency(opt.monthly_usd, 'USD', { maximumFractionDigits: 0 }),
                   })}
                 </span>
-                {text && <span className="block text-text">{text}</span>}
-                <span className="block text-[12px] text-muted">
-                  {t('components.setupCard.home_size_option_spec', {
-                    instanceType: opt.instance_type,
-                    vcpu: fmtNumber(opt.vcpu),
-                    ram: fmtUnit(opt.ram_gb, 'gigabyte'),
-                  })}
-                </span>
-                {needsPaid && (
-                  <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[12px] text-warn" data-testid={`setup-card-home-size-${opt.key}-paid`}>
+                {opt.key === suggested && (
+                  <span className={`${badge} border-accent text-accent`} data-testid={`setup-card-home-size-${opt.key}-recommended`}>
+                    {t('components.setupCard.home_size_recommended')}
+                  </span>
+                )}
+                {needsPaid(opt) && (
+                  <span className={`${badge} border-border text-warn`} data-testid={`setup-card-home-size-${opt.key}-paid`}>
                     {t('components.setupCard.home_size_needs_paid')}
-                    {planType === 'FREE' && (
-                      <a href={AWS_PLAN_UPGRADE_URL} target="_blank" rel="noopener noreferrer" className={link} data-testid="setup-card-home-upgrade">
-                        {t('components.setupCard.home_size_upgrade')}
-                        <ExternalLink className="lucide-inline" aria-hidden="true" />
-                      </a>
-                    )}
                   </span>
                 )}
               </span>
@@ -1243,6 +1290,36 @@ function HomeSizeOptions({ name, options, selected, onPick, planType, signedIn, 
           )
         })}
       </div>
+      <p className="mt-1 text-[12px] text-muted">{t('components.setupCard.home_sizes_billed')}</p>
+      <details className="mt-1 text-[12px]" data-testid="setup-card-home-sizes-details">
+        <summary className="cursor-pointer text-accent">{t('components.setupCard.home_sizes_difference')}</summary>
+        <ul className="mt-1 flex flex-col gap-1 min-w-0">
+          {options.map(opt => {
+            const text = note(opt)
+            return (
+              <li key={opt.key} className="min-w-0 break-words" data-testid={`setup-card-home-size-${opt.key}-note`}>
+                <span className="font-medium text-text">{labelOf(opt)}</span>{' '}
+                <span className="text-muted">
+                  {t('components.setupCard.home_size_option_spec', {
+                    instanceType: opt.instance_type,
+                    vcpu: fmtNumber(opt.vcpu),
+                    ram: fmtUnit(opt.ram_gb, 'gigabyte'),
+                  })}
+                </span>
+                {text && <span className="block text-text">{text}</span>}
+              </li>
+            )
+          })}
+        </ul>
+        {planType === 'FREE' && options.some(needsPaid) && (
+          <p className="mt-1">
+            <a href={AWS_PLAN_UPGRADE_URL} target="_blank" rel="noopener noreferrer" className={link} data-testid="setup-card-home-upgrade">
+              {t('components.setupCard.home_size_upgrade')}
+              <ExternalLink className="lucide-inline" aria-hidden="true" />
+            </a>
+          </p>
+        )}
+      </details>
       {!signedIn && (
         <p className="mt-1.5 text-[12px] text-muted" data-testid="setup-card-home-free-plan-note">
           {t('components.setupCard.home_size_free_plan_note')}

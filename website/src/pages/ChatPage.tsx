@@ -291,6 +291,8 @@ import FolderSuggestionCard from './chat/FolderSuggestionCard'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import PendingQuestionCard from '../components/PendingQuestionCard'
 import PendingSetupCards from '../components/setup/PendingSetupCards'
+import { highlightSetupCardRow } from '../components/setup/setupCardTray'
+import { setupCardRefOf } from '../api/setupCards'
 import SessionPulseSurveyCard from '../components/SessionPulseSurveyCard'
 import type { FollowupItem } from '../store/chatSlice'
 
@@ -5566,6 +5568,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setTimeout(() => setHighlightTs(null), 3000)
     return true
   }, [messages, navToDisplayIndex, setHighlightTs])
+  // The setup-card tray's bar: scroll to the card's own row and light it up.
+  // A card is proposed mid-turn, so a finished turn usually holds its row
+  // behind "Worked through N steps": open that fold first (the same host-owned
+  // disclosure a click sets), bring the turn into the window, then centre the
+  // row itself once the fold has opened.
+  const locateSetupCard = useCallback((cardId: string, behavior: ScrollBehavior) => {
+    const msgIdx = messagesRef.current.findIndex(m => setupCardRefOf(m.meta)?.id === cardId)
+    const di = msgIdx < 0 ? undefined : messageToDisplayIdxRef.current.get(msgIdx)
+    if (di === undefined) return
+    const item = displayItems[di]
+    if (item?.kind === 'turn') setTurnDisclosureFor(virtualKey(item, di), true)
+    navToDisplayIndex(di, { behavior, align: 'center' })
+    window.setTimeout(() => {
+      document.querySelector(`[data-setup-card-row="${CSS.escape(cardId)}"]`)?.scrollIntoView({ behavior, block: 'center' })
+      highlightSetupCardRow(cardId)
+    }, behavior === 'smooth' ? 320 : 0)
+  }, [displayItems, navToDisplayIndex, setTurnDisclosureFor, virtualKey])
   const handleJumpToPinnedMessage = useCallback((messageTs: string, mid: string | undefined, { origin }: { origin: PendingJumpOrigin }) => {
     if (jumpToLoadedPinnedMessage(messageTs, mid)) return
     if (activeSlot && (!cursorIsForActiveSlot || (slotHasMore && slotOldestIndex > 0))) {
@@ -7301,7 +7320,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           </div>
         ) : (
           <SearchHighlightContext.Provider value={searchCtxValue}>
-          <div className="relative flex flex-col flex-1 min-h-0" {...dropTargetProps}>
+          {/* `data-setup-tray-pane`: the setup-card tray caps itself at a third of this. */}
+          <div className="relative flex flex-col flex-1 min-h-0" data-setup-tray-pane="" {...dropTargetProps}>
             {/* Claude-style title row — absolute overlay, solid top fading to transparent.
                 Inset on the right by the 6px scrollbar width (see ::-webkit-scrollbar
                 in index.css) so the overlay never paints over the scroller's scrollbar
@@ -7832,6 +7852,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 slotKey={activeSlot}
                 className="px-4 pb-2 mx-auto w-full"
                 style={{ maxWidth: 'var(--mc-content-width, 900px)' }}
+                messages={messages}
+                atBottom={isAtBottom}
+                scrollerRef={scrollerRef}
+                onLocate={locateSetupCard}
               />
               {pendingQuestion && (
                 <div className="px-4 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>

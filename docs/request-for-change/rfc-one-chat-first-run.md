@@ -79,12 +79,13 @@ says what changed and why.
    a throwaway demo with a simulated home. *Why:* `start.sh` installs a published
    release, so until one carries the first run, testers had no one-command way in.
    (§6.1)
-3. **The home is a step card of its own, right after privacy.** Revision 3 had
-   the Hello ask where the crew lives, in one sentence, and only when the AWS CLI
-   was already signed in. A tester missed that sentence next to the first card
-   on screen, so the gateway now shows a "Where should your crew live?" card on
-   every first run, signed in to AWS or not, and the Hello only points to it. It is the gateway's step, so it is outside the
-   agent's card budget and does not hold other cards back. (§5.2, §5.7, §6.8)
+3. **The home is a step card of its own.** Revision 3 had the Hello ask where
+   the crew lives, in one sentence, and only when the AWS CLI was already signed
+   in. A tester missed that sentence next to the first card on screen, so the
+   gateway shows a "Where should your crew live?" card on every first run,
+   signed in to AWS or not. It is the gateway's step, so it is outside the
+   agent's card budget and does not hold other cards back. When it is shown
+   moved in item 14. (§5.7, §6.8)
 4. **AWS sign-in and account creation happen from the card.** "Sign in to AWS"
    runs the AWS CLI's own `aws login` as a child of the gateway, and "Create an
    AWS account" opens AWS's sign-up page in a new tab. *Why:* revision 3's plan
@@ -143,6 +144,17 @@ says what changed and why.
     findings here" was a promise nothing kept. The gateway now posts one notice
     in the main chat when such a chat finishes a turn, or ends one on an error,
     and a notice held across a gateway restart is still delivered. (§6.9)
+14. **Where the crew lives is asked after the first kept job, merged with "stay
+    on".** In user testing the home card arrived right after privacy with too
+    little context, and it was too big. The user decided to ask it once the
+    first job is kept, when it matters: that job runs only while Kiro Crew runs.
+    The gateway shows a compact choice card itself at that point, "This machine:
+    free · runs while it's on" or "In the cloud: always on · from $14/mo". This
+    machine leads to the stay-on service card; the cloud moves the same card on
+    to its AWS steps, a one-line-per-size list with the trade-offs behind one
+    disclosure, and Build. The Hello no longer mentions the home.
+    `kirocrew start --home cloud` still shows the build card right after
+    privacy. (§5, §5.2, §5.5, §5.7, §6.8)
 
 Smaller corrections: the channel card wires Telegram only (§5.3); SOUL.md and
 USER.md are capped at 3000 characters each (§6.5); the persona evals script
@@ -329,15 +341,17 @@ These are out of scope entirely:
 ## 5. The experience
 
 ```
- Egg ──────▶ Home ──────▶ Hello ──────▶ Bring & connect ──────▶ Preview now ──────▶ Keep it ──────▶ Stay on
- no model    where the     name, lang,   import found agents;    run the job once   schedule it;    service card
- install     crew lives    tone; what    connect one dev         on your data       adapted crons   (when asked or
- harness     (a card; the  I found       service                                                    when it hurts)
- privacy     build runs in the background)
+ Egg ──────▶ Hello ──────▶ Bring & connect ──────▶ Preview & keep ──────▶ Where your crew lives
+ no model    name, lang,   import found agents;    run the job once;      this machine (then the
+ install     tone; what    connect one dev         schedule it;           stay-on service card), or
+ harness     I found       service                 adapted crons          the cloud (the same card:
+ privacy                                                                  AWS steps, size, Build; it
+                                                                          builds in the background)
 ```
 
 Only the Egg and the home step are fixed; both are the gateway's, not the
-model's. After that, the agent *recommends* the order. The user can skip,
+model's. The home step comes when the first job is kept, because that is when it
+matters: the job runs only while Kiro Crew runs. After that, the agent *recommends* the order. The user can skip,
 reorder or stop, and a later chat picks up where this one left off.
 
 ### 5.1 Egg: the part with no model
@@ -357,9 +371,15 @@ privacy (§5.7); `--home here|cloud|later` lets a script answer ahead of time.
    - If kiro-cli or another selectable harness is installed, it is used as is.
      A signed-out kiro-cli runs its own sign-in at once (`kiro-cli login`, or
      its device-code variant over SSH or on a headless host).
-   - A missing harness prints its official install guidance, names any other
-     selectable harness that is installed, and exits 3. Kiro Crew installs no
-     harness itself (Q2).
+   - A missing kiro-cli is guided in the web. On a terminal `kirocrew start`
+     says so in one line and still starts the gateway and opens the browser,
+     where the setup page shows Kiro's install command for this machine and the
+     sign-in, checks again on its own, and lets the first-run chat carry on once
+     kiro-cli is ready. With `--no-input` or no terminal, and for another
+     harness whose missing adapter the page cannot see, it prints the official
+     install guidance, names any other selectable harness that is installed,
+     and exits 3. Kiro Crew installs no harness itself; whether it may is Q2,
+     still open.
    - *Superseded for the prototype:* start.sh offering the pinned kiro-cli the
      desktop build verifies. That needs the maintainer decision and the
      distribution-terms check Q2 asks for, so the prototype installs nothing.
@@ -389,10 +409,12 @@ what it found. For example:
 > kiro-cli is signed in. Want me to bring Hermes over? Also, what should I be
 > called? Here are three ideas.
 
-It points in one sentence to the home step already on screen (§5.7) and does not
-ask it again in prose. *Superseded:* the Hello offering the home itself. The
-prototype first asked only in that sentence; a tester never noticed it next to
-the import card, so it became a card of its own.
+It does not mention the home: where the crew lives is asked once the first job
+is kept (§5.7). *Superseded:* the Hello offering the home itself (a tester never
+noticed that sentence next to the import card, so it became a card of its own),
+and then the Hello pointing to that card right after privacy (the card arrived
+with too little context; see
+[What changed](#what-changed-since-revision-3), item 14).
 
 It asks four things in passing: a name, a reply language, the timezone
 (pre-filled from the OS) and the tone. It asks whether the user writes code and
@@ -440,8 +462,8 @@ ask again on every run.
 
 ### 5.5 Stay on
 
-Offered once there is a job worth keeping, or when a check is missed because
-the laptop slept ("I missed two checks while your laptop was asleep — want me
+Offered when the owner keeps the crew on this machine at the home step (§5.7),
+or when a check is missed because the laptop slept ("I missed two checks while your laptop was asleep — want me
 to stay on?"). The card runs `kirocrew service install`
 (`src/kiro_crew/service/controller.py`). On Linux that needs sudo, so the card
 says so and hands off to a terminal prompt. A permanent home on another machine
@@ -464,14 +486,18 @@ first-week tip (§5.8); the dashboard-app offer is not built yet.
 
 ### 5.7 The home, built while you talk
 
-Right after privacy, every first run shows a deterministic **"Where should your
-crew live?"** card, whether or not AWS is signed in on this machine: keep it on
-this machine (one click), or a home in the cloud in the owner's own AWS account.
-The card lists the sizes the account's plan can build, cheapest first, each
-with what it runs and its monthly cost in the card's region, and the owner picks
-one. When the AWS CLI is signed in the card names the account's last four
-digits, its region and its plan; when it is not, the same card walks the owner
-through it first: install the AWS CLI if it is missing, create an AWS account if
+When the first job is kept, every first run shows a deterministic compact
+**"Where should your crew live?"** card, whether or not AWS is signed in on this
+machine: "This machine: free · runs while it's on" or "In the cloud: always on ·
+from $14/mo" (the cheapest size in the card's region), then Continue or
+Not now. It asks nothing of AWS until the owner picks. This machine settles the
+card and the agent offers the stay-on service card (§5.5). The cloud moves the
+same card on: one line with the AWS sign-in, the account's last four digits and
+its region, then the sizes the account's plan can build, one line each, cheapest
+first ("Lite · 2 GB · $14/mo", a "recommended" or "needs paid plan" badge), with
+what each runs and gives up behind one "What's the difference?" disclosure, and
+the owner picks one. When the AWS CLI is not signed in, the same card walks the
+owner through it first: install the AWS CLI if it is missing, create an AWS account if
 they have none, sign in (§6.8 rule 2), and the agent guides them through those
 steps in the chat. Once they press Build, the card stays in the chat and shows
 the build's progress, then the home's own one-click Kiro sign-in (§6.8 rule 5).
@@ -779,14 +805,17 @@ first run any longer. Five rules shape it:
 2. **Money and credentials are the user's, and the user says yes.** Nothing is
    asked in the terminal, and nothing is built without the owner's click on a
    card that states the cost.
-   - **The home step.** Right after privacy the gateway shows the home card on
-     every first run (§5.7), with one read-only reachability check against the
-     AWS profile. Signed in, it names the account's last four digits; signed
-     out, it offers sign-in and account creation. "Keep it on this machine"
-     declines it, and a home stays one "move me to the cloud" away in any later
-     chat. *Superseded:* offering a home in the Hello only when the AWS CLI was
-     already signed in (a tester missed that sentence; see
-     [What changed](#what-changed-since-revision-3), item 3).
+   - **The home step.** When the first job is kept the gateway shows the home
+     card on every first run (§5.7), first as the question where the crew lives,
+     which reads nothing from AWS. Only once the owner picks the cloud does the
+     same card, re-issued under a new hash, make one read-only reachability
+     check against the AWS profile: signed in, it names the account's last four
+     digits; signed out, it offers sign-in and account creation. "This machine"
+     settles it, "Not now" declines it, and a home stays one "move me to the
+     cloud" away in any later chat. *Superseded:* offering a home in the Hello
+     only when the AWS CLI was already signed in (a tester missed that sentence;
+     item 3), then a full home card right after privacy (too little context, too
+     big; item 14 of [What changed](#what-changed-since-revision-3)).
    - **Signing in to AWS from the card.** "Sign in to AWS" runs the AWS CLI's
      own browser sign-in, `aws login` (OAuth 2.0 with PKCE, AWS CLI 2.32+,
      short-lived credentials refreshed for up to 12 hours), as a child of the
@@ -1320,10 +1349,12 @@ made, with its date).
   "install or authenticate a harness from inside Kiro Crew" as a non-goal. The
   desktop bundle already ships a pinned kiro-cli. This needs a maintainer
   decision and a check of kiro-cli's distribution terms. *Open; the prototype
-  installs nothing:* `kirocrew start` prints the official install guidance and
-  exits 3 when the harness is missing, and runs kiro-cli's own sign-in (the
-  device flow on a headless host) when it is installed but signed out. On
-  Windows it uses the copy the desktop app already installed (Q14).
+  installs nothing:* when the harness is missing, `kirocrew start` on a
+  terminal opens the browser on the setup page, which shows Kiro's own install
+  command to copy and checks again until it is installed (with `--no-input` it
+  prints the official install guidance and exits 3), and it runs kiro-cli's own
+  sign-in (the device flow on a headless host) when it is installed but signed
+  out. On Windows it uses the copy the desktop app already installed (Q14).
 - **Q3.** Should SOUL.md be read-only to in-sandbox code, to close the
   persistent-injection path? That would be a new seal, and seals are the
   operator's call. *Open;* the prototype adds no seal. The persona files are

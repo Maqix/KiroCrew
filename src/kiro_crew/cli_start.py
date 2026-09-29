@@ -8,12 +8,15 @@ each one that cannot proceed stops with the command that fixes it:
 
 1. **Harness.** The configured agent harness (``agent.acp_backend``) must be
    installed. For kiro-cli that is the resolved binary plus its sign-in; for any
-   other harness it is the machine-local install probe. A missing harness is
-   reported with its official install guidance and exits
-   :data:`EXIT_HARNESS_MISSING`; Kiro Crew never downloads a harness itself.
-   A signed-out kiro-cli is offered its OWN sign-in command in this terminal,
-   and otherwise only named, because the dashboard's prerequisite gate covers
-   sign-in as well.
+   other harness it is the machine-local install probe. On a terminal, a
+   harness missing only kiro-cli is left to the dashboard's prerequisite gate,
+   which walks the user through installing it and signing in, so the command
+   carries on to the browser. Any other missing harness, or any run that cannot
+   ask (``--no-input``, no terminal), is reported with its official install
+   guidance and exits :data:`EXIT_HARNESS_MISSING`. Kiro Crew never downloads a
+   harness itself. A signed-out kiro-cli is offered its OWN sign-in command in
+   this terminal, and otherwise only named, because the gate covers sign-in as
+   well.
 2. **Gateway.** A gateway already answering ``/api/ready`` is reused. An
    installed service is left to its service manager (started without sudo on
    macOS; otherwise its start command is printed). Otherwise a gateway is
@@ -72,9 +75,11 @@ logger = logging.getLogger(__name__)
 EXIT_OK = 0
 #: No gateway could be started or reached on the resolved port.
 EXIT_GATEWAY_FAILED = 1
-#: The configured agent harness is not installed (and ``--skip-harness-check``
-#: was not passed). Distinct from a gateway failure so ``start.sh`` and scripts
-#: can tell "install kiro-cli" from "read the gateway log".
+#: The configured agent harness is not installed, and either the run cannot ask
+#: (``--no-input``, no terminal) or the dashboard does not guide that harness's
+#: install (and ``--skip-harness-check`` was not passed). Distinct from a
+#: gateway failure so ``start.sh`` and scripts can tell "install kiro-cli" from
+#: "read the gateway log".
 EXIT_HARNESS_MISSING = 3
 #: Interrupted by the user before the gateway was up (128 + SIGINT).
 EXIT_INTERRUPTED = 130
@@ -157,10 +162,10 @@ def _choose_home(args: argparse.Namespace) -> None:
     """Record ``--home`` for the first run, when a script passed it. Asks nothing.
 
     Where the crew lives is a question for the first-run chat, not the terminal:
-    its home step offers a home in the cloud on every first run, and the home
-    card states the cost and takes the owner's click. ``--home``
-    only lets a script answer ahead of time; a cloud answer makes the chat open
-    with the home card on screen.
+    it asks once the first job is kept, and the home card states the cost and
+    takes the owner's click. ``--home`` only lets a script answer ahead of time;
+    a cloud answer makes the chat open with the home card on screen, and any
+    answer means the chat does not ask again.
     """
     from kiro_crew import first_run
     from kiro_crew.cloud.local_signin import configured_region
@@ -207,23 +212,41 @@ def _check_harness(args: argparse.Namespace) -> int | None:
         print("   Skipping the agent harness check (--skip-harness-check).")
         return None
     backend = KiroCrewConfig.load().agent.acp_backend
+    interactive = _interactive(args)
     if backend == ACP_BACKEND_KIRO:
-        installed = _check_kiro(_interactive(args))
+        installed = _check_kiro(interactive)
     else:
-        installed = _check_other_backend(backend)
+        installed = _check_other_backend(backend, interactive)
     if installed:
         return None
     print("   Re-run `kirocrew start` once it is installed, or pass --skip-harness-check.")
     return EXIT_HARNESS_MISSING
 
 
+def _print_kiro_guided_in_browser() -> None:
+    """The one line for a missing kiro-cli the dashboard will walk the user through.
+
+    The dashboard's prerequisite gate probes kiro-cli whatever the harness, shows
+    the official install steps and the sign-in, and re-checks on its own, so a
+    person at a terminal is sent there instead of being told to re-run this.
+    """
+    print("⚠️  kiro-cli isn't installed yet; the browser will walk you through it.")
+
+
 def _check_kiro(interactive: bool) -> bool:
-    """kiro-cli: resolved, then signed in. False only when it is not installed."""
+    """kiro-cli: resolved, then signed in.
+
+    False only when it is not installed and this run cannot ask, so there is no
+    one at the browser to guide.
+    """
     from kiro_crew.cli_doctor import _kiro_cli_signed_in
     from kiro_crew.kiro_cli import resolve_kiro_cli
 
     binary = resolve_kiro_cli()
     if not binary:
+        if interactive:
+            _print_kiro_guided_in_browser()
+            return True
         _print_kiro_missing()
         return False
     signed_in = _kiro_cli_signed_in()
@@ -326,8 +349,14 @@ def _installed_alternatives() -> list[tuple[str, str]]:
         return []
 
 
-def _check_other_backend(backend: str) -> bool:
-    """A harness other than kiro-cli: its install probe. False only when MISSING."""
+def _check_other_backend(backend: str, interactive: bool) -> bool:
+    """A harness other than kiro-cli: its install probe.
+
+    False only when MISSING, except on a terminal when kiro-cli is the only
+    thing missing (KAS rides kiro-cli): the dashboard's prerequisite gate guides
+    that install. It probes nothing else, so any other missing component still
+    stops here with its install command.
+    """
     from kiro_crew.agent_sdk.backend_install import (
         COMPONENT_KIRO_CLI,
         INSTALLED,
@@ -339,6 +368,9 @@ def _check_other_backend(backend: str) -> bool:
     state = probe_backend(backend)
     label = state.policy_id
     if state.installed == MISSING:
+        if interactive and state.missing_components == (COMPONENT_KIRO_CLI,):
+            _print_kiro_guided_in_browser()
+            return True
         missing = ", ".join(state.missing_components) or label
         print(f"❌ The configured agent harness ({label}) is not installed: missing {missing}.")
         if state.install_command:

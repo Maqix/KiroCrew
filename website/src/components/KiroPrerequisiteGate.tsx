@@ -471,6 +471,11 @@ function SignInCommands({ status }: { status: KiroPrerequisiteStatus }) {
             {personalTail}
           </code>
         </CopyCommand>
+        {/* Over SSH or with no display, kiro-cli's own sign-in is the device
+            flow: it prints a link and a code rather than opening a browser. */}
+        <p className="mt-1.5 text-[12px] leading-relaxed text-muted">
+          {i18nT('components.kiroPrerequisiteGate.sign_in_no_browser_hint')}
+        </p>
       </div>
       <div>
         <p className="text-[13px] font-medium text-text">
@@ -1240,16 +1245,31 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                 <p className="mt-2 text-sm leading-relaxed text-muted">
                   {status.installed
                     ? i18nT('components.kiroPrerequisiteGate.kiro_cli_was_found_on_this_host')
-                    : i18nT('components.kiroPrerequisiteGate.install_kiro_cli_from_kiros_official_setup_page')}
+                    : status.install_command
+                      ? i18nT('components.kiroPrerequisiteGate.install_with_the_command_below')
+                      : i18nT('components.kiroPrerequisiteGate.install_kiro_cli_from_kiros_official_setup_page')}
                 </p>
               </div>
               <StepStatus complete={status.installed} current={!status.installed} />
             </div>
             {/* A link, not a button: Kiro Crew does not install Kiro CLI. Kiro's
                 own page carries the per-platform steps and stays correct as they
-                change, which a digest-pinned in-app installer did not. */}
+                change, which a digest-pinned in-app installer did not. The
+                command above it is that page's own one-liner for this host's
+                platform, served by the gateway, for the user to copy and run;
+                a gateway older than the field sends none and shows the link. */}
             {!status.installed && (
               <div className="mt-4">
+                {status.install_command ? (
+                  <div className="mb-4">
+                    <p className="text-[13px] font-medium text-text">
+                      {i18nT('components.kiroPrerequisiteGate.install_command_label')}
+                    </p>
+                    <CopyCommand>
+                      <code>{status.install_command}</code>
+                    </CopyCommand>
+                  </div>
+                ) : null}
                 <a
                   className="btn-sweep inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[13px] font-semibold text-accent-fg hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)] transition-all focus-ring"
                   href={status.docs_url}

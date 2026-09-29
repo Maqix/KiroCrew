@@ -348,5 +348,5 @@ class TestNoKindWeakensTheClick:
         assert err.value.code == "invalid_decision"
         assert (
             str(err.value)
-            == "decision must be commit, decline, preview, aws_signin, region or remove"
+            == "decision must be commit, decline, preview, aws_signin, region, choose or remove"
         )

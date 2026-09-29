@@ -67,8 +67,10 @@ Two limits worth knowing:
   after that `kiro-cli.exe` answers `--version` within ten seconds. Otherwise,
   and with `-SkipInstall` on a `kirocrew` from `PATH`, the harness is found as on
   any other platform: a kiro-cli installed on this machine (for example under
-  `%LOCALAPPDATA%\Kiro-Cli`), or, when there is none, the official install link
-  and exit code 3. An operator's `KIROCREW_KIRO_BIN` still ranks first.
+  `%LOCALAPPDATA%\Kiro-Cli`), or, when there is none, the browser's setup page
+  with Kiro's PowerShell install command to copy (the official install link and
+  exit code 3 when the run cannot ask). An operator's `KIROCREW_KIRO_BIN` still
+  ranks first.
 - **A signature that cannot be checked is refused.** On a machine that cannot
   reach certificate revocation (offline, or a proxy that blocks it), Windows
   reports `UnknownError` rather than `Valid`, and the script stops. Download the

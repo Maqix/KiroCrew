@@ -2,12 +2,13 @@
 
 One card carries the whole journey: Sign in to AWS (``aws_signin``), the region
 when AWS names none (``region``), Build, the home's own Kiro sign-in, then Move
-in. A build a gateway restart cut short leaves a failed card that can remove
-what it created (``remove``). Its build runs in the background, so a pending
-home card neither holds other proposals back nor is held back by one. The first
-run shows one on its own right after privacy (payload ``offer``), which is the
-gateway's step, not the agent's.
-The flow is ``dashboard/setup_flow.py``, ``setup_aws_signin.py``,
+in. The first run's own card (payload ``offer``, the gateway's step, not the
+agent's) comes when its first job is kept and starts one step earlier: the
+question where the crew lives (``choose``), which moves the same card on to the
+cloud's steps or settles it on this machine. A build a gateway restart cut short
+leaves a failed card that can remove what it created (``remove``). Its build runs
+in the background, so a pending home card neither holds other proposals back nor
+is held back by one. The flow is ``dashboard/setup_flow.py``, ``setup_aws_signin.py``,
 ``home_signin.py`` and ``setup_move_in.py``.
 """
 
@@ -24,6 +25,13 @@ if TYPE_CHECKING:  # pragma: no cover
 
 #: Payload flag of the home card the gateway shows as the first run's own step.
 HOME_STEP_KEY = "offer"
+#: Payload key naming the step the card is at, while it is not yet the build.
+HOME_PHASE_KEY = "step"
+#: That step while the card asks where the crew lives (private ``phase`` too).
+HOME_CHOICE_STEP = "choose"
+#: ``input.where`` of the ``choose`` decision.
+HOME_HERE = "here"
+HOME_CLOUD = "cloud"
 
 
 def _validate(args: dict[str, Any]) -> dict[str, Any]:
@@ -70,6 +78,14 @@ async def _region(
     return await sf._decide_home_region(state, card, card_hash, input_)
 
 
+async def _choose(
+    state: "DashboardState", card: sc.SetupCard, input_: dict[str, Any]
+) -> sc.SetupCard:
+    from kiro_crew.dashboard import setup_flow as sf
+
+    return await sf._choose_home(state, card, input_)
+
+
 async def _remove(
     state: "DashboardState",
     card: sc.SetupCard,
@@ -93,6 +109,12 @@ async def _on_claim(card: sc.SetupCard, same_machine: bool) -> sc.SetupCard:
 
 def _result_detail(card: sc.SetupCard) -> str:
     outcome = card.outcome or {}
+    if outcome.get("stayed"):
+        return (
+            " The user keeps the crew on this machine. Offer the keep-running service now "
+            '(setup_card kind "service"), in one sentence: the job they kept runs only '
+            "while Kiro Crew runs."
+        )
     if outcome.get("moved") and not outcome.get("simulated"):
         from kiro_crew.dashboard.setup_move_in import result_detail
 
@@ -128,6 +150,9 @@ ACTION = SetupAction(
         ),
         sc.DECISION_REGION: Decision(
             run=_region, refusal="this card does not ask for a region", claimed=False
+        ),
+        sc.DECISION_CHOOSE: Decision(
+            run=_choose, refusal="only a home card asks where the crew lives"
         ),
         sc.DECISION_REMOVE: Decision(
             run=_remove, refusal="only a home card removes what its build created", claimed=False

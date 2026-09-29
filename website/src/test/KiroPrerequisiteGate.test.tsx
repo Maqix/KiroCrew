@@ -193,6 +193,65 @@ describe('KiroPrerequisiteGate', () => {
     expect(screen.queryByRole('button', { name: 'Sign in to Kiro' })).not.toBeInTheDocument()
   })
 
+  it('shows the host platform install command to copy, beside the setup link', async () => {
+    // A first run with no Kiro CLI lands here straight from `kirocrew start`, so
+    // the fastest path is on the screen: Kiro's own one-liner for this host,
+    // served by the gateway and copied from the DOM exactly as shown. Kiro Crew
+    // still runs nothing: the only controls are the copy block, the link and
+    // Check again.
+    const { copyToClipboard } = await import('../utils/clipboard')
+    vi.mocked(copyToClipboard).mockClear()
+    const install = 'curl -fsSL https://cli.kiro.dev/install | bash'
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ install_command: install }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText(/Run Kiro's install command in a terminal/))
+      .toBeInTheDocument()
+    expect(screen.queryByText(/Install Kiro CLI from Kiro's official setup page/))
+      .not.toBeInTheDocument()
+    expect(screen.getByText('Install command')).toBeInTheDocument()
+    const command = screen.getByText(install)
+    expect(command.tagName).toBe('CODE')
+    fireEvent.click(command.closest('button')!)
+    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(install))
+    expect(screen.getByRole('link', { name: /Open Kiro CLI setup/ }))
+      .toHaveAttribute('href', 'https://kiro.dev/cli/')
+    expect(screen.getByText(/continues on its own once Kiro CLI is installed/))
+      .toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Install Kiro CLI/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Check again/ })).toBeEnabled()
+  })
+
+  it('shows only the setup link when the gateway serves no install command', async () => {
+    // A gateway older than the field, and a platform Kiro names no one-liner for.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ install_command: '' }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText(/Install Kiro CLI from Kiro's official setup page/))
+      .toBeInTheDocument()
+    expect(screen.queryByText('Install command')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Open Kiro CLI setup/ })).toBeInTheDocument()
+  })
+
+  it('tells a headless host how the sign-in finishes without a browser', async () => {
+    // Over SSH kiro-cli's own sign-in prints a link and a code, so a user who
+    // sees no browser open is told what to expect instead of waiting on one.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ installed: true }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText(/no browser, Kiro CLI prints a link and a code/))
+      .toBeInTheDocument()
+  })
+
   it('tells an installed-but-signed-out CLI to sign in via Kiro CLI', async () => {
     // Any Kiro CLI that runs is usable regardless of install source, so this
     // state must show the sign-in instruction and the exact command — and no

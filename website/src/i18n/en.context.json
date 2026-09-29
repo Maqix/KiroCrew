@@ -550,7 +550,6 @@
     "components.setupCard.home_step_failed": "Screen-reader word read before one step of the cloud-home build or move progress list: that step did not succeed.",
     "components.setupCard.home_step_skipped": "Screen-reader word read before one step of the cloud-home build or move progress list: that step was not needed and was passed over.",
     "components.setupCard.home_size_label": "Row label on the cloud-home setup card for the server size the user is about to pay for (instance type, processors, memory); the noun \"size\".",
-    "components.setupCard.home_region_label": "Row label on the cloud-home setup card for the AWS region code (for example eu-west-1) the server will run in.",
     "components.setupCard.tray_label": "Accessible name of the strip above the chat composer that holds the setup cards still waiting for the user to approve, decline or finish; a short label, not a sentence.",
     "components.setupCard.in_tray_ref": "One-line stand-in shown in the chat transcript where a setup card was proposed, while the card itself is pinned above the composer; \"below\" points down the screen to that pinned card.",
     "components.setupCard.home_compact_step": "Short status on the cloud-home card while it builds: the name of the build step running right now follows the label. \"Now\" means currently, at this moment.",

@@ -89,28 +89,38 @@ function renderHome(card: Card) {
 const radio = (key: string) => within(screen.getByTestId(`setup-card-home-size-${key}`)).getByRole('radio')
 
 describe('SetupCard — home: choosing the size', () => {
-  it('on the Free plan: Starter first, with its credit, and Standard marked for the paid plan', async () => {
+  it('on the Free plan: one compact row per size, badges, and the trade-offs behind the disclosure', async () => {
     const gw = serve(FREE)
     await renderHome(FREE)
     const starter = screen.getByTestId('setup-card-home-size-starter')
     expect(radio('starter')).toBeChecked()
-    expect(starter).toHaveTextContent('Starter · about $72/month')
-    expect(starter).toHaveTextContent('m7i-flex.large, 2 vCPU, 8GB of memory')
+    expect(starter).toHaveTextContent('Starter · 8 GB · $72/mo')
+    expect(screen.getByTestId('setup-card-home-size-starter-recommended')).toHaveTextContent('recommended')
     // Cheapest first, as the gateway orders them.
     const order = screen.getAllByTestId(/^setup-card-home-size-(starter|light)$/).map(n => n.getAttribute('data-testid'))
     expect(order).toEqual(['setup-card-home-size-starter', 'setup-card-home-size-light'])
-    expect(starter).toHaveTextContent('Works on a new AWS account’s Free plan, paid from its credits (about 11 weeks of $188 left).')
     expect(screen.queryByTestId('setup-card-home-size-starter-paid')).toBeNull()
     const standard = screen.getByTestId('setup-card-home-size-light')
-    expect(standard).toHaveTextContent('Standard · about $101/month')
-    expect(standard).toHaveTextContent('Room for many chats and helpers at once.')
+    expect(standard).toHaveTextContent('Standard · 16 GB · $101/mo')
     expect(screen.getByTestId('setup-card-home-size-light-paid')).toHaveTextContent('Needs the paid plan')
-    const upgrade = screen.getByTestId('setup-card-home-upgrade')
+    // The rows carry no notes; the disclosure does, closed until asked.
+    expect(starter).not.toHaveTextContent('Free plan')
+    const details = screen.getByTestId('setup-card-home-sizes-details')
+    expect(details).not.toHaveAttribute('open')
+    expect(details).toHaveTextContent('What’s the difference?')
+    expect(screen.getByTestId('setup-card-home-size-starter-note')).toHaveTextContent(
+      'Starter m7i-flex.large, 2 vCPU, 8GB of memory'
+      + 'Works on a new AWS account’s Free plan, paid from its credits (about 11 weeks of $188 left).',
+    )
+    expect(screen.getByTestId('setup-card-home-size-light-note')).toHaveTextContent('Room for many chats and helpers at once.')
+    const upgrade = within(details).getByTestId('setup-card-home-upgrade')
     expect(upgrade).toHaveAttribute('href', AWS_PLAN_UPGRADE_URL)
     expect(upgrade).toHaveAttribute('target', '_blank')
     expect(upgrade).toHaveAttribute('rel', 'noopener noreferrer')
-    // The cost line follows the choice.
-    expect(screen.getByTestId('setup-card-home-cost')).toHaveTextContent('About $72/month')
+    // No separate cost line: the price is on each row, and who bills it once below.
+    expect(screen.queryByTestId('setup-card-home-cost')).toBeNull()
+    expect(screen.getByTestId('setup-card-home-sizes')).toHaveTextContent('Approximate monthly prices, billed by AWS to your own account.')
+    expect(screen.getByTestId('setup-card-home-meta')).toHaveTextContent('AWS: signed in ✓ …1234 · eu-north-1')
     await userEvent.click(screen.getByTestId('setup-card-primary'))
     await waitFor(() => expect(gw.bodies).toEqual([{ decision: 'commit', hash: HASH, input: { size: 'starter' } }]))
   })
@@ -123,11 +133,11 @@ describe('SetupCard — home: choosing the size', () => {
     })
     const gw = serve(card)
     await renderHome(card)
-    const lite = screen.getByTestId('setup-card-home-size-lite')
-    expect(lite).toHaveTextContent('Lite · about $14/month')
-    expect(lite).toHaveTextContent('t4g.small, 2 vCPU, 2GB of memory')
-    expect(lite).toHaveTextContent('Works on a new AWS account’s Free plan, paid from its credits (about 30 weeks of $100 left).')
-    expect(lite).toHaveTextContent(
+    expect(screen.getByTestId('setup-card-home-size-lite')).toHaveTextContent('Lite · 2 GB · $14/mo')
+    const note = screen.getByTestId('setup-card-home-size-lite-note')
+    expect(note).toHaveTextContent('t4g.small, 2 vCPU, 2GB of memory')
+    expect(note).toHaveTextContent('Works on a new AWS account’s Free plan, paid from its credits (about 30 weeks of $100 left).')
+    expect(note).toHaveTextContent(
       'The smallest home, with trade-offs: memory uses keyword search only, there is no dictation, '
       + 'the first reply after a quiet spell is slower, and it runs only a few things at once.',
     )
@@ -141,13 +151,16 @@ describe('SetupCard — home: choosing the size', () => {
     const card = home({ size_options: [LITE, ECONOMY, SMALL, STANDARD], size_default: 'small', plan: { type: 'PAID' } })
     serve(card)
     await renderHome(card)
-    const economy = screen.getByTestId('setup-card-home-size-economy')
-    expect(economy).toHaveTextContent('Economy · about $26/month')
-    expect(economy).toHaveTextContent('Everything on. Enough for your main chat, another chat or two and scheduled jobs.')
-    expect(screen.getByTestId('setup-card-home-size-lite')).toHaveTextContent('The smallest home, with trade-offs')
+    expect(screen.getByTestId('setup-card-home-size-economy')).toHaveTextContent('Economy · 4 GB · $26/mo')
+    expect(screen.getByTestId('setup-card-home-size-economy-note')).toHaveTextContent(
+      'Everything on. Enough for your main chat, another chat or two and scheduled jobs.',
+    )
+    expect(screen.getByTestId('setup-card-home-size-lite-note')).toHaveTextContent('The smallest home, with trade-offs')
     const order = screen.getAllByTestId(/^setup-card-home-size-(lite|economy|small|light)$/).map(n => n.getAttribute('data-testid'))
     expect(order).toEqual(['setup-card-home-size-lite', 'setup-card-home-size-economy', 'setup-card-home-size-small', 'setup-card-home-size-light'])
     expect(radio('small')).toBeChecked()
+    expect(screen.getByTestId('setup-card-home-size-small-recommended')).toBeInTheDocument()
+    expect(screen.queryByTestId('setup-card-home-size-lite-recommended')).toBeNull()
   })
 
   it('the owner’s pick is what Build posts', async () => {
@@ -155,7 +168,6 @@ describe('SetupCard — home: choosing the size', () => {
     await renderHome(FREE)
     await userEvent.click(radio('light'))
     expect(radio('light')).toBeChecked()
-    expect(screen.getByTestId('setup-card-home-cost')).toHaveTextContent('About $101/month')
     await userEvent.click(screen.getByTestId('setup-card-primary'))
     await waitFor(() => expect(gw.bodies).toEqual([{ decision: 'commit', hash: HASH, input: { size: 'light' } }]))
   })
@@ -164,14 +176,14 @@ describe('SetupCard — home: choosing the size', () => {
     const gw = serve(PAID)
     await renderHome(PAID)
     expect(radio('small')).toBeChecked()
-    const small = screen.getByTestId('setup-card-home-size-small')
-    expect(small).toHaveTextContent('Small · about $51/month')
-    expect(small).toHaveTextContent('Enough for your main chat, a few other chats and scheduled jobs.')
-    expect(small).toHaveTextContent('t4g.large, 2 vCPU, 8GB of memory')
+    expect(screen.getByTestId('setup-card-home-size-small')).toHaveTextContent('Small · 8 GB · $51/mo')
+    const note = screen.getByTestId('setup-card-home-size-small-note')
+    expect(note).toHaveTextContent('Enough for your main chat, a few other chats and scheduled jobs.')
+    expect(note).toHaveTextContent('t4g.large, 2 vCPU, 8GB of memory')
     expect(screen.queryByTestId('setup-card-home-size-small-paid')).toBeNull()
     expect(screen.queryByTestId('setup-card-home-size-light-paid')).toBeNull()
     expect(screen.queryByTestId('setup-card-home-size-starter')).toBeNull()
-    expect(screen.getByTestId('setup-card-home-cost')).toHaveTextContent('About $51/month')
+    expect(screen.queryByTestId('setup-card-home-upgrade')).toBeNull()
     await userEvent.click(screen.getByTestId('setup-card-primary'))
     await waitFor(() => expect(gw.bodies).toEqual([{ decision: 'commit', hash: HASH, input: { size: 'small' } }]))
   })

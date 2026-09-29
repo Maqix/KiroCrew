@@ -107,6 +107,26 @@ KIRO_CLI_LOGIN_COMMAND = f"kiro-cli{_LOGIN_TAIL}"
 # visual peer of organization SSO, so a user on an SSO plan can sign in to the
 # wrong tier and only discover it when models are missing.
 KIRO_CLI_SSO_LOGIN_COMMAND = f"kiro-cli{_SSO_LOGIN_TAIL}"
+# Kiro's own install one-liners, exactly as its installation page documents them
+# (docs/reference/kiro-cli/installation.md). DISPLAY STRINGS, like the sign-in
+# commands above: the gate shows the one for the gateway host's platform for the
+# user to copy into their own terminal, beside OFFICIAL_INSTALL_DOCS_URL, which
+# stays the authority. Nothing here downloads or runs them (RFC Q2).
+KIRO_CLI_INSTALL_COMMAND_POSIX = "curl -fsSL https://cli.kiro.dev/install | bash"
+KIRO_CLI_INSTALL_COMMAND_WINDOWS = "irm 'https://cli.kiro.dev/install.ps1' | iex"
+
+
+def install_command_for(platform_name: str) -> str:
+    """Kiro's documented install command for *platform_name*, or ``""``.
+
+    Empty for a platform Kiro's page names no one-liner for, so the gate shows
+    only the link there instead of a command that would not run.
+    """
+    if platform_name == "win32":
+        return KIRO_CLI_INSTALL_COMMAND_WINDOWS
+    if platform_name == "darwin" or platform_name.startswith("linux"):
+        return KIRO_CLI_INSTALL_COMMAND_POSIX
+    return ""
 
 
 def login_commands_for(
@@ -599,6 +619,11 @@ class PrerequisiteStatus:
     repair_required: bool = False
     initial_setup_complete: bool = False
     docs_url: str = OFFICIAL_INSTALL_DOCS_URL
+    # What the user runs to install the CLI on this platform
+    # (:func:`install_command_for`), shown beside ``docs_url``. Filled in per
+    # snapshot from the host platform; empty where Kiro documents no one-liner.
+    # Kiro Crew never runs it for them.
+    install_command: str = ""
     # What the user runs to sign in. Kiro Crew never runs it for them.
     login_command: str = KIRO_CLI_LOGIN_COMMAND
     # The organization-SSO alternative, offered next to ``login_command`` so the
@@ -2408,18 +2433,60 @@ def _probe_filesystem_state(
     return probe_environment, candidates
 
 
+def _unfinished_first_run_transcript(data_home: Path) -> str | None:
+    """The first-run chat's transcript filename while its first run is under way.
+
+    The gateway writes that transcript (its privacy card) on a fresh home before
+    the harness has ever been ready, so until the chat hands over to a main chat
+    it is not a sign of an established install. The state file is read under
+    *data_home* itself, which a caller may pass apart from the process's. It
+    only ever narrows the evidence, and the setup marker is checked first, so a
+    forged file can at most show the setup screen on a home whose kiro-cli has
+    never been seen signed in.
+    """
+    from kiro_crew.dashboard.chat_utils import session_key_for  # circular import
+    from kiro_crew.first_run import FIRST_RUN_FILE, SETUP_DIR_NAME
+    from kiro_crew.history import _safe_key
+
+    try:
+        raw = (data_home / SETUP_DIR_NAME / FIRST_RUN_FILE).read_bytes()
+        state = json.loads(raw.decode("utf-8")) if len(raw) <= 64 * 1024 else None
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(state, dict) or state.get("main"):
+        return None
+    slot = state.get("slot")
+    if not isinstance(slot, str) or not slot:
+        return None
+    return f"{_safe_key(session_key_for(slot))}.jsonl"
+
+
 def _established_installation(data_home: Path) -> bool:
-    """Recognize an existing Kiro Crew home when migrating onto the setup marker."""
+    """Recognize an existing Kiro Crew home when migrating onto the setup marker.
+
+    Without the marker, a non-empty file of history is the evidence, less what a
+    fresh home writes before kiro-cli is ever ready: derived data in
+    dot-directories (the session index, reply sidecars) and the first-run chat's
+    own transcript (:func:`_unfinished_first_run_transcript`). Counting those
+    would drop the first-run gate on the next start and open a chat that cannot
+    answer.
+    """
 
     marker = data_home / _SETUP_COMPLETE_FILENAME
     if marker.is_file():
         return True
+    first_run_transcript = _unfinished_first_run_transcript(data_home)
     for path in (data_home / "sessions", data_home / "history"):
         try:
             if path.is_file() and path.stat().st_size > 0:
                 return True
             if path.is_dir():
                 for child in path.rglob("*"):
+                    relative = child.relative_to(path)
+                    if any(part.startswith(".") for part in relative.parts[:-1]):
+                        continue
+                    if path.name == "sessions" and relative.as_posix() == first_run_transcript:
+                        continue
                     if child.is_file() and child.stat().st_size > 0:
                         return True
         except OSError:
@@ -2658,6 +2725,9 @@ class KiroPrerequisiteService:
 
     def _snapshot_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = asdict(self._status)
+        # From the host platform rather than stored on the status, so none of
+        # the several places that rebuild the status can drop it.
+        result["install_command"] = install_command_for(self._platform)
         # See _LEGACY_IDLE_OPERATION: a pre-upgrade tab crashes without this key.
         result["operation"] = legacy_idle_operation()
         return result

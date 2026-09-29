@@ -31,7 +31,7 @@ import { isSpawnRunTool } from '../pages/chat/SubagentRunCard'
 import { isWorkflowCompletionMessage } from '../pages/chat/WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
-import SetupCard from '../components/setup/SetupCard'
+import SetupCardRow from '../components/setup/SetupCardRow'
 
 const msg = (role: string, over: Partial<ChatMessage> = {}): ChatMessage =>
   ({ role, content: '', cls: '', ...over }) as ChatMessage
@@ -142,7 +142,7 @@ describe('narrow rows win over the broad row they refine', () => {
     }))).toBe('inject')
   })
 
-  it('routes a setup card row to SetupCard, ahead of the inject note and bubble', () => {
+  it('routes a setup card row to its SetupCardRow, ahead of the inject note and bubble', () => {
     // One-chat first run: the row carries `meta.setupCard` and a model-visible
     // summary. The card renders from the gateway by id; the summary is never
     // drawn, and a recovery-shaped summary must not divert it to a note.
@@ -152,7 +152,8 @@ describe('narrow rows win over the broad row they refine', () => {
     })
     expect(idFor(row)).toBe('setup_card')
     const drawn = render(row) as ReactElement<{ cardId: string; placement?: string }>
-    expect(drawn.type).toBe(SetupCard)
+    // The row wrapper carries the card id for the tray bar's "find it in the chat".
+    expect(drawn.type).toBe(SetupCardRow)
     expect(drawn.props.cardId).toBe('sc-0123456789abcdef')
     // A surface without the decision tray keeps the full card in the row…
     expect(drawn.props.placement).toBe('inline')

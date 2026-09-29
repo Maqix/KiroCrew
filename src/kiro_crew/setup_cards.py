@@ -98,6 +98,8 @@ DECISION_AWS_SIGNIN = "aws_signin"
 DECISION_REGION = "region"
 #: A failed home card's "Remove what it created", after a restart cut its build short.
 DECISION_REMOVE = "remove"
+#: The first run's "Where should your crew live?" answer on the home card (``input.where``).
+DECISION_CHOOSE = "choose"
 DECISIONS: frozenset[str] = frozenset(
     {
         DECISION_COMMIT,
@@ -106,6 +108,7 @@ DECISIONS: frozenset[str] = frozenset(
         DECISION_AWS_SIGNIN,
         DECISION_REGION,
         DECISION_REMOVE,
+        DECISION_CHOOSE,
     }
 )
 

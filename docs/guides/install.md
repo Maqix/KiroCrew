@@ -59,10 +59,11 @@ kiro-cli login
 
 If `kiro-cli` is not on `PATH`, spawning a session fails with
 `kiro-cli not found in PATH`. On the first dashboard launch the **Set up Kiro**
-page detects the missing prerequisite, links to the official Kiro CLI setup
-guide, and shows the login commands to run yourself. Kiro Crew does not download
-the CLI or start its login flow. `kirocrew doctor` reports both the binary and
-the login state.
+page detects the missing prerequisite and shows Kiro's install command for the
+gateway host's platform to copy, with a link to the official Kiro CLI setup
+guide, then the login commands to run yourself. It checks again every few
+seconds and moves on by itself. Kiro Crew does not download the CLI or start
+its login flow. `kirocrew doctor` reports both the binary and the login state.
 
 ### Embeddings: nothing to install
 
@@ -157,10 +158,10 @@ curl -fsSL https://download.crew.kiro.dev/start.sh | sh
 `start.sh` installs Kiro Crew exactly as `cli.sh` below does — it downloads the
 live `cli.sh` and runs it unchanged, so the signed-manifest check and its pinned
 key are the same ones — and then runs [`kirocrew start`](#first-run). That
-command checks the agent harness (kiro-cli by default: it prints the official
-install link when kiro-cli is missing, and offers kiro-cli's own sign-in when it
-is signed out), starts the gateway in the background, and opens the first-run
-chat in your browser. On a host with no browser (SSH, a server) it prints the
+command checks the agent harness (kiro-cli by default: when kiro-cli is
+missing it says so and the browser walks you through installing it, and when it
+is signed out it runs kiro-cli's own sign-in), starts the gateway in the
+background, and opens the first-run chat in your browser. On a host with no browser (SSH, a server) it prints the
 sign-in link instead, with a QR code when the dashboard has an origin another
 device can reach, or the `ssh -L` command to tunnel to it when it listens on
 loopback only. It accepts `cli.sh`'s flags (`--channel`, `--version`, `--cdn`,
@@ -305,8 +306,10 @@ The source lands in `~/.local/share/kirocrew/source` (`KIROCREW_SOURCE_DIR`);
 run it again to update. From a checkout, `bash setup.sh` does the same with that
 checkout. It needs git and Python 3.12 or newer (it provisions Python through
 mise when mise is installed), installs Node through `ensure-node.sh` when it is
-missing, and does not install kiro-cli: `kirocrew start` runs kiro-cli's own
-sign-in when it is signed out. It adds `~/.local/bin` to your shell's rc file
+missing, and does not install kiro-cli. It checks for kiro-cli first, before
+the build, and when it is missing says the browser will walk you through the
+install at the end; `kirocrew start` runs kiro-cli's own sign-in when it is
+signed out. It adds `~/.local/bin` to your shell's rc file
 only when that directory is not already on your PATH, and touches no other rc
 line. A plain gateway already running on this crew's port is restarted so it
 runs the new build; an installed service is left alone. From GitHub it skips
@@ -580,9 +583,12 @@ kirocrew start            # check kiro-cli, start the gateway, open the chat
 ```
 
 It asks nothing. It checks that the agent harness is installed (it does not
-install kiro-cli for you: when it is missing it prints <https://kiro.dev/cli/>
-and exits 3) and signed in (on a terminal a signed-out kiro-cli runs its own
-`kiro-cli login` straight away, the device-code variant on a headless host),
+install kiro-cli for you: when it is missing, the browser opens on a **Set up
+Kiro** page with Kiro's install command to copy, then the sign-in, and the chat
+carries on once kiro-cli is ready; with `--no-input`, or with no terminal, it
+prints <https://kiro.dev/cli/> and exits 3 instead) and signed in (on a
+terminal a signed-out kiro-cli runs its own `kiro-cli login` straight away, the
+device-code variant on a headless host),
 reuses a gateway that is already running or starts one in the background, and
 opens the dashboard in your browser — on your main chat once you have one, on
 the first-run chat for a fresh install, otherwise on the dashboard itself.

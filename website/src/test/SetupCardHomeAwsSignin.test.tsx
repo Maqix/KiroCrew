@@ -107,9 +107,9 @@ describe('SetupCard — home: signing in to AWS from the card', () => {
   it('signed in from the card: the outcome says so, so Build shows with the account', async () => {
     const signedIn = home({ outcome: { aws_signed_in: true, aws_account: '…9012', aws_signin: { state: 'done' } } })
     const gw = serve(signedIn)
-    const el = await renderHome(signedIn)
+    await renderHome(signedIn)
     expect(screen.queryByTestId('setup-card-home-aws-signin')).toBeNull()
-    expect(within(el).getByText('…9012')).toBeInTheDocument()
+    expect(screen.getByTestId('setup-card-home-meta')).toHaveTextContent('AWS: signed in ✓ …9012')
     const primary = screen.getByTestId('setup-card-primary')
     expect(primary).toHaveTextContent('Build my home')
     await userEvent.click(primary)

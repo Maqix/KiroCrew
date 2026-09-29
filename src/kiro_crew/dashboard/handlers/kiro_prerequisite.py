@@ -171,6 +171,9 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             "initial_setup_complete": bool(snapshot.get("initial_setup_complete")),
             "repair_required": False,
             "docs_url": OFFICIAL_INSTALL_DOCS_URL,
+            # Empty rather than omitted: the command differs by platform, so it
+            # would name the host platform redacted above.
+            "install_command": "",
             "login_command": KIRO_CLI_LOGIN_COMMAND,
             "sso_login_command": KIRO_CLI_SSO_LOGIN_COMMAND,
             # Redacted and present for shape stability: non-owners never learn

@@ -1456,6 +1456,8 @@ export default function ChatPane({
            name: classes here are styling and can churn without anyone
            auditing focus behaviour. */
         data-chat-pane={focused ? 'focused' : ''}
+        /* The setup-card tray caps itself at a third of this pane. */
+        data-setup-tray-pane=""
         {...dropTargetProps}
         className={`relative flex flex-col h-full min-h-0 overflow-hidden bg-bg ${
           frameless
@@ -1700,7 +1702,15 @@ export default function ChatPane({
             above the composer for the same reason as the question card below:
             the agent keeps writing after proposing one, so its transcript row
             scrolls away. The row itself folds to a pointer (`setupCardTray`). */}
-        <PendingSetupCards slotKey={slotKey} className="pb-2" />
+        {/* No `onLocate`: this pane's transcript has no index-to-row scroll, so
+            its bar's title stays text and Show is the one action. */}
+        <PendingSetupCards
+          slotKey={slotKey}
+          className="pb-2"
+          messages={messages}
+          atBottom={isAtBottom}
+          scrollerRef={scrollerRef}
+        />
 
         {/* The pending ask_question card renders per pane: in split mode the
             agent that asked may not be the pane the user is looking at, and

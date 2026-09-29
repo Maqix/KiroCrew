@@ -619,7 +619,8 @@ describe('SetupCard — home: a permanent home in the owner’s AWS account', ()
     expect(screen.getByTestId('setup-card-primary')).toHaveTextContent('Build my home')
     expect(screen.queryByTestId('setup-card-home-aws-signin')).toBeNull()
     expect(screen.queryByTestId('setup-card-simulated')).toBeNull()
-    expect(within(el).getByText('…1234')).toBeInTheDocument()
+    expect(screen.getByTestId('setup-card-home-meta')).toHaveTextContent('AWS: signed in ✓ …1234 · eu-west-1')
+    expect(el).toBeInTheDocument()
   })
 
   it('renders the build as a progress list, with the Kiro sign-in link and code', async () => {

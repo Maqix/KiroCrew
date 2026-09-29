@@ -61,8 +61,21 @@ def _vet(session_key: str) -> str | None:
 
 
 def _result_detail(card: sc.SetupCard) -> str:
-    job_id = (card.outcome or {}).get("job_id", "")
-    return f" The job is kept (job id {job_id}) and runs {card.payload.get('schedule_human', '')}."
+    outcome = card.outcome or {}
+    job_id = outcome.get("job_id", "")
+    detail = (
+        f" The job is kept (job id {job_id}) and runs {card.payload.get('schedule_human', '')}."
+    )
+    if outcome.get("home_choice"):
+        # The first kept job: the gateway put the home question on screen with it.
+        detail += (
+            ' The gateway now shows a "Where should your crew live?" card: this machine '
+            "(free, runs while it is on) or a home in the cloud (always on). In one "
+            "sentence, say why it matters now: the job runs only while Kiro Crew runs. "
+            "The card is the question; do not ask it again in prose. If they pick the "
+            "cloud, guide them through the card's steps one at a time."
+        )
+    return detail
 
 
 ACTION = SetupAction(

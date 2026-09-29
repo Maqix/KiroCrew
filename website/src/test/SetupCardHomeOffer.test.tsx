@@ -1,9 +1,10 @@
 /**
  * The first run's "Where should your crew live?" step: the home card the gateway
- * shows on its own right after privacy (`payload.offer`). While it is still the
- * question it asks it, its decline says "Keep it on this machine", and a declined
- * step reads "Staying on this machine". Without `offer` (a `--home cloud` card, an
- * agent's proposal) and once a build starts, the card is the home as before.
+ * shows on its own when the first job is kept (`payload.offer`, `step: "choose"`).
+ * It asks with two radio rows and Continue ("This machine" settles it as
+ * "Staying on this machine"; "In the cloud" moves the same card on to its AWS
+ * steps and sizes). Without `offer` (a `--home cloud` card, an agent's proposal)
+ * and once a build starts, the card is the home as before.
  */
 import { describe, it, expect } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
@@ -24,7 +25,7 @@ const PAYLOAD = {
   monthly_usd: 17, billed_by: 'AWS, to your own account', aws_signed_in: true, aws_account: '…1234',
   sign_in_commands: ['aws login'],
 }
-const LEAD = 'It can stay on this machine, or live in a home in the cloud in your AWS account that keeps jobs running when this machine sleeps.'
+const LEAD = 'Your new job runs only while Kiro Crew is running. Keep the crew on this machine, or give it a home in the cloud that is always on.'
 
 function home(over: Partial<Card> = {}, payload: Record<string, unknown> = {}): Card {
   return {
@@ -60,26 +61,62 @@ function renderHome(card: Card) {
 }
 
 describe('SetupCard — home: the "Where should your crew live?" step', () => {
-  it('asks the question, keeps the cost and the build, and declines as "Keep it on this machine"', async () => {
-    const offer = home({}, { offer: true })
-    const gw = serve(offer, { ...offer, status: 'declined', decided_ts: 1790000100 })
-    const el = await renderHome(offer)
+  const CHOICE = { offer: true, step: 'choose', from_usd: 14 }
+
+  it('asks with two compact rows, and Continue posts the pick', async () => {
+    const choice = home({}, CHOICE)
+    const gw = serve(choice)
+    const el = await renderHome(choice)
     expect(within(el).getByRole('heading')).toHaveTextContent('Where should your crew live?')
-    expect(screen.getByTestId('setup-card-home-offer')).toHaveTextContent(LEAD)
-    expect(screen.getByTestId('setup-card-home-cost')).toHaveTextContent('About $17/month')
-    expect(screen.getByTestId('setup-card-primary')).toHaveTextContent('Build my home')
-    const decline = screen.getByTestId('setup-card-decline')
-    expect(decline).toHaveTextContent('Keep it on this machine')
-    await userEvent.click(decline)
-    await waitFor(() => expect(gw.bodies).toEqual([{ decision: 'decline', hash: HASH }]))
-    // Declined, it says where the crew stays.
+    expect(el).toHaveTextContent(LEAD)
+    const rows = within(screen.getByTestId('setup-card-home-choice')).getAllByRole('radio')
+    expect(rows).toHaveLength(2)
+    expect(screen.getByTestId('setup-card-home-choice-here')).toHaveTextContent('This machine')
+    expect(screen.getByTestId('setup-card-home-choice-here')).toHaveTextContent('free · runs while it’s on')
+    expect(screen.getByTestId('setup-card-home-choice-cloud')).toHaveTextContent('In the cloud')
+    expect(screen.getByTestId('setup-card-home-choice-cloud')).toHaveTextContent('always on · from $14/mo')
+    // Nothing about AWS or sizes yet.
+    expect(screen.queryByTestId('setup-card-home-sizes')).toBeNull()
+    expect(screen.queryByTestId('setup-card-home-meta')).toBeNull()
+    const go = screen.getByTestId('setup-card-primary')
+    expect(go).toHaveTextContent('Continue')
+    expect(go).toBeDisabled()
+    await userEvent.click(within(screen.getByTestId('setup-card-home-choice-cloud')).getByRole('radio'))
+    expect(go).toBeEnabled()
+    await userEvent.click(go)
+    await waitFor(() => expect(gw.bodies).toEqual([{ decision: 'choose', hash: HASH, input: { where: 'cloud' } }]))
+    expect(screen.getByTestId('setup-card-decline')).toHaveTextContent('Not now')
+  })
+
+  it('"This machine" settles as "Staying on this machine"', async () => {
+    const choice = home({}, CHOICE)
+    const gw = serve(choice, { ...choice, status: 'committed', outcome: { stayed: true }, decided_ts: 1790000100 })
+    await renderHome(choice)
+    await userEvent.click(within(screen.getByTestId('setup-card-home-choice-here')).getByRole('radio'))
+    await userEvent.click(screen.getByTestId('setup-card-primary'))
+    await waitFor(() => expect(gw.bodies).toEqual([{ decision: 'choose', hash: HASH, input: { where: 'here' } }]))
     const result = await screen.findByTestId('setup-card-result')
     expect(result).toHaveTextContent('Where should your crew live?')
     expect(result).toHaveTextContent('Staying on this machine')
-    expect(result).not.toHaveTextContent('Skipped')
   })
 
-  it('keeps the sign-in and sign-up paths on a machine not signed in to AWS', async () => {
+  it('"In the cloud" is the same card, moved on to AWS and the sizes', async () => {
+    const cloud = home({}, {
+      offer: true,
+      size_options: [{ key: 'lite', label: 'Lite', note: 'lite_tradeoffs', instance_type: 't4g.small', vcpu: 2, ram_gb: 2, monthly_usd: 14, free_plan_ok: true }],
+      size_default: 'lite',
+    })
+    serve(cloud)
+    const el = await renderHome(cloud)
+    expect(within(el).getByRole('heading')).toHaveTextContent('Where should your crew live?')
+    expect(screen.queryByTestId('setup-card-home-choice')).toBeNull()
+    expect(screen.getByTestId('setup-card-home-meta')).toHaveTextContent('AWS: signed in ✓ …1234 · eu-west-1')
+    expect(screen.getByTestId('setup-card-home-size-lite')).toHaveTextContent('Lite · 2 GB · $14/mo')
+    expect(screen.getByTestId('setup-card-primary')).toHaveTextContent('Build my home')
+    expect(screen.getByTestId('setup-card-decline')).toHaveTextContent('Not now')
+  })
+
+  it('keeps the sign-in and sign-up steps first on a machine not signed in to AWS', async () => {
     const offer = home({}, {
       offer: true, aws_signed_in: false, aws_account: '',
       signup_url: 'https://signin.aws.amazon.com/signup?request_type=register', signup_builder_id: false,
@@ -87,10 +124,9 @@ describe('SetupCard — home: the "Where should your crew live?" step', () => {
     })
     serve(offer)
     await renderHome(offer)
-    expect(screen.getByTestId('setup-card-home-offer')).toHaveTextContent(LEAD)
+    expect(screen.getByTestId('setup-card-home-meta')).toHaveTextContent('AWS: not signed in · eu-west-1')
     expect(screen.getByTestId('setup-card-primary')).toHaveTextContent('Sign in to AWS')
     expect(screen.getByTestId('setup-card-home-aws-signup')).toHaveTextContent('Create an AWS account')
-    expect(screen.getByTestId('setup-card-decline')).toHaveTextContent('Keep it on this machine')
   })
 
   it('without `offer` the card is the home as before', async () => {
@@ -98,7 +134,7 @@ describe('SetupCard — home: the "Where should your crew live?" step', () => {
     serve(plain, { ...plain, status: 'declined', decided_ts: 1790000100 })
     const el = await renderHome(plain)
     expect(within(el).getByRole('heading')).toHaveTextContent('Your home in the cloud')
-    expect(screen.queryByTestId('setup-card-home-offer')).toBeNull()
+    expect(screen.queryByTestId('setup-card-home-choice')).toBeNull()
     const decline = screen.getByTestId('setup-card-decline')
     expect(decline).toHaveTextContent('Not now')
     await userEvent.click(decline)
@@ -113,6 +149,6 @@ describe('SetupCard — home: the "Where should your crew live?" step', () => {
     serve(building)
     const el = await renderHome(building)
     expect(within(el).getByRole('heading')).toHaveTextContent('Your home in the cloud')
-    expect(screen.queryByTestId('setup-card-home-offer')).toBeNull()
+    expect(screen.queryByTestId('setup-card-home-choice')).toBeNull()
   })
 })

@@ -8,9 +8,10 @@
 # in the first-run chat, where every other choice is made:
 #   0. From GitHub: fetch this branch's source into ~/.local/share/kirocrew/source
 #      (KIROCREW_SOURCE_DIR), then run the setup.sh inside it
-#   1. Python 3.12+
+#   1. Python 3.12+, and whether Kiro CLI is installed (when it is not, the
+#      browser walks you through its install at the end; the build carries on)
 #   2. Node.js (via ensure-node.sh) and optional tools (git-lfs, ffmpeg for voice)
-#   3. Optional ACP adapter + Kiro CLI prerequisite
+#   3. Optional ACP adapter
 #   4. Build frontend (npm/vite) + backend (pip)
 #   5. PATH config
 #   6. Agent config (kirocrew setup --agent-only)
@@ -151,9 +152,9 @@ _check() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# ── 1. Python ──
+# ── 1. Python and Kiro CLI ──
 
-echo "── Step 1: Python ──"
+echo "── Step 1: Python and Kiro CLI ──"
 _py=""
 for _candidate in python3.12 python3.13 python3; do
     if _check "$_candidate" && "$_candidate" -c "import sys; assert sys.version_info >= (3,12)" 2>/dev/null; then
@@ -187,6 +188,18 @@ if [ -z "$_py" ]; then
     return 1 2>/dev/null || exit 1
 fi
 echo "  ✅ $($_py --version 2>&1) ($(which "$_py"))"
+# Kiro CLI now, before the long build, so a missing one is known up front. This
+# script does not install it and does not wait on it: the build carries on, and
+# `kirocrew start` then opens the browser, which walks through the install.
+if _check kiro-cli; then
+    echo "  ✅ kiro-cli ($(which kiro-cli)); when it is signed out, 'kirocrew start' runs its own sign-in"
+elif [ "$_kc_start" = 1 ]; then
+    echo "  ⚠️  Kiro CLI, the default agent, isn't installed yet. Setup carries on, and at"
+    echo "     the end your browser walks you through installing it and signing in."
+else
+    echo "  ⚠️  Kiro CLI, the default agent, isn't installed yet. Setup carries on; then"
+    echo "     'kirocrew start' opens your browser, which walks you through installing it."
+fi
 echo ""
 
 # ── 2. Node.js + optional tools ──
@@ -268,7 +281,7 @@ if [ "$_kc_extras" = 1 ] && ! _check ffmpeg; then
 fi
 echo ""
 
-# ── 3. Optional ACP adapter and Kiro CLI prerequisite ──
+# ── 3. Optional ACP adapter ──
 
 echo "── Step 3: Agent Backends ──"
 if _check claude-agent-acp; then
@@ -286,14 +299,6 @@ else
     echo "  ⚠️  npm not found — install the optional agent backend later:"
     echo "       npm i -g $ACP_NPM_PKG"
 fi
-if _check kiro-cli; then
-    echo "  ✅ kiro-cli ($(which kiro-cli))"
-else
-    echo "  ⚠️  Kiro CLI is required for the default agent."
-    echo "       Install it separately from https://kiro.dev/cli/"
-fi
-echo "  This script does not install Kiro CLI. When it is signed out, 'kirocrew start'"
-echo "  (step 7) runs its own sign-in."
 echo ""
 
 # ── 4. Build (npm/vite frontend + pip backend) ──

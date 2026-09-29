@@ -2681,7 +2681,14 @@ Two layers close that window:
   so tests need not sleep it.
 - **First-run completion is known without probing** — derived from the data home
   at construction (`initial_setup_complete`) and echoed by the probe-failure
-  backstop, so a failed probe cannot demote a returning user to first-run. The SPA
+  backstop, so a failed probe cannot demote a returning user to first-run. The
+  derivation is the setup marker (written on the first good `whoami`), else a
+  non-empty file under `sessions/` or `history/` — less what a fresh home writes
+  before kiro-cli was ever ready: dot-directories (the session index, reply
+  sidecars) and the first-run chat's own transcript until `first-run.json` names
+  a main chat (`_unfinished_first_run_transcript`). Counting those would drop the
+  first-run gate on a restart before setup and open a chat that cannot answer.
+  The SPA
   also remembers completion locally (`kirocrew:kiro-setup-complete`) so a COLD
   load with an empty query cache can still tell a returning user from a genuine
   first run. That memory only ever suppresses first-run chrome — it never grants

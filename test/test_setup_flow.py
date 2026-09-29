@@ -579,50 +579,17 @@ class TestHomeInTheBackground:
         assert "home in the cloud" in dispatched[-1][2]
 
     @pytest.mark.asyncio
-    async def test_a_signed_in_machine_gets_the_home_step_after_privacy(
-        self, dispatched, monkeypatch
-    ):
-        from kiro_crew.cloud import iam, local_signin
+    async def test_privacy_shows_no_home_card(self, dispatched, monkeypatch):
+        from kiro_crew.cloud import iam
 
-        monkeypatch.setattr(local_signin, "configured_region", lambda profile="": "eu-north-1")
-        monkeypatch.setattr(
-            iam,
-            "reachability_check",
-            lambda profile, region: {"reachable": True, "account": "123456789012"},
-        )
+        monkeypatch.setattr(iam, "reachability_check", _refuse_detect)
         st = FakeState()
         slot_key = await setup_flow.ensure_first_run_session(st)
         privacy = _only_card(slot_key)
         await setup_flow.decide(st, privacy.id, "commit", privacy.payload_hash, {})
-        # Its own step on screen, not a sentence in the Hello the user can miss.
-        cards = sc.list_cards(slot_key)
-        assert [c.kind for c in cards] == ["privacy", "home"]
-        home = cards[1]
-        assert home.payload[setup_flow.HOME_STEP_KEY] is True
-        assert home.payload["region"] == "eu-north-1"
-        assert home.payload["aws_signed_in"] is True
-        kickoff = dispatched[-1][2]
-        assert "Where should your crew live?" in kickoff
-        assert "account …9012, region eu-north-1" in kickoff
-        assert "123456789012" not in kickoff
-        # The Hello quotes the cheapest size the card offers, not one the user may
-        # never pick.
-        cheapest = min(o["monthly_usd"] for o in home.payload["size_options"])
-        assert f"from about ${cheapest}/month" in kickoff
-        assert "do not ask it again in prose" in kickoff
-
-    @pytest.mark.asyncio
-    async def test_a_signed_out_machine_gets_the_step_that_walks_it_through_aws(self, dispatched):
-        st = FakeState()
-        slot_key = await setup_flow.ensure_first_run_session(st)
-        privacy = _only_card(slot_key)
-        await setup_flow.decide(st, privacy.id, "commit", privacy.payload_hash, {})
-        cards = sc.list_cards(slot_key)
-        assert [c.kind for c in cards] == ["privacy", "home"]
-        assert cards[1].payload["aws_signed_in"] is False
-        assert cards[1].payload["signup_url"].startswith("https://signin.aws.amazon.com/signup")
-        kickoff = dispatched[-1][2]
-        assert "creating an AWS account if they have none" in kickoff
+        # Where the crew lives is asked at the first kept job, not before the Hello.
+        assert [c.kind for c in sc.list_cards(slot_key)] == ["privacy"]
+        assert "Where should your crew live?" not in dispatched[-1][2]
 
     @pytest.mark.asyncio
     async def test_the_home_step_is_not_one_of_the_agents_cards(self, dispatched, state):
@@ -656,6 +623,146 @@ class TestHomeInTheBackground:
         await setup_flow.decide(st, privacy.id, "commit", privacy.payload_hash, {})
         assert [c.kind for c in sc.list_cards(slot_key)] == ["privacy"]
         assert "Where should your crew live?" not in dispatched[-1][2]
+
+
+class TestWhereTheCrewLives:
+    """At the first kept job the gateway asks where the crew lives, on one home card."""
+
+    async def _keep_first_job(self, st, dispatched) -> str:
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        crons = TestCronPreviewThenKeep.FakeCrons()
+        crons.jobs["job123"] = SimpleNamespace(id="job123", kw={})
+        st.crons = crons
+        cron = sc.create_card(
+            slot=slot_key,
+            session_key=f"dashboard:{slot_key}",
+            kind=sc.KIND_CRON,
+            payload={"name": "Brief", "schedule_human": "every weekday at 08:00"},
+            private={"job_id": "job123"},
+        )
+        kept = await setup_flow.decide(st, cron.id, "commit", cron.payload_hash, {})
+        assert kept.status == sc.STATUS_COMMITTED
+        return slot_key
+
+    @staticmethod
+    def _home(slot_key: str) -> sc.SetupCard:
+        homes = [c for c in sc.list_cards(slot_key) if c.kind == sc.KIND_HOME]
+        assert len(homes) == 1, homes
+        return homes[0]
+
+    @pytest.mark.asyncio
+    async def test_the_first_kept_job_brings_the_choice_card_once(self, dispatched, monkeypatch):
+        from kiro_crew.cloud import iam
+
+        # The question asks nothing of AWS.
+        monkeypatch.setattr(iam, "reachability_check", _refuse_detect)
+        st = FakeState()
+        slot_key = await self._keep_first_job(st, dispatched)
+        home = self._home(slot_key)
+        assert home.payload[setup_flow.HOME_STEP_KEY] is True
+        assert home.payload["step"] == "choose" and home.private["phase"] == "choose"
+        offered = {k for keys, _ in sc.HOME_PLAN_SIZES.values() for k in keys}
+        assert home.payload["from_usd"] == min(
+            sc.monthly_estimate_usd(k, home.payload["region"]) for k in offered
+        )
+        assert home.stakes == "high" and home.status == sc.STATUS_PENDING
+        # The kept job's result tells the agent the question is on screen, and why now.
+        result = dispatched[-1][2]
+        assert "Where should your crew live?" in result
+        assert "runs only while Kiro Crew runs" in result
+        # A second kept job asks nothing again.
+        cron = sc.create_card(
+            slot=slot_key,
+            session_key=f"dashboard:{slot_key}",
+            kind=sc.KIND_CRON,
+            payload={"name": "Watch", "schedule_human": "hourly"},
+            private={"job_id": "job123"},
+        )
+        await setup_flow.decide(st, cron.id, "commit", cron.payload_hash, {})
+        self._home(slot_key)
+        assert "Where should your crew live?" not in dispatched[-1][2]
+
+    @pytest.mark.asyncio
+    async def test_a_scripted_answer_or_a_home_card_already_there_asks_nothing(self, dispatched):
+        first_run.record_home_choice("later")
+        st = FakeState()
+        slot_key = await self._keep_first_job(st, dispatched)
+        assert not [c for c in sc.list_cards(slot_key) if c.kind == sc.KIND_HOME]
+
+    @pytest.mark.asyncio
+    async def test_an_agents_home_card_is_not_asked_again(self, dispatched, monkeypatch):
+        st = FakeState()
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        proposed = await _propose(st, {"kind": "home"}, slot=slot_key)
+        assert proposed.startswith("Setup card shown"), proposed
+        crons = TestCronPreviewThenKeep.FakeCrons()
+        crons.jobs["job123"] = SimpleNamespace(id="job123", kw={})
+        st.crons = crons
+        cron = sc.create_card(
+            slot=slot_key,
+            session_key=f"dashboard:{slot_key}",
+            kind=sc.KIND_CRON,
+            payload={"name": "Brief", "schedule_human": "daily"},
+            private={"job_id": "job123"},
+        )
+        await setup_flow.decide(st, cron.id, "commit", cron.payload_hash, {})
+        home = self._home(slot_key)
+        assert "step" not in home.payload and setup_flow.HOME_STEP_KEY not in home.payload
+
+    @pytest.mark.asyncio
+    async def test_this_machine_settles_it_and_the_agent_offers_the_service(self, dispatched):
+        st = FakeState()
+        slot_key = await self._keep_first_job(st, dispatched)
+        home = self._home(slot_key)
+        out = await setup_flow.decide(st, home.id, "choose", home.payload_hash, {"where": "here"})
+        assert out.status == sc.STATUS_COMMITTED and out.outcome == {"stayed": True}
+        assert 'kind "service"' in dispatched[-1][2]
+
+    @pytest.mark.asyncio
+    async def test_the_cloud_moves_the_same_card_on_under_a_new_hash(self, dispatched, monkeypatch):
+        from kiro_crew.cloud import iam
+
+        st = FakeState()
+        slot_key = await self._keep_first_job(st, dispatched)
+        home = self._home(slot_key)
+        monkeypatch.setattr(
+            iam,
+            "reachability_check",
+            lambda profile, region: {"reachable": True, "account": "123456789012"},
+        )
+        out = await setup_flow.decide(st, home.id, "choose", home.payload_hash, {"where": "cloud"})
+        assert out.id == home.id and out.status == sc.STATUS_PENDING
+        assert out.payload_hash != home.payload_hash
+        assert "step" not in out.payload and out.payload[setup_flow.HOME_STEP_KEY] is True
+        assert out.payload["aws_signed_in"] is True and out.payload["aws_account"] == "…9012"
+        assert out.payload["size_options"] and out.private["phase"] == "build"
+        assert st.events[-1][1]["card"]["hash"] == out.payload_hash
+        # The old face commits nothing.
+        with pytest.raises(sc.CardRejected) as exc:
+            await setup_flow.decide(st, home.id, "commit", home.payload_hash, {})
+        assert exc.value.code == "card_hash_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_build_before_the_choice_and_a_bad_answer_are_refused(self, dispatched):
+        st = FakeState()
+        slot_key = await self._keep_first_job(st, dispatched)
+        home = self._home(slot_key)
+        out = await setup_flow.decide(st, home.id, "commit", home.payload_hash, {})
+        assert out.status == sc.STATUS_PENDING and out.error["code"] == "home_choose_first"
+        out = await setup_flow.decide(st, home.id, "choose", home.payload_hash, {"where": "moon"})
+        assert out.status == sc.STATUS_PENDING and out.error["code"] == "home_choice_invalid"
+        # A card past the question takes no answer.
+        agent_home = sc.create_card(
+            slot=slot_key,
+            session_key=f"dashboard:{slot_key}",
+            kind=sc.KIND_HOME,
+            payload={"region": "us-east-1"},
+            private={"phase": "build", "settings": {"region": "us-east-1"}},
+        )
+        out = await setup_flow.decide(
+            st, agent_home.id, "choose", agent_home.payload_hash, {"where": "cloud"}
+        )
+        assert out.error["code"] == "invalid_decision"
 
 
 def _refuse_detect(*args, **kw):

@@ -447,22 +447,20 @@ are reported for repair. Setup probes the same first executable candidate ACP
 will launch, so a stale earlier candidate cannot produce a false-ready result
 from a different later installation.
 
-- Missing CLI: the setup page offers an explicit install action on macOS,
-  Linux, and Windows. macOS/Linux download the fixed
-  `https://cli.kiro.dev/install`; Windows downloads the fixed
-  `https://cli.kiro.dev/install.ps1`. Every redirect and the final response
-  must remain on the exact `cli.kiro.dev:443` endpoint and expected path, with
-  no userinfo, query, or fragment. Redirect destinations are resolved and
-  validated before any request is sent, and the chain is limited to three
-  redirects. Responses are size-bounded and must match a release-pinned
-  SHA-256 digest plus the platform-specific official installer marker. A
-  changed upstream script therefore fails closed until a KiroCrew release
-  updates the pin; the manual official guide remains available. The exact
-  validated bytes stay in memory and run through the fixed system interpreter's
-  standard input. The installer receives a system-only `PATH` plus explicit
-  HTTP(S) proxy variables, never user-writable executable directories or
-  ambient application credentials. The official installer additionally
-  verifies its downloaded package manifest and artifact checksum.
+- Missing CLI: the setup page names what the USER runs and runs nothing
+  itself. It shows Kiro's own install one-liner for the gateway host's platform
+  as a copy block (`kiro_prerequisite.install_command_for`, served as
+  `install_command`: `curl -fsSL https://cli.kiro.dev/install | bash` on macOS
+  and Linux, `irm 'https://cli.kiro.dev/install.ps1' | iex` on Windows, as
+  Kiro's installation page documents them), beside a link to
+  `OFFICIAL_INSTALL_DOCS_URL`, which stays the authority. A platform Kiro names
+  no one-liner for, and a gateway older than the field, get the link alone; a
+  non-owner gets `install_command: ""` with the rest of the redacted payload,
+  because the command names the host platform. While it is the first-run screen
+  the page probes the host every 5 s (`?refresh=auto`), so it moves on to
+  sign-in by itself once the CLI appears; Check again probes at once.
+  `kirocrew start` lands a person at a terminal here when kiro-cli is missing
+  (see [Start Command](#start-command)).
 - Unusable CLI candidates: the same page identifies that Kiro CLI needs repair
   instead of treating a spawn failure as a signed-out session. If the upstream
   POSIX installer would require an interactive `/dev/tty` replacement prompt
@@ -479,8 +477,10 @@ from a different later installation.
   values, because a translated command cannot be typed. Both tiers are named
   because the browser portal the bare command opens presents a free Builder ID
   as a peer of organization SSO; Kiro Crew does not detect which tier applies,
-  so the gate describes the choice and the user makes it. Sign-in completion is
-  observed only through the read-only `kiro-cli whoami` probe.
+  so the gate describes the choice and the user makes it. Under the personal
+  command the page says that over SSH or with no browser kiro-cli prints a link
+  and a code instead, to finish on any device. Sign-in completion is observed
+  only through the read-only `kiro-cli whoami` probe.
 - Browser dashboard: the authenticated SPA gate operates on the **gateway
   host**, not the browser host. This covers native Windows source installs,
   Linux gateways, and browsers connected to another machine.
@@ -1447,7 +1447,14 @@ only. No AWS call is made here. It takes four steps, in order:
    `stop` use.
 2. **Harness.** The configured `agent.acp_backend`, identified positively
    (`== ACP_BACKEND_KIRO`):
-   - kiro-cli: `kiro_cli.resolve_kiro_cli()`. Missing prints
+   - kiro-cli: `kiro_cli.resolve_kiro_cli()`. Missing on a run that can ask (a
+     TTY on stdin, no `--no-input`) prints one line, `kiro-cli isn't installed
+     yet; the browser will walk you through it.`, and carries on to the gateway
+     and the browser: the dashboard's prerequisite gate shows Kiro's install
+     command for the host's platform and the official page, then the sign-in,
+     and re-checks on its own until kiro-cli is ready (see
+     [First-run Kiro CLI prerequisite onboarding](#first-run-kiro-cli-prerequisite-onboarding)).
+     Missing with `--no-input` or no terminal prints
      `kiro_prerequisite.OFFICIAL_INSTALL_DOCS_URL` and both sign-in commands, plus
      `kirocrew config set agent.acp_backend <id>` for every other selectable
      harness `backend_install.probe_backends()` finds installed, and exits **3**.
@@ -1464,7 +1471,11 @@ only. No AWS call is made here. It takes four steps, in order:
    - any other harness: `backend_install.probe_backend(id)`. `MISSING` names the
      components and the harness's `install_command` (or kiro-cli's install link
      for KAS, which rides kiro-cli) and exits **3**; otherwise its declared
-     `sign_in_remedy` is printed, unprobed.
+     `sign_in_remedy` is printed, unprobed. The one exception is a run that can
+     ask when kiro-cli is the only missing component (KAS): that is guided in
+     the browser like kiro-cli, because the prerequisite gate probes kiro-cli
+     whatever the harness. It probes nothing else, so a missing adapter (claude,
+     codex, pi) still exits 3.
    - `--skip-harness-check` skips the step entirely — no `whoami` spawn, no
      prompt.
 3. **Gateway.**
@@ -1522,8 +1533,9 @@ no service is installed, and `kirocrew token` for a fresh link.
 
 Exit codes: **0** serving and the URL delivered (in the foreground: the
 gateway's own exit status, 128 + N for death by signal N); **1** no gateway
-could be started or reached; **3** the configured harness is not installed;
-**130** interrupted.
+could be started or reached; **3** the configured harness is not installed and
+either the run cannot ask or the dashboard does not guide its install; **130**
+interrupted.
 
 `start` is not in `cli._LONG_LIVED_COMMANDS`: even with `--foreground` it runs no
 event loop, and its gateway child sets up its own queued logging as `gateway`.

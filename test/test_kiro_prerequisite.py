@@ -48,6 +48,8 @@ from kiro_crew.kiro_cli import (
 )
 from kiro_crew.kiro_prerequisite import (
     BUNDLED_CLI_UPDATE_REFUSAL,
+    KIRO_CLI_INSTALL_COMMAND_POSIX,
+    KIRO_CLI_INSTALL_COMMAND_WINDOWS,
     KIRO_CLI_LOGIN_COMMAND,
     KIRO_CLI_SSO_LOGIN_COMMAND,
     KIRO_CLI_UPDATE_COMMAND,
@@ -55,8 +57,10 @@ from kiro_crew.kiro_prerequisite import (
     KiroPrerequisiteService,
     PrerequisiteStatus,
     ProcessResult,
+    _established_installation,
     _run_process,
     find_kiro_cli_candidates,
+    install_command_for,
     login_commands_for,
 )
 
@@ -2277,6 +2281,55 @@ class TestKiroPrerequisiteWorkflow:
 
         assert service._initial_setup_complete is True
 
+    @staticmethod
+    def _first_run_home(data_home: Path, state: dict[str, Any]) -> None:
+        """A fresh home as the gateway leaves it before kiro-cli is ever ready."""
+        sessions = data_home / "sessions"
+        (sessions / ".index").mkdir(parents=True)
+        (sessions / ".index" / "session_index.db").write_bytes(b"SQLite format 3\x00")
+        (sessions / "dashboard_chat-1-100.jsonl").write_text(
+            '{"role":"system","card":"privacy"}\n', encoding="utf-8"
+        )
+        setup = data_home / "setup"
+        setup.mkdir()
+        (setup / "first-run.json").write_text(json.dumps(state), encoding="utf-8")
+
+    def test_a_first_run_chat_alone_does_not_mark_the_install_established(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The first-run chat's privacy card and the session index are written
+        # before kiro-cli is ever ready. Counting them would drop the first-run
+        # gate on the next start and leave a missing kiro-cli behind a chat that
+        # cannot answer.
+        data_home = tmp_path / "data-home"
+        self._first_run_home(data_home, {"slot": "chat-1-100", "stages": {}})
+
+        assert _established_installation(data_home) is False
+
+    def test_a_first_run_that_handed_over_to_a_main_chat_is_established(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        data_home = tmp_path / "data-home"
+        self._first_run_home(data_home, {"slot": "chat-1-100", "main": "chat-1-100"})
+
+        assert _established_installation(data_home) is True
+
+    def test_any_other_transcript_beside_the_first_run_chat_is_established(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Only the first-run chat's own file is discounted, so a state file naming
+        # a slot never hides a returning user's other history.
+        data_home = tmp_path / "data-home"
+        self._first_run_home(data_home, {"slot": "chat-1-100"})
+        (data_home / "sessions" / "dashboard_chat-2-200.jsonl").write_text(
+            '{"role":"user"}\n', encoding="utf-8"
+        )
+
+        assert _established_installation(data_home) is True
+
     def test_established_installation_is_reportable_before_any_probe(
         self,
         tmp_path: Path,
@@ -4279,6 +4332,9 @@ class TestKiroPrerequisiteHandlers:
             assert body["login_command"] == KIRO_CLI_LOGIN_COMMAND
             assert body["sso_login_command"] == KIRO_CLI_SSO_LOGIN_COMMAND
             assert body["bundled_cli"] is False
+            # Present but empty: the command differs by platform, so it would
+            # name the host platform this branch redacts.
+            assert body["install_command"] == ""
             # Redacted-but-present for the same reason as the sandbox keys: whether
             # the probe timed out describes how slow the HOST is. Asserted here
             # because the hazard the comment above names is not hypothetical -- this
@@ -5395,6 +5451,36 @@ class TestKiroCrewNeverSetsUpKiroCli:
         assert "--use-device-flow" in KIRO_CLI_SSO_LOGIN_COMMAND
         assert "--license pro" in KIRO_CLI_SSO_LOGIN_COMMAND
         assert PrerequisiteStatus(platform="Linux").sso_login_command == KIRO_CLI_SSO_LOGIN_COMMAND
+
+    def test_install_command_is_kiros_documented_one_liner_for_the_platform(self) -> None:
+        # Verbatim from Kiro's installation page (docs/reference/kiro-cli/
+        # installation.md): a display string the user copies, never run here.
+        assert install_command_for("linux") == "curl -fsSL https://cli.kiro.dev/install | bash"
+        assert install_command_for("darwin") == install_command_for("linux")
+        assert install_command_for("win32") == "irm 'https://cli.kiro.dev/install.ps1' | iex"
+        # A platform Kiro names no one-liner for gets the link alone.
+        assert install_command_for("freebsd14") == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("platform_name", "expected"),
+        [
+            ("linux", KIRO_CLI_INSTALL_COMMAND_POSIX),
+            ("win32", KIRO_CLI_INSTALL_COMMAND_WINDOWS),
+        ],
+    )
+    async def test_payload_carries_the_host_platforms_install_command(
+        self, tmp_path: Path, platform_name: str, expected: str
+    ) -> None:
+        service = KiroPrerequisiteService(
+            platform_name=platform_name,
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=_no_audit,
+            assume_ready=True,
+        )
+
+        assert (await service.snapshot())["install_command"] == expected
 
     @pytest.mark.asyncio
     async def test_payload_keeps_an_idle_operation_for_pre_upgrade_tabs(

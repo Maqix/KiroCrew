@@ -120,21 +120,134 @@ def host(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 # ── The agent harness ──
 
 
-def test_missing_kiro_cli_exits_3_with_the_official_guidance(host, monkeypatch, capsys) -> None:
+def _a_terminal(monkeypatch: pytest.MonkeyPatch, isatty: bool = True) -> None:
+    """Stdin as ``_interactive`` reads it: a terminal, or a pipe when *isatty* is False."""
+    monkeypatch.setattr(cli_start.sys, "stdin", SimpleNamespace(isatty=lambda: isatty))
+
+
+def _spawns_a_gateway(host: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Nothing serves the port, so a detached gateway is spawned; returns the ports spawned."""
+    host.probe = 0
+    spawned: list[int] = []
+
+    def _spawn(port: int, *, no_open: bool = False) -> SimpleNamespace:
+        spawned.append(port)
+        return SimpleNamespace(pid=4242)
+
+    monkeypatch.setattr(cli_start.cli_server, "_spawn_detached_gateway", _spawn)
+    monkeypatch.setattr(
+        cli_start.cli_server,
+        "_wait_gateway_ready",
+        lambda proc, port, prior, timeout: (cli_server._READY_OK, None),
+    )
+    monkeypatch.setattr(cli_start, "lock_holder", lambda home: SimpleNamespace(pid=None))
+    monkeypatch.setattr(cli_start.run_marker, "read_pid", lambda port: None)
+    return spawned
+
+
+def test_missing_kiro_cli_with_no_input_exits_3_with_the_official_guidance(
+    host, monkeypatch, capsys
+) -> None:
     from kiro_crew.kiro_prerequisite import KIRO_CLI_LOGIN_COMMAND, OFFICIAL_INSTALL_DOCS_URL
 
+    _a_terminal(monkeypatch)
     monkeypatch.setattr("kiro_crew.kiro_cli.resolve_kiro_cli", lambda: None)
     monkeypatch.setattr(cli_start, "_installed_alternatives", lambda: [("claude", "claude")])
     monkeypatch.setattr(
         cli_start.cli_server, "_probe_gateway_ready", _refuse("_probe_gateway_ready")
     )
 
-    assert cli_start.run_start(_args()) == cli_start.EXIT_HARNESS_MISSING
+    assert cli_start.run_start(_args(no_input=True)) == cli_start.EXIT_HARNESS_MISSING
 
     out = capsys.readouterr().out
     assert OFFICIAL_INSTALL_DOCS_URL in out
     assert KIRO_CLI_LOGIN_COMMAND in out
     assert "kirocrew config set agent.acp_backend claude" in out
+    assert "Re-run `kirocrew start` once it is installed" in out
+    assert host.opened == []
+
+
+def test_missing_kiro_cli_with_no_terminal_exits_3(host, monkeypatch, capsys) -> None:
+    # Piped stdin (a script, CI): nobody is at a browser to be guided.
+    _a_terminal(monkeypatch, isatty=False)
+    monkeypatch.setattr("kiro_crew.kiro_cli.resolve_kiro_cli", lambda: None)
+    monkeypatch.setattr(
+        cli_start.cli_server, "_probe_gateway_ready", _refuse("_probe_gateway_ready")
+    )
+
+    assert cli_start.run_start(_args(no_input=False)) == cli_start.EXIT_HARNESS_MISSING
+    assert "is not installed" in capsys.readouterr().out
+    assert host.opened == []
+
+
+def test_missing_kiro_cli_on_a_terminal_starts_the_gateway_and_opens_the_browser(
+    host, monkeypatch, capsys
+) -> None:
+    # The dashboard's prerequisite gate walks the install and the sign-in, so
+    # a person at a terminal is sent there instead of being told to re-run.
+    from kiro_crew.kiro_prerequisite import OFFICIAL_INSTALL_DOCS_URL
+
+    _a_terminal(monkeypatch)
+    monkeypatch.setattr("kiro_crew.kiro_cli.resolve_kiro_cli", lambda: None)
+    monkeypatch.setattr("kiro_crew.cli_doctor._kiro_cli_signed_in", _refuse("signed_in"))
+    spawned = _spawns_a_gateway(host, monkeypatch)
+    host.slot = "chat-1"
+
+    assert cli_start.run_start(_args(no_input=False)) == cli_start.EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "kiro-cli isn't installed yet; the browser will walk you through it." in out
+    assert OFFICIAL_INSTALL_DOCS_URL not in out
+    assert "Re-run `kirocrew start`" not in out
+    assert spawned == [PORT]
+    assert len(host.opened) == 1
+    assert "/chat?sid=chat-1" in host.opened[0]
+
+
+def test_kas_missing_only_kiro_cli_on_a_terminal_is_guided_in_the_browser(
+    host, monkeypatch, capsys
+) -> None:
+    # KAS rides kiro-cli, and the gate probes kiro-cli whatever the harness.
+    from kiro_crew.agent_sdk import backend_install
+
+    host.config = _Config(backend="kas")
+    _a_terminal(monkeypatch)
+    monkeypatch.setattr(
+        backend_install,
+        "probe_backend",
+        lambda backend: backend_install.BackendInstallState(
+            backend, "kas", backend_install.MISSING, (backend_install.COMPONENT_KIRO_CLI,)
+        ),
+    )
+
+    assert cli_start.run_start(_args(no_input=False)) == cli_start.EXIT_OK
+    assert "the browser will walk you through it" in capsys.readouterr().out
+    assert len(host.opened) == 1
+
+
+def test_another_missing_harness_on_a_terminal_still_exits_3(host, monkeypatch, capsys) -> None:
+    # The gate probes kiro-cli only, so it cannot guide an adapter install.
+    from kiro_crew.agent_sdk import backend_install
+
+    host.config = _Config(backend="claude")
+    _a_terminal(monkeypatch)
+    monkeypatch.setattr(
+        backend_install,
+        "probe_backend",
+        lambda backend: backend_install.BackendInstallState(
+            backend,
+            "claude",
+            backend_install.MISSING,
+            ("claude-agent-acp",),
+            "npm install -g example-acp-adapter",
+        ),
+    )
+    monkeypatch.setattr(
+        cli_start.cli_server, "_probe_gateway_ready", _refuse("_probe_gateway_ready")
+    )
+
+    assert cli_start.run_start(_args(no_input=False)) == cli_start.EXIT_HARNESS_MISSING
+    assert "npm install -g example-acp-adapter" in capsys.readouterr().out
     assert host.opened == []
 
 

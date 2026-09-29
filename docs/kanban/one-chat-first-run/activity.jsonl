@@ -436,3 +436,20 @@
 {"timestamp":"2026-09-29T04:29:33.458490193Z","action":"claim","task_id":94,"detail":"lead"}
 {"timestamp":"2026-09-29T04:30:24.785863028Z","action":"edit","task_id":114,"detail":"D7 Narrated end-to-end product demo of the first run"}
 {"timestamp":"2026-09-29T04:30:24.819115408Z","action":"edit","task_id":1,"detail":"Review the one-chat first-run RFC draft"}
+{"timestamp":"2026-09-29T15:17:57.485180052Z","action":"create","task_id":120,"detail":"P2.21 Ask where the crew lives after the first kept job; compact home card"}
+{"timestamp":"2026-09-29T15:17:57.521251594Z","action":"create","task_id":121,"detail":"P2.22 Pending setup cards must not crowd the chat"}
+{"timestamp":"2026-09-29T15:17:57.552811009Z","action":"create","task_id":122,"detail":"UX.1 Make the first-run chat recognisably onboarding"}
+{"timestamp":"2026-09-29T15:18:43.051538744Z","action":"edit","task_id":120,"detail":"P2.21 Ask where the crew lives after the first kept job; compact home card"}
+{"timestamp":"2026-09-29T15:18:43.05177975Z","action":"claim","task_id":120,"detail":"aws-signin-card"}
+{"timestamp":"2026-09-29T15:18:46.01106265Z","action":"move","task_id":121,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-29T15:20:10.793638589Z","action":"create","task_id":123,"detail":"EG.8 No kiro-cli: open the web and guide the install there"}
+{"timestamp":"2026-09-29T15:21:02.635382361Z","action":"move","task_id":123,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-29T16:17:43.119525086Z","action":"edit","task_id":120,"detail":"P2.21 Ask where the crew lives after the first kept job; compact home card"}
+{"timestamp":"2026-09-29T16:17:43.153473768Z","action":"edit","task_id":120,"detail":"P2.21 Ask where the crew lives after the first kept job; compact home card"}
+{"timestamp":"2026-09-29T16:17:43.153883673Z","action":"release","task_id":120,"detail":"aws-signin-card"}
+{"timestamp":"2026-09-29T16:29:19.4922963Z","action":"move","task_id":123,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-29T16:29:19.49263045Z","action":"handoff","task_id":123,"detail":"EG.8 No kiro-cli: open the web and guide the install there"}
+{"timestamp":"2026-09-29T16:29:19.49285268Z","action":"release","task_id":123,"detail":"EG.8 No kiro-cli: open the web and guide the install there"}
+{"timestamp":"2026-09-29T16:38:52.249357702Z","action":"move","task_id":121,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-29T16:38:52.249784839Z","action":"handoff","task_id":121,"detail":"P2.22 Pending setup cards must not crowd the chat"}
+{"timestamp":"2026-09-29T16:38:52.250081483Z","action":"release","task_id":121,"detail":"P2.22 Pending setup cards must not crowd the chat"}

@@ -144,9 +144,10 @@ export function failedText(card: SetupCard): string {
 }
 
 /**
- * The first run's "Where should your crew live?" step: a home card the gateway
- * shows on its own (`payload.offer`), while it is still the question, i.e.
- * before anything is built. Once a build starts it is the home itself.
+ * The first run's "Where should your crew live?" step: the home card the gateway
+ * shows on its own when the first job is kept (`payload.offer`), while it is still
+ * the question or the cloud's steps, i.e. before anything is built. Once a build
+ * starts it is the home itself.
  */
 export function isHomeOffer(card: SetupCard): boolean {
   if (card.kind !== 'home' || card.payload?.offer !== true) return false
@@ -154,9 +155,11 @@ export function isHomeOffer(card: SetupCard): boolean {
   return !o.job_id && o.ready !== true && o.needs_signin !== true && o.moved !== true
 }
 
-/** The word beside a decided card's title; a declined home step keeps the crew here. */
+/** The word beside a decided card's title; a home card answered "This machine" keeps the crew here. */
 export function resultStatusKey(card: SetupCard): string | undefined {
-  if (card.status === 'declined' && isHomeOffer(card)) return 'components.setupCard.home_offer_declined'
+  if (card.kind === 'home' && card.status === 'committed' && card.outcome?.stayed === true) {
+    return 'components.setupCard.home_offer_declined'
+  }
   return STATUS_KEY[card.status as keyof typeof STATUS_KEY]
 }
 
