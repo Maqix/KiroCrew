@@ -9197,6 +9197,7 @@
       "title_credential": "{{name}} को वॉल्ट में सहेजो",
       "title_cron": "शेड्यूल किया गया जॉब",
       "title_generic": "सेटअप चरण",
+      "fallback_approve": "स्वीकृत करें",
       "title_import": "अपने एजेंट यहाँ लाओ",
       "title_profile": "तुम्हारी प्रोफ़ाइल",
       "title_service": "बैकग्राउंड में चलते रहो",

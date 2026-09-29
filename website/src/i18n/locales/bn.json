@@ -9197,6 +9197,7 @@
       "title_credential": "{{name}} ভল্টে সংরক্ষণ করো",
       "title_cron": "শিডিউল করা জব",
       "title_generic": "সেটআপ ধাপ",
+      "fallback_approve": "অনুমোদন করুন",
       "title_import": "তোমার এজেন্টদের নিয়ে এসো",
       "title_profile": "তোমার প্রোফাইল",
       "title_service": "ব্যাকগ্রাউন্ডে চালু থাকো",

@@ -3614,6 +3614,7 @@
       "title_credential": "Store {{name}} in the vault",
       "title_cron": "Scheduled job",
       "title_generic": "Setup step",
+      "fallback_approve": "Approve",
       "title_import": "Bring your agents over",
       "title_profile": "Your profile",
       "title_service": "Keep running in the background",

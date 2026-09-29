@@ -9323,6 +9323,7 @@
       "title_credential": "Guardar {{name}} no cofre",
       "title_cron": "Job agendado",
       "title_generic": "Etapa de configuração",
+      "fallback_approve": "Aprovar",
       "title_import": "Traga seus agentes",
       "title_profile": "Seu perfil",
       "title_service": "Continuar em segundo plano",

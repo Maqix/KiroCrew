@@ -51,15 +51,9 @@ import {
 } from '../../api/setupCards'
 import ErrorNotice from '../ErrorNotice'
 import { Btn, SendBtn } from '../ui'
-import { SetupCardBody, type SetupActions, type SetupFooter } from './SetupCardBodies'
-import {
-  cardTitle,
-  classicAction,
-  committedDetail,
-  DRAFT_KINDS,
-  errorText,
-  resultStatusKey,
-} from './setupCardCopy'
+import type { SetupActions, SetupFooter } from './SetupCardBodies'
+import { classicAction, errorText, resultStatusKey } from './setupCardCopy'
+import { cardTitle, committedDetail, SetupCardBody, setupCardEntry } from './setupCardRegistry'
 
 /** How often a `working` / `waiting` card re-reads itself, beside the WS push. */
 export const SETUP_CARD_POLL_MS = 3000
@@ -151,7 +145,7 @@ export default function SetupCard({ cardId, placement = 'inline' }: { cardId: st
       // flag's only writer on this path) and the import card may mark import
       // done; re-read the boot flags so this tab's chapters agree with the
       // server instead of re-offering what the card just settled.
-      if (vars.decision === 'commit' && (updated.kind === 'privacy' || updated.kind === 'import')) {
+      if (vars.decision === 'commit' && setupCardEntry(updated.kind)?.refreshesBoot) {
         void qc.invalidateQueries({ queryKey: ['theme-boot'] })
       }
     },
@@ -274,14 +268,14 @@ export default function SetupCard({ cardId, placement = 'inline' }: { cardId: st
       <div className="mt-3 flex flex-col gap-2">
         {/* One notice, whichever failed: the server's recoverable `error` on a
             still-pending card, or this click's own refused request.
-            No hand-off on the kinds in DRAFT_KINDS: the credential field, the
-            bot-token field and the import checkboxes hold an unsaved draft
-            that the hand-off's navigation would destroy (and the token fields
-            are cleared anyway). Elsewhere the card is server-side state, so a
-            hand-off loses nothing. */}
+            No hand-off on a draft kind (its registry entry's `draft`): the
+            credential field, the bot-token field and the import checkboxes
+            hold an unsaved draft that the hand-off's navigation would destroy
+            (and the token fields are cleared anyway). Elsewhere the card is
+            server-side state, so a hand-off loses nothing. */}
         <ErrorNotice
           message={decideMessage || (card.status === 'pending' ? cardErrorMessage : '')}
-          askAgent={!DRAFT_KINDS.has(card.kind)}
+          askAgent={setupCardEntry(card.kind)?.draft !== true}
           testId="setup-card-error"
         />
         {(actions.primary || actions.secondary) && (

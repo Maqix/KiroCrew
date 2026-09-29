@@ -9449,6 +9449,7 @@
       "title_credential": "Сохранить {{name}} в хранилище",
       "title_cron": "Задание по расписанию",
       "title_generic": "Шаг настройки",
+      "fallback_approve": "Разрешить",
       "title_import": "Перенеси своих агентов",
       "title_profile": "Твой профиль",
       "title_service": "Работать в фоне",

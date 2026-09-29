@@ -9069,6 +9069,7 @@
       "title_credential": "{{name}}을(를) 보관소에 저장",
       "title_cron": "예약된 작업",
       "title_generic": "설정 단계",
+      "fallback_approve": "승인",
       "title_import": "에이전트 가져오기",
       "title_profile": "프로필",
       "title_service": "백그라운드에서 계속 실행",

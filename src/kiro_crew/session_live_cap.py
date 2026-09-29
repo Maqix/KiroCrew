@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from kiro_crew import platform_compat
 
-#: One live chat, measured on a 2 GB home (2026-09-28): kiro-cli ~230 MB plus
+#: One live chat, as measured on a 2 GB home: kiro-cli ~230 MB plus
 #: its core and cron MCP servers at ~80 MB each.
 LIVE_SESSION_COST_MIB = 400
 #: What the host holds before any chat: the OS, the gateway with its embedding

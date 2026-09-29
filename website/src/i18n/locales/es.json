@@ -9323,6 +9323,7 @@
       "title_credential": "Guardar {{name}} en la bóveda",
       "title_cron": "Trabajo programado",
       "title_generic": "Paso de configuración",
+      "fallback_approve": "Aprobar",
       "title_import": "Trae tus agentes",
       "title_profile": "Tu perfil",
       "title_service": "Seguir en segundo plano",

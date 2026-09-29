@@ -9323,6 +9323,7 @@
       "title_credential": "Salva {{name}} nel vault",
       "title_cron": "Job pianificato",
       "title_generic": "Passaggio di configurazione",
+      "fallback_approve": "Approva",
       "title_import": "Porta qui i tuoi agenti",
       "title_profile": "Il tuo profilo",
       "title_service": "Continua in background",

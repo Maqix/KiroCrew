@@ -688,3 +688,32 @@ describe('SetupCard — home: a permanent home in the owner’s AWS account', ()
     expect(screen.getByTestId('setup-card-primary')).toBeEnabled()
   })
 })
+
+describe('SetupCard — a kind this build does not know', () => {
+  it('renders the generic title with Approve and Not now, and nothing from the payload', async () => {
+    const gw = serveCard(card({
+      // A kind the gateway registered before this dashboard build learned it.
+      kind: 'teleport' as Card['kind'],
+      payload: { name: '<img src=x onerror=alert(1)>', note: 'Beam the crew to Mars' },
+    }))
+    const { container } = renderCard()
+    const el = await ready()
+    expect(within(el).getByRole('heading', { name: 'Setup step' })).toBeInTheDocument()
+    expect(el).not.toHaveTextContent('Beam the crew to Mars')
+    expect(el).not.toHaveTextContent('onerror')
+    expect(container.querySelector('img')).toBeNull()
+    expect(screen.getByTestId('setup-card-decline')).toHaveTextContent('Not now')
+    const approve = screen.getByTestId('setup-card-primary')
+    expect(approve).toHaveTextContent('Approve')
+    await userEvent.click(approve)
+    await waitFor(() => expect(gw.bodies[0]).toEqual({ decision: 'commit', hash: HASH }))
+  })
+
+  it('declines with the hash like any card', async () => {
+    const gw = serveCard(card({ kind: 'teleport' as Card['kind'] }))
+    renderCard()
+    await ready()
+    await userEvent.click(screen.getByTestId('setup-card-decline'))
+    await waitFor(() => expect(gw.bodies[0]).toEqual({ decision: 'decline', hash: HASH }))
+  })
+})

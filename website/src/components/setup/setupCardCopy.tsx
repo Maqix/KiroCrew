@@ -1,6 +1,7 @@
 /**
- * Copy and small pure helpers for SetupCard: titles, result details, error
- * wording, and the "Use classic setup" target check.
+ * Copy and small pure helpers for SetupCard: result details, error wording, and
+ * the "Use classic setup" target check. Which kind uses which is
+ * `setupCardRegistry.tsx`.
  *
  * Every lookup here runs in RENDER position (called from a component body), so
  * `i18nT` re-resolves on a language switch; nothing is memoized across one.
@@ -9,10 +10,7 @@ import type React from 'react'
 
 import { i18nT } from '../../i18n/t'
 import HomeMovedDetail from './HomeMovedDetail'
-import type { SetupCard, SetupCardClassic, SetupCardKind, SetupCardStatus } from '../../api/setupCards'
-
-/** Kinds whose card holds an unsaved draft (a secret field, import checkboxes). */
-export const DRAFT_KINDS: ReadonlySet<SetupCardKind> = new Set<SetupCardKind>(['credential', 'channel', 'import'])
+import type { SetupCard, SetupCardClassic, SetupCardStatus } from '../../api/setupCards'
 
 /** Terminal status → its word on the result line. */
 export const STATUS_KEY = {
@@ -110,41 +108,6 @@ export function resultStatusKey(card: SetupCard): string | undefined {
   return STATUS_KEY[card.status as keyof typeof STATUS_KEY]
 }
 
-/** The card's heading, per kind, from its payload. */
-export function cardTitle(card: SetupCard): string {
-  const p = card.payload ?? {}
-  switch (card.kind) {
-    case 'privacy':
-      // The SAME title the Privacy chapter shows: a disclosure is not
-      // paraphrased between its two surfaces.
-      return i18nT('components.privacyChapter.title')
-    case 'profile':
-      return i18nT('components.setupCard.title_profile')
-    case 'soul':
-      return i18nT('components.setupCard.title_soul', { file: soulFileName(p.file) })
-    case 'import':
-      return i18nT('components.setupCard.title_import')
-    case 'connect': {
-      const provider = (p.provider ?? {}) as { name?: unknown }
-      return i18nT('components.setupCard.title_connect', { name: str(provider.name) })
-    }
-    case 'credential':
-      return i18nT('components.setupCard.title_credential', { name: str(p.name) })
-    case 'channel':
-      return i18nT('components.setupCard.title_channel', { label: str(p.label) || str(p.channel) })
-    case 'cron':
-      return i18nT('components.setupCard.title_cron')
-    case 'service':
-      return i18nT('components.setupCard.title_service')
-    case 'home':
-      return isHomeOffer(card)
-        ? i18nT('components.setupCard.title_home_offer')
-        : i18nT('components.setupCard.title_home')
-    default:
-      return i18nT('components.setupCard.title_generic')
-  }
-}
-
 /** The extension of the two persona files (SOUL.md, USER.md); a file name, not copy. */
 const PERSONA_FILE_EXT = '.md'
 
@@ -154,52 +117,63 @@ export function soulFileName(file: unknown): string {
   return stem + PERSONA_FILE_EXT
 }
 
-/** The optional second line under a committed card's result. */
-export function committedDetail(card: SetupCard): React.ReactNode {
+/** The import card's result: how much came over, and how many jobs arrived off. */
+export function importResultDetail(card: SetupCard): React.ReactNode {
   const o = card.outcome ?? {}
-  if (card.kind === 'import') {
-    const imported = typeof o.imported_count === 'number' ? o.imported_count : null
-    const jobs = typeof o.jobs_added_disabled === 'number' ? o.jobs_added_disabled : 0
-    if (imported === null && !jobs) return null
-    return (
-      <div className="text-[12px] text-muted pl-5" data-testid="setup-card-result-detail">
-        {imported !== null && <div>{i18nT('components.setupCard.import_result', { count: imported })}</div>}
-        {jobs > 0 && <div>{i18nT('components.setupCard.import_jobs_result', { count: jobs })}</div>}
-      </div>
-    )
-  }
+  const imported = typeof o.imported_count === 'number' ? o.imported_count : null
+  const jobs = typeof o.jobs_added_disabled === 'number' ? o.jobs_added_disabled : 0
+  if (imported === null && !jobs) return null
+  return (
+    <div className="text-[12px] text-muted pl-5" data-testid="setup-card-result-detail">
+      {imported !== null && <div>{i18nT('components.setupCard.import_result', { count: imported })}</div>}
+      {jobs > 0 && <div>{i18nT('components.setupCard.import_jobs_result', { count: jobs })}</div>}
+    </div>
+  )
+}
+
+/** The home card's result once the crew moved in. */
+export function homeResultDetail(card: SetupCard): React.ReactNode {
+  const o = card.outcome ?? {}
   // A live move-in: what moved, what stayed, and what to set up again there.
-  if (card.kind === 'home' && o.moved === true && o.simulated !== true) {
+  if (o.moved === true && o.simulated !== true) {
     return <HomeMovedDetail outcome={o} />
   }
-  if (card.kind === 'home' && o.moved === true) {
+  if (o.moved === true) {
     return (
       <div className="text-[12px] text-muted pl-5" data-testid="setup-card-result-detail">
         {i18nT('components.setupCard.home_result_simulated')}
       </div>
     )
   }
-  if (card.kind === 'channel' && o.paired === true) {
-    // `username` is the sender's @handle as the gateway narrowed it; an account
-    // without one pairs just the same.
-    const username = str(o.username)
-    return (
-      <div className="text-[12px] text-muted pl-5 min-w-0 break-words" data-testid="setup-card-result-detail">
-        {username
-          ? i18nT('components.setupCard.channel_paired', { username })
-          : i18nT('components.setupCard.channel_paired_account')}
-      </div>
-    )
-  }
-  if (card.kind === 'credential' && typeof o.ref === 'string' && o.ref) {
-    return (
-      <div className="text-[12px] text-muted pl-5 min-w-0 break-words" data-testid="setup-card-result-detail">
-        {i18nT('components.setupCard.credential_result')}{' '}
-        <code className="font-mono text-[12px] text-text" translate="no">{o.ref}</code>
-      </div>
-    )
-  }
   return null
+}
+
+/** The channel card's result: who paired. */
+export function channelResultDetail(card: SetupCard): React.ReactNode {
+  const o = card.outcome ?? {}
+  if (o.paired !== true) return null
+  // `username` is the sender's @handle as the gateway narrowed it; an account
+  // without one pairs just the same.
+  const username = str(o.username)
+  return (
+    <div className="text-[12px] text-muted pl-5 min-w-0 break-words" data-testid="setup-card-result-detail">
+      {username
+        ? i18nT('components.setupCard.channel_paired', { username })
+        : i18nT('components.setupCard.channel_paired_account')}
+    </div>
+  )
+}
+
+/** The credential card's result: the vault reference, never the value. */
+export function credentialResultDetail(card: SetupCard): React.ReactNode {
+  const o = card.outcome ?? {}
+  if (typeof o.ref !== 'string' || !o.ref) return null
+  return (
+    <div className="text-[12px] text-muted pl-5 min-w-0 break-words" data-testid="setup-card-result-detail">
+      {i18nT('components.setupCard.credential_result')}{' '}
+      <code className="font-mono text-[12px] text-text" translate="no">{o.ref}</code>
+    </div>
+  )
 }
 
 /** A validated "Use classic setup" target, or null to hide the affordance. */

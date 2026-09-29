@@ -12,11 +12,13 @@ this spec is the contract the code keeps.
 | Piece | Where | Role |
 |---|---|---|
 | First-run state | `src/kiro_crew/first_run.py` | `data_home()/setup/first-run.json`: the first-run slot key, the stages done, the main chat, first-week tip state, held hand-off notices, and a home answer `kirocrew start --home` recorded for a script. Every change to one key goes through `update_state`, which serializes read-change-write in the gateway process so two writers cannot drop each other's keys. Presentation only. |
-| Card store | `src/kiro_crew/setup_cards.py` | The `SetupCard` record, the durable store `data_home()/setup/cards.json`, payload hashing, per-kind argument validation, the persona files. |
-| Flow | `src/kiro_crew/dashboard/setup_flow.py` | `propose` (the directive applier), `decide` (the owner's click), the per-kind committers, `ensure_first_run_session`, `start_first_run_turn`. |
+| Card store | `src/kiro_crew/setup_cards.py` | The `SetupCard` record, the durable store `data_home()/setup/cards.json`, the kinds it accepts (`CARD_KINDS`), payload hashing, per-kind argument validation, the persona files. |
+| Setup actions | `src/kiro_crew/setup_actions/` | One module per kind, each a `SetupAction`: its tool arguments and their MCP-side check, its builder, committer, extra decisions, the model-facing title and result sentence, and the flags the flow reads instead of branching on the kind (see [Adding a setup action](#adding-a-setup-action)). |
+| Flow | `src/kiro_crew/dashboard/setup_flow.py` | `propose` (the directive applier), `decide` (the owner's click), both dispatching through the setup actions; the per-kind committers the actions name, `ensure_first_run_session`, `start_first_run_turn`. |
 | HTTP | `src/kiro_crew/dashboard/handlers/setup_cards.py` | `GET /api/setup/first-run`, `POST /api/setup/first-run/retry`, `GET /api/setup/cards?slot=`, `GET /api/setup/cards/{id}`, `GET /api/setup/cards/{id}/approvals`, `POST /api/setup/cards/{id}/decide`. All owner-only. |
 | Guardrails | `src/kiro_crew/dashboard/setup_guardrails.py` | The stall watchdog, the kickoff notice and the quota pause (see [Guardrails](#guardrails)). |
-| MCP tools | `src/kiro_crew/mcp_tools/setup.py` | `setup_card` (a session directive) and `setup_status` (read-only). |
+| MCP tools | `src/kiro_crew/mcp_tools/setup.py` | `setup_card` (a session directive) and `setup_status` (read-only). The `setup_card` kind enum, argument properties and description are generated from the proposable setup actions. |
+| Card faces | `website/src/components/setup/setupCardRegistry.tsx` | Kind → body, title key and flags (`draft`, `refreshesBoot`); a kind with no entry draws `FallbackBody`: the generic title, Approve and Not now, nothing from the payload. |
 | Channel pairing | `src/kiro_crew/dashboard/setup_channel.py` | The `channel` card's commit (the bot token) and its `/pair` code, which lives in process memory only. |
 | Job preview | `src/kiro_crew/dashboard/setup_preview.py` | The `cron` card's preview run: the approvals it waits on, shown on the card, and a verdict that counts how they ended (see [Job previews](#job-previews)). |
 | AWS sign-in | `src/kiro_crew/dashboard/setup_aws_signin.py` | The `home` card's Sign in to AWS: runs the AWS CLI's own `aws login` from the card and watches for it to land (see [Signing in to AWS](#signing-in-to-aws)). |
@@ -83,6 +85,58 @@ whose payload no longer hashes to its `payload_hash` is read back `expired` with
 | SC5 | A schedule runs on exactly one crew during a move-in: the local copies are off before the archive reaches the home, back on when the home does not confirm it, and stay off once it has. | `test_setup_move_in.py::TestHappyPath::test_sc5_the_moving_job_is_off_here_before_the_archive_lands`, `TestCarryFailure`, `TestRetry` |
 | SC6 | The first-run state file admits nothing. | `test_setup_flow.py::TestPropose::test_s6_the_first_run_state_file_admits_nothing` |
 | SC8 | A card is raised only in a turn a person started: a typed message, or a turn that exists because the owner clicked a card (the first-run kickoff and every `[Setup card result]` turn carry user provenance for that reason). | `test_setup_flow.py::TestPropose::test_s8_a_turn_no_person_started_shows_nothing` |
+
+## Adding a setup action
+
+A kind is one module plus copy. The steps, in order:
+
+1. **The store.** A `KIND_*` constant in `setup_cards.py`, added to `CARD_KINDS`
+   (the store drops a record of any other kind), and to `PROPOSABLE_KINDS` unless
+   the gateway alone shows it. Pure argument validation goes here too
+   (`build_<kind>`), so the MCP server and the gateway share it.
+2. **The action.** `setup_actions/<kind>.py` defines `ACTION = SetupAction(...)`,
+   listed in `ACTIONS` in `setup_actions/__init__.py`. It declares:
+   - `summary` and `arguments`: its clause of the `setup_card` description and
+     its JSON-schema properties, whose `description` is its own text; a property
+     two kinds read is merged as `kind: text; kind: text`. `validate` checks a
+     proposal in the MCP server; `build(args)` makes `(payload, private)` in the
+     gateway.
+   - `commit`, and any `decisions` beside commit and decline. A `Decision` with
+     `claimed=True` runs exactly like a commit; `claimed=False` is the whole
+     decision and does its own governance check and hash-bound claim. Each has
+     the `refusal` a card of another kind gets (`invalid_decision`), and its
+     name goes in `setup_cards.DECISIONS`.
+   - `title` and `result_detail`: what the model reads in the card's row and its
+     `[Setup card result]` turn.
+   - The flags, all off by default: `proposable=False` (gateway-only),
+     `stack_exempt` (a pending card holds no other proposal back),
+     `lifts_budget`, `gateway_card` (which of its cards are the gateway's own
+     step, outside the budget), `on_claim`, `on_decline`, and `scopes` plus
+     `vet` for a governance scope beyond `capabilities.setup`. `governed=False`
+     and `reported=False` are for a gateway-only kind only.
+
+   Keep the heavy flow in `dashboard/` and name it from the action through a
+   lazy import: the MCP server imports the registry.
+3. **The card face.** A body in `SetupCardBodies.tsx`, an entry in
+   `SETUP_CARD_KINDS` and a title key in `SETUP_CARD_TITLE_KEY`
+   (`setupCardRegistry.tsx`), the kind in the `SetupCardKind` union
+   (`api/setupCards.ts`), and the copy in `en.manual.json` and every translation.
+4. **The skill.** A row in the `crew-setup` skill's tool table for an
+   agent-proposable kind.
+
+`test/test_setup_action_parity.py` fails, naming the kind and the file, when a
+registered kind is missing from `CARD_KINDS` or `PROPOSABLE_KINDS`, has a scope
+that is not a `SCOPE_CATALOG` row, has no `SETUP_CARD_KINDS` entry or title key,
+has a title key `en.manual.json` lacks, or has no skill row; and in reverse, when
+one of those names a kind no action registers. `test/test_setup_actions.py` pins
+what the registry cannot loosen: a gateway-only kind is absent from the tool's
+schema and refused by the tool and by `propose` as an unknown kind, and for every
+registered kind the commit and every claimed decision run only with the shown
+hash (SC1) and never past a governance denial, while an unclaimed decision still
+refuses both. It also pins the generated schema against the one the tool
+declared by hand. The checks every card passes (SC8 provenance, governance on
+`capabilities.setup`, the hash-bound claim) live in `setup_flow`; an action can
+add a check (`vet`) and cannot remove one.
 
 ## Channel pairing
 

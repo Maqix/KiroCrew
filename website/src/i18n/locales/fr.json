@@ -9323,6 +9323,7 @@
       "title_credential": "Enregistrer {{name}} dans le coffre",
       "title_cron": "Tâche planifiée",
       "title_generic": "Étape de configuration",
+      "fallback_approve": "Approuver",
       "title_import": "Importer tes agents",
       "title_profile": "Ton profil",
       "title_service": "Continuer en arrière-plan",

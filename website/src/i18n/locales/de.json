@@ -9197,6 +9197,7 @@
       "title_credential": "{{name}} im Vault speichern",
       "title_cron": "Geplanter Job",
       "title_generic": "Einrichtungsschritt",
+      "fallback_approve": "Genehmigen",
       "title_import": "Deine Agenten übernehmen",
       "title_profile": "Dein Profil",
       "title_service": "Im Hintergrund weiterlaufen",

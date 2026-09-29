@@ -334,3 +334,9 @@
 {"timestamp":"2026-09-29T00:22:40.656464085Z","action":"handoff","task_id":111,"detail":"P2.19 No generic dashboard tips during the first run"}
 {"timestamp":"2026-09-29T00:22:40.656824534Z","action":"release","task_id":111,"detail":"P2.19 No generic dashboard tips during the first run"}
 {"timestamp":"2026-09-29T00:29:52.324462447Z","action":"create","task_id":112,"detail":"D6 Update the narrated explainer for setup.sh and the home step"}
+{"timestamp":"2026-09-29T00:32:48.637804916Z","action":"create","task_id":113,"detail":"P2.20 Setup actions as a registry: one module per action, a parity test"}
+{"timestamp":"2026-09-29T00:33:42.802623771Z","action":"move","task_id":113,"detail":"todo -\u003e in-progress"}
+{"timestamp":"2026-09-29T00:49:50.117086789Z","action":"edit","task_id":112,"detail":"D6 Update the narrated explainer for setup.sh and the home step"}
+{"timestamp":"2026-09-29T01:39:31.758282215Z","action":"move","task_id":113,"detail":"in-progress -\u003e review"}
+{"timestamp":"2026-09-29T01:39:31.760113094Z","action":"handoff","task_id":113,"detail":"P2.20 Setup actions as a registry: one module per action, a parity test"}
+{"timestamp":"2026-09-29T01:42:13.382246452Z","action":"edit","task_id":113,"detail":"P2.20 Setup actions as a registry: one module per action, a parity test"}

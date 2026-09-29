@@ -7,71 +7,31 @@ sees and only the owner's click commits it, so nothing this tool returns can
 change a setting, store a secret or schedule a job by itself.
 
 One tool with a ``kind`` rather than a tool per kind: every core tool's schema
-rides on every request of every session, and the kinds share one lifecycle.
+rides on every request of every session, and the kinds share one lifecycle. The
+kind enum, the argument properties and the description are generated from the
+setup-action registry (``kiro_crew/setup_actions/``), agent-proposable kinds only.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from kiro_crew import mcp_core
+from kiro_crew import mcp_core, setup_actions
 from kiro_crew import setup_cards as sc
 from kiro_crew.mcp_tools import control
 from kiro_crew.session_surface import has_dashboard_surface
-
-_SETUP_CARD_DESCRIPTION = (
-    "Show the user a setup card they approve with one click. Kinds: profile (agent name, "
-    "language, timezone, technical level, role), soul (SOUL.md persona or USER.md notes, "
-    "<=3000 chars), import (bring another agent's setup over), connect (a curated "
-    "connection such as github), credential (the user types a secret into the card; you "
-    "get only secret://NAME), cron (a scheduled job; the user previews one run before "
-    "keeping it), service (keep running when the browser closes), home (a permanent home "
-    "in the user's own AWS account, built in the background; the card shows the monthly "
-    "cost and the user starts the build). Nothing changes until "
-    "the user clicks. End your turn after calling it; the decision arrives as a "
-    "[Setup card result] message. Never ask the user to paste secrets into chat."
-)
 
 
 def schemas() -> list[dict[str, Any]]:
     return [
         {
             "name": "setup_card",
-            "description": _SETUP_CARD_DESCRIPTION,
+            "description": setup_actions.setup_card_description(),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "kind": {"type": "string", "enum": sorted(sc.PROPOSABLE_KINDS)},
-                    "fields": {
-                        "type": "object",
-                        "description": (
-                            "profile: any of bot_name, language (BCP-47), timezone (IANA), "
-                            "technical_level (" + "|".join(sorted(sc.TECHNICAL_LEVELS)) + "), "
-                            "role (" + "|".join(sorted(sc.USER_ROLES)) + ")"
-                        ),
-                    },
-                    "file": {"type": "string", "enum": list(sc.SOUL_FILES)},
-                    "content": {"type": "string", "description": "soul: the full file"},
-                    "source_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "import: limit to these detected sources",
-                    },
-                    "provider": {"type": "string", "description": "connect: registry slug"},
-                    "name": {
-                        "type": "string",
-                        "description": "credential: UPPER_SNAKE vault name; cron: job name",
-                    },
-                    "purpose": {"type": "string", "description": "credential: why it is needed"},
-                    "hosts": {"type": "array", "items": {"type": "string"}},
-                    "channel": {"type": "string", "enum": sorted(sc.CHANNELS)},
-                    "prompt": {"type": "string", "description": "cron: what each run does"},
-                    "cron_expr": {"type": "string", "description": "cron: 5-field expression"},
-                    "every_secs": {"type": "integer", "description": "cron: interval, >= 3600"},
-                    "timezone": {"type": "string", "description": "cron: IANA timezone"},
-                    "region": {"type": "string", "description": "home: AWS region"},
-                    "profile": {"type": "string", "description": "home: AWS CLI profile"},
-                    "size": {"type": "string", "description": "home: size key, default light"},
+                    "kind": {"type": "string", "enum": setup_actions.proposable_kinds()},
+                    **setup_actions.setup_card_properties(),
                 },
                 "required": ["kind"],
             },
@@ -93,35 +53,17 @@ def _directive_args(kind: str, args: dict[str, Any]) -> dict[str, Any]:
     Validation runs here so the model gets a precise error before it is told a
     card exists; the applier validates again, because it is the side that acts.
     """
-    if kind == sc.KIND_PROFILE:
-        return {"kind": kind, **sc.build_profile(args)}
-    if kind == sc.KIND_SOUL:
-        built = sc.build_soul(args, None)
-        return {"kind": kind, "file": built["file"], "content": built["content"]}
-    if kind == sc.KIND_CRON:
-        sc.build_cron(args)
-        keys = ("name", "prompt", "cron_expr", "every_secs", "timezone")
-        return {"kind": kind, **{k: args[k] for k in keys if args.get(k) not in (None, "")}}
-    if kind == sc.KIND_CREDENTIAL:
-        return {"kind": kind, **sc.build_credential(args)}
-    if kind == sc.KIND_CHANNEL:
-        return {"kind": kind, "channel": sc.build_channel(args)["channel"]}
-    if kind == sc.KIND_CONNECT:
-        return {"kind": kind, "provider": sc.validate_slug(args.get("provider"))}
-    if kind == sc.KIND_HOME:
-        return {"kind": kind, **sc.build_home(args)}
-    if kind == sc.KIND_IMPORT:
-        ids = args.get("source_ids") or []
-        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
-            raise sc.CardRejected("source_ids must be a list of strings", "invalid_argument")
-        return {"kind": kind, "source_ids": ids[:10]}
-    return {"kind": kind}
+    action = setup_actions.get(kind)
+    if action is None:
+        return {"kind": kind}
+    return {"kind": kind, **action.validate(args)}
 
 
 def setup_card(name: str, args: dict[str, Any]) -> str:
     kind = str(args.get("kind", ""))
-    if kind not in sc.PROPOSABLE_KINDS:
-        return "Error: kind must be one of " + ", ".join(sorted(sc.PROPOSABLE_KINDS)) + "."
+    kinds = setup_actions.proposable_kinds()
+    if kind not in kinds:
+        return "Error: kind must be one of " + ", ".join(kinds) + "."
     sk, _ = mcp_core.require_strict_session_key("setup_card")
     if sk and not has_dashboard_surface(sk):
         return (

@@ -9069,6 +9069,7 @@
       "title_credential": "{{name}} をボールトに保存",
       "title_cron": "スケジュール済みジョブ",
       "title_generic": "セットアップ手順",
+      "fallback_approve": "承認",
       "title_import": "エージェントを移行",
       "title_profile": "プロフィール",
       "title_service": "バックグラウンドで動作を継続",

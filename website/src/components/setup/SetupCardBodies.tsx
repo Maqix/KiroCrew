@@ -2,6 +2,7 @@
  * The per-kind bodies of a SetupCard. Each renders what its card's payload
  * shows, then hands its actions to the shared `footer`, which owns the error
  * notice, the button row (at most a primary and a secondary) and the link row.
+ * Which body draws which kind is `setupCardRegistry.tsx`.
  *
  * Payload fields are read defensively: the payload is server data validated on
  * the gateway, but a field of the wrong type must degrade to "not shown", never
@@ -67,23 +68,21 @@ export const PAIR_COMMAND = '/pair'
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 const strList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && !!x) : [])
 
-export function SetupCardBody(props: SetupBodyProps) {
-  switch (props.card.kind) {
-    case 'privacy': return <PrivacyBody {...props} />
-    case 'profile': return <ProfileBody {...props} />
-    case 'soul': return <SoulBody {...props} />
-    case 'import': return <ImportBody {...props} />
-    case 'connect': return <ConnectBody {...props} />
-    case 'credential': return <SecretBody {...props} field="value" />
-    case 'channel': return <SecretBody {...props} field="token" />
-    case 'cron': return <CronBody {...props} />
-    case 'service': return <ServiceBody {...props} />
-    case 'home': return <HomeBody {...props} />
-    default: return <>{props.footer({})}</>
-  }
-}
-
 const LEAD = 'mt-1 text-[13px] leading-relaxed text-muted break-words'
+
+// ── a kind this build does not know ────────────────────────────────────────
+
+/**
+ * A card whose kind the gateway registers and this dashboard build does not
+ * (the gateway gained it first). It shows the title and the two decisions and
+ * nothing from the payload: this build has no idea which fields are safe or
+ * meaningful to show, so it shows none. The commit is still hash-bound and
+ * checked on the gateway like any other.
+ */
+export function FallbackBody({ run, footer }: SetupBodyProps) {
+  const { t } = useTranslation()
+  return <>{footer({ primary: { label: t('components.setupCard.fallback_approve'), onClick: () => run('commit') } })}</>
+}
 
 // ── privacy ────────────────────────────────────────────────────────────────
 
@@ -94,7 +93,7 @@ const LEAD = 'mt-1 text-[13px] leading-relaxed text-muted break-words'
  * position the owner is looking at, because the card's commit is what records
  * the acknowledgement.
  */
-function PrivacyBody({ run, footer }: SetupBodyProps) {
+export function PrivacyBody({ run, footer }: SetupBodyProps) {
   const { t } = useTranslation()
   const status = useQuery<BeaconStatus>({ queryKey: ['beaconStatus'], queryFn: () => api.beaconStatus() })
   return (
@@ -137,7 +136,7 @@ const TECHNICAL_LEVEL_KEY = {
   'non-technical': 'components.setupCard.level_non_technical',
 } as const
 
-function ProfileBody({ card, run, footer }: SetupBodyProps) {
+export function ProfileBody({ card, run, footer }: SetupBodyProps) {
   const { t } = useTranslation()
   const fields = (card.payload?.fields ?? {}) as Record<string, unknown>
   const rows = (Object.keys(PROFILE_FIELD_KEY) as Array<keyof typeof PROFILE_FIELD_KEY>)
@@ -165,7 +164,7 @@ function ProfileBody({ card, run, footer }: SetupBodyProps) {
 
 // ── soul ───────────────────────────────────────────────────────────────────
 
-function SoulBody({ card, run, footer }: SetupBodyProps) {
+export function SoulBody({ card, run, footer }: SetupBodyProps) {
   const { t } = useTranslation()
   const p = card.payload ?? {}
   const content = str(p.content)
@@ -239,7 +238,7 @@ function readJobs(raw: unknown): ImportJob[] {
 /** One (source, category) pair as a set key; JSON keeps the two ids unambiguous. */
 const pairKey = (sourceId: string, categoryId: string) => JSON.stringify([sourceId, categoryId])
 
-function ImportBody({ card, run, footer }: SetupBodyProps) {
+export function ImportBody({ card, run, footer }: SetupBodyProps) {
   const { t } = useTranslation()
   const sources = readSources(card.payload?.sources)
   const jobs = readJobs(card.payload?.jobs)
@@ -314,7 +313,7 @@ function ImportBody({ card, run, footer }: SetupBodyProps) {
 
 // ── connect ────────────────────────────────────────────────────────────────
 
-function ConnectBody({ card, run, footer }: SetupBodyProps) {
+export function ConnectBody({ card, run, footer }: SetupBodyProps) {
   const { t } = useTranslation()
   const provider = (card.payload?.provider ?? {}) as Record<string, unknown>
   const name = str(provider.name) || str(provider.slug)
@@ -364,6 +363,14 @@ function ConnectBody({ card, run, footer }: SetupBodyProps) {
 }
 
 // ── credential + channel ───────────────────────────────────────────────────
+
+export function CredentialBody(props: SetupBodyProps) {
+  return <SecretBody {...props} field="value" />
+}
+
+export function ChannelBody(props: SetupBodyProps) {
+  return <SecretBody {...props} field="token" />
+}
 
 /**
  * A credential (`field="value"`) or a messaging bot token (`field="token"`).
@@ -521,7 +528,7 @@ function fmtWait(secs: number): string {
  * approvals it waits on are answered here; after one that asked, the card says
  * the job will ask on every run.
  */
-function CronBody({ card, run, footer }: SetupBodyProps) {
+export function CronBody({ card, run, footer }: SetupBodyProps) {
   const { t } = useTranslation()
   const p = card.payload ?? {}
   const preview = readPreview(card.outcome?.preview)
@@ -587,7 +594,7 @@ function CronBody({ card, run, footer }: SetupBodyProps) {
 
 // ── service ────────────────────────────────────────────────────────────────
 
-function ServiceBody({ card, run, footer }: SetupBodyProps) {
+export function ServiceBody({ card, run, footer }: SetupBodyProps) {
   const { t } = useTranslation()
   const p = card.payload ?? {}
   const command = str(p.command)
@@ -698,7 +705,7 @@ const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d$/
  * is on the card before the first click, and a simulated run says so in plain
  * sight.
  */
-function HomeBody({ card, busy, run, footer, compact }: SetupBodyProps) {
+export function HomeBody({ card, busy, run, footer, compact }: SetupBodyProps) {
   const { t } = useTranslation()
   const regionSelectId = useId()
   // The region the owner picked on the card while AWS named none.

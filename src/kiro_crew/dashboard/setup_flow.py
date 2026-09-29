@@ -16,6 +16,10 @@ A decided card is reported back to the agent as a ``[Setup card result]``
 envelope turn so the conversation continues. That turn carries user provenance:
 it exists because the owner clicked, which is the same authenticated-human fact
 a typed message carries.
+
+What differs per card kind (its builder, committer, extra decisions, title and
+flags) comes from the setup-action registry (``kiro_crew/setup_actions/``); the
+checks every card passes stay here, whatever the kind.
 """
 
 from __future__ import annotations
@@ -24,11 +28,14 @@ import asyncio
 import logging
 import re
 import time
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
+from kiro_crew import setup_actions
 from kiro_crew import setup_cards as sc
 from kiro_crew.first_run import mark_stage, read_first_run_slot, record_slot
 from kiro_crew.sel import sel
+from kiro_crew.setup_actions.base import SETUP_SCOPE
+from kiro_crew.setup_actions.home import HOME_STEP_KEY
 
 if TYPE_CHECKING:  # pragma: no cover
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -42,8 +49,6 @@ _CONNECT_WAIT_SECS = 600
 _CONNECT_POLL_SECS = 3.0
 #: Longest cron preview text kept on the card.
 _PREVIEW_MAX_CHARS = 6000
-#: Governance scope every setup card is checked against (propose AND commit).
-SETUP_SCOPE = "capabilities.setup"
 
 #: Background tasks this module owns (a connect card's consent watcher), held
 #: so they are not garbage collected mid-flight.
@@ -71,12 +76,9 @@ def _governance_denial(kind: str, session_key: str) -> str | None:
         return "the governance check could not complete"
     if not getattr(decision, "permitted", True):
         return str(getattr(decision, "reason", "") or "blocked by your security policy")
-    if kind == sc.KIND_CRON:
-        from kiro_crew.mcp_cron import _vet_cron_capability_governance
-
-        err = _vet_cron_capability_governance(session_key)
-        if err:
-            return err.removeprefix("Error: ")
+    action = setup_actions.get(kind)
+    if action is not None and action.vet is not None:
+        return action.vet(session_key)
     return None
 
 
@@ -88,24 +90,8 @@ def broadcast(state: "DashboardState", card: sc.SetupCard) -> None:
 
 
 def _card_title(card: sc.SetupCard) -> str:
-    p = card.payload
-    if card.kind == sc.KIND_CONNECT:
-        return f"Connect {p.get('provider', {}).get('name', '')}".strip()
-    if card.kind == sc.KIND_CRON:
-        return str(p.get("name", "Scheduled job"))
-    if card.kind == sc.KIND_CREDENTIAL:
-        return f"Store {p.get('name', 'a secret')}"
-    if card.kind == sc.KIND_CHANNEL:
-        return f"Connect {p.get('label', 'a channel')}"
-    if card.kind == sc.KIND_SOUL:
-        return f"Save {p.get('file', 'SOUL')}.md"
-    return {
-        sc.KIND_PRIVACY: "Privacy",
-        sc.KIND_PROFILE: "Save your profile",
-        sc.KIND_IMPORT: "Bring your setup over",
-        sc.KIND_SERVICE: "Keep Kiro Crew running",
-        sc.KIND_HOME: "Your home in the cloud",
-    }.get(card.kind, card.kind)
+    action = setup_actions.get(card.kind)
+    return action.title(card) if action is not None else card.kind
 
 
 def _append_card_row(state: "DashboardState", slot: "_ChatSlot", card: sc.SetupCard) -> None:
@@ -125,46 +111,11 @@ def _append_card_row(state: "DashboardState", slot: "_ChatSlot", card: sc.SetupC
 def _result_text(card: sc.SetupCard) -> str:
     from kiro_crew.dashboard.state import SETUP_RESULT_END, SETUP_RESULT_PREFIX
 
-    outcome = card.outcome or {}
+    action = setup_actions.get(card.kind)
     detail = ""
     if card.status == sc.STATUS_COMMITTED:
-        if card.kind == sc.KIND_CRON:
-            detail = f" The job is kept (job id {outcome.get('job_id', '')}) and runs {card.payload.get('schedule_human', '')}."
-        elif card.kind == sc.KIND_CREDENTIAL:
-            detail = f" Reference it as {outcome.get('ref', '')}; you never see the value."
-        elif card.kind == sc.KIND_IMPORT:
-            detail = (
-                f" Imported {outcome.get('imported_count', 0)} items; "
-                f"{outcome.get('jobs_added_disabled', 0)} imported jobs were added DISABLED "
-                "for the user to review."
-            )
-            jobs = [j for j in outcome.get("jobs") or [] if isinstance(j, dict)]
-            if jobs:
-                listed = "; ".join(
-                    f"{j.get('name', '')} ({j.get('schedule', '')}): {j.get('prompt', '')}"
-                    for j in jobs
-                )
-                detail += (
-                    f" The imported jobs: {listed}. To keep one, propose a cron card with the "
-                    "prompt adapted to this install; there is no need to look them up."
-                )
-        elif card.kind == sc.KIND_CONNECT:
-            detail = " The connection is granted; its tools load in the next session."
-        elif card.kind == sc.KIND_CHANNEL:
-            who = str(outcome.get("username") or "") or "the user"
-            detail = f" Paired: {who} can now message the bot and reach you there."
-        elif card.kind == sc.KIND_PROFILE:
-            detail = " Saved: " + ", ".join(outcome.get("applied", [])) + "."
-        elif card.kind == sc.KIND_HOME and outcome.get("moved") and not outcome.get("simulated"):
-            from kiro_crew.dashboard.setup_move_in import result_detail
-
-            detail = result_detail(outcome)
-        elif card.kind == sc.KIND_HOME:
-            detail = (
-                " The crew moved into its home in the cloud; keep helping the user from here."
-                if outcome.get("moved")
-                else " The home is ready."
-            )
+        if action is not None and action.result_detail is not None:
+            detail = action.result_detail(card)
     elif card.status in (sc.STATUS_FAILED, sc.STATUS_EXPIRED) and card.error:
         detail = f" Reason: {card.error.get('message', '')}"
     return (
@@ -217,7 +168,10 @@ async def propose(
 ) -> str:
     """Apply a ``setup_card`` directive; return the model-facing confirmation."""
     kind = str(args.get("kind", ""))
-    if kind not in sc.PROPOSABLE_KINDS:
+    action = setup_actions.get(kind)
+    # A gateway-only kind (the privacy disclosure) is answered exactly as an
+    # unknown one: the agent cannot tell it apart, let alone raise it.
+    if action is None or not action.proposable or action.build is None:
         return f"Error: unknown setup card kind {kind!r}. Nothing was shown."
     if not producer_is_user_facing:
         # SC8: a cron, a watch, an injected event or a sub-agent must not put a
@@ -242,17 +196,15 @@ async def propose(
         )
     existing = await asyncio.to_thread(sc.list_cards, slot.key)
     # The gateway's own steps (privacy, the home step) are not the agent's proposals.
-    proposable = [
-        c for c in existing if c.kind != sc.KIND_PRIVACY and not c.payload.get(HOME_STEP_KEY)
-    ]
-    kept_job = any(c.kind == sc.KIND_CRON and c.status == sc.STATUS_COMMITTED for c in existing)
+    proposable = [c for c in existing if not _is_gateway_card(c)]
+    kept_job = any(_lifts_budget(c) and c.status == sc.STATUS_COMMITTED for c in existing)
     if not kept_job and len(proposable) >= sc.CARD_BUDGET_BEFORE_FIRST_JOB:
         return (
             f"Error: this chat already showed {len(proposable)} setup cards without a kept job. "
             "Stop proposing setup steps; help the user with what they asked instead."
         )
     try:
-        payload, private = await _build(state, slot, kind, args)
+        payload, private = await action.build(args)
     except sc.CardRejected as exc:
         return f"Error: {exc} Nothing was shown."
     digest = sc.payload_hash(kind, payload)
@@ -260,17 +212,13 @@ async def propose(
         if card.status == sc.STATUS_PENDING and card.payload_hash == digest:
             return f"That setup card is already showing ({_card_title(card)}). End your turn."
     # One decision at a time: a second card while one is still waiting splits the
-    # user's attention and buries the first. The home card is exempt -- it builds
-    # in the background by design and is decided on its own schedule.
+    # user's attention and buries the first. A stack-exempt kind (the home card,
+    # which builds in the background by design) is decided on its own schedule.
     waiting = next(
-        (
-            c
-            for c in existing
-            if c.status == sc.STATUS_PENDING and c.kind not in (sc.KIND_HOME, sc.KIND_PRIVACY)
-        ),
+        (c for c in existing if c.status == sc.STATUS_PENDING and _holds_others(c)),
         None,
     )
-    if waiting is not None and kind != sc.KIND_HOME:
+    if waiting is not None and not action.stack_exempt:
         return (
             f"Error: the user has not decided the card already showing ({_card_title(waiting)}). "
             "One card at a time: end your turn and let them decide it first."
@@ -289,36 +237,22 @@ async def propose(
     )
 
 
-async def _build(
-    state: "DashboardState", slot: "_ChatSlot", kind: str, args: dict[str, Any]
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    if kind == sc.KIND_PROFILE:
-        return sc.build_profile(args), {}
-    if kind == sc.KIND_SOUL:
-        file = args.get("file", "SOUL")
-        previous = await asyncio.to_thread(sc.read_persona, file) if file in sc.SOUL_FILES else None
-        return sc.build_soul(args, previous), {}
-    if kind == sc.KIND_CRON:
-        return sc.build_cron(args)
-    if kind == sc.KIND_CREDENTIAL:
-        payload = sc.build_credential(args)
-        from kiro_crew.config.paths import config_dir
-        from kiro_crew.secrets.vault import SecretVault
+def _is_gateway_card(card: sc.SetupCard) -> bool:
+    action = setup_actions.get(card.kind)
+    return action is not None and action.is_gateway_card(card)
 
-        names = await asyncio.to_thread(lambda: SecretVault(config_dir()).list_names())
-        payload["exists"] = payload["name"] in names
-        return payload, {}
-    if kind == sc.KIND_CHANNEL:
-        return sc.build_channel(args), {}
-    if kind == sc.KIND_CONNECT:
-        return await _build_connect(args)
-    if kind == sc.KIND_IMPORT:
-        return await _build_import(args)
-    if kind == sc.KIND_SERVICE:
-        return await asyncio.to_thread(_service_payload), {}
-    if kind == sc.KIND_HOME:
-        return await asyncio.to_thread(_home_payload, sc.build_home(args))
-    raise sc.CardRejected(f"unknown setup card kind {kind!r}", "unknown_kind")
+
+def _lifts_budget(card: sc.SetupCard) -> bool:
+    action = setup_actions.get(card.kind)
+    return action is not None and action.lifts_budget
+
+
+def _holds_others(card: sc.SetupCard) -> bool:
+    """Whether this pending card holds the agent's next proposal back."""
+    action = setup_actions.get(card.kind)
+    if action is None:
+        return True
+    return not action.stack_exempt and not action.is_gateway_card(card)
 
 
 async def _build_connect(args: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -616,47 +550,45 @@ async def decide(
     may open the home's Kiro sign-in page here).
     """
     if decision not in sc.DECISIONS:
-        raise sc.CardRejected(
-            "decision must be commit, decline, preview, aws_signin or region", "invalid_decision"
-        )
+        *first, last = setup_actions.decision_names()
+        raise sc.CardRejected(f"decision must be {', '.join(first)} or {last}", "invalid_decision")
     found = await asyncio.to_thread(sc.get_card, card_id)
     if found is None:
         raise sc.CardRejected("setup card not found", "card_not_found")
     card: sc.SetupCard = found
-    if decision == sc.DECISION_AWS_SIGNIN:
-        from kiro_crew.dashboard.setup_aws_signin import decide_signin
-
-        return await decide_signin(state, card, card_hash, input_, same_machine=same_machine)
-    if decision == sc.DECISION_REGION:
-        return await _decide_home_region(state, card, card_hash, input_)
+    action = setup_actions.get(card.kind)
+    if action is None:
+        raise sc.CardRejected(f"unknown setup card kind {card.kind!r}", "unknown_kind")
+    extra = action.decisions.get(decision)
+    if extra is None and decision not in (sc.DECISION_COMMIT, sc.DECISION_DECLINE):
+        raise sc.CardRejected(setup_actions.decision_refusal(decision), "invalid_decision")
+    if extra is not None and not extra.claimed:
+        # The decision does its own governance check and hash-bound claim.
+        return await extra.run(state, card, card_hash, input_, same_machine=same_machine)
     if decision == sc.DECISION_DECLINE:
         card = await asyncio.to_thread(
             sc.claim_pending, card_id, card_hash, to_status=sc.STATUS_DECLINED
         )
         card = await _finish(card, sc.STATUS_DECLINED)
-        if card.kind == sc.KIND_CRON:
-            await _discard_preview_job(state, card)
+        if action.on_decline is not None:
+            await action.on_decline(state, card)
         broadcast(state, card)
         _audit(
             "setup_card.decide", "declined", card.session_key, f"kind:{card.kind} card:{card.id}"
         )
-        if card.kind != sc.KIND_PRIVACY:
+        if action.reported:
             await _report(state, card)
         return card
-    if decision == sc.DECISION_PREVIEW and card.kind != sc.KIND_CRON:
-        raise sc.CardRejected("only a scheduled-job card has a preview", "invalid_decision")
+    committer = extra.run if extra is not None else action.commit
     denial = await asyncio.to_thread(_governance_denial, card.kind, card.session_key)
-    if denial and card.kind != sc.KIND_PRIVACY:
+    if denial and action.governed:
         raise sc.CardRejected(f"blocked by policy: {denial}", "governance_denied")
     card = await asyncio.to_thread(sc.claim_pending, card_id, card_hash)
-    if card.kind == sc.KIND_HOME:
-        from kiro_crew.dashboard.home_signin import record_browser_here
-
-        card = await record_browser_here(card, same_machine)
+    if action.on_claim is not None:
+        card = await action.on_claim(card, same_machine)
     broadcast(state, card)
-    committer = _PREVIEWERS if decision == sc.DECISION_PREVIEW else _COMMITTERS
     try:
-        card = await committer[card.kind](state, card, input_)
+        card = await committer(state, card, input_)
     except sc.CardRejected as exc:
         card = await _back_to_pending(card, exc.code, str(exc))
     except Exception:
@@ -666,7 +598,7 @@ async def decide(
         )
     broadcast(state, card)
     _audit("setup_card.decide", card.status, card.session_key, f"kind:{card.kind} card:{card.id}")
-    if card.terminal and card.kind != sc.KIND_PRIVACY:
+    if card.terminal and action.reported:
         await _report(state, card)
     return card
 
@@ -731,10 +663,6 @@ async def _commit_privacy(
         await _offer_home_step(state, slot, card.session_key)
         await start_first_run_turn(state, slot)
     return card
-
-
-#: Payload flag of the home card the gateway shows as the first run's own step.
-HOME_STEP_KEY = "offer"
 
 
 async def _offer_home_step(state: "DashboardState", slot: "_ChatSlot", session_key: str) -> None:
@@ -1529,23 +1457,6 @@ async def _commit_channel(
     from kiro_crew.dashboard.setup_channel import commit_channel
 
     return await commit_channel(state, card, input_)
-
-
-_Committer = Callable[["DashboardState", sc.SetupCard, dict[str, Any]], Awaitable[sc.SetupCard]]
-
-_COMMITTERS: dict[str, _Committer] = {
-    sc.KIND_PRIVACY: _commit_privacy,
-    sc.KIND_PROFILE: _commit_profile,
-    sc.KIND_SOUL: _commit_soul,
-    sc.KIND_IMPORT: _commit_import,
-    sc.KIND_CONNECT: _commit_connect,
-    sc.KIND_CREDENTIAL: _commit_credential,
-    sc.KIND_CHANNEL: _commit_channel,
-    sc.KIND_CRON: _commit_cron,
-    sc.KIND_SERVICE: _commit_service,
-    sc.KIND_HOME: _commit_home,
-}
-_PREVIEWERS: dict[str, _Committer] = {sc.KIND_CRON: _preview_cron}
 
 
 # ── first run ───────────────────────────────────────────────────────────────

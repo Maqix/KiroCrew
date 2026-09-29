@@ -9069,6 +9069,7 @@
       "title_credential": "将 {{name}} 存入保险库",
       "title_cron": "定时任务",
       "title_generic": "设置步骤",
+      "fallback_approve": "批准",
       "title_import": "迁移你的代理",
       "title_profile": "你的个人资料",
       "title_service": "在后台保持运行",

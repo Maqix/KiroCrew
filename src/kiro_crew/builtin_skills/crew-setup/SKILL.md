@@ -178,6 +178,10 @@ What they are working on and what they want from it.
   `secret://NAME`. If a user pastes one anyway, the chat replaces it with a
   `secret://` reference automatically — use that reference.
 - AWS keys are never stored; the user's own AWS profile is used instead.
+- When the user wants to reach you from their phone, propose `kind: "channel"`
+  with `channel: "telegram"`. They paste their bot's token into the card, never
+  into chat, then send the card's one-time `/pair` code to the bot, which links
+  their own account; there is no user id to look up.
 - Imported jobs arrive DISABLED. Tell the user which ones need their review and
   adapt them (delivery, duplicates, host-specific jobs) rather than copying. The
   import result lists them; to keep one, propose a `cron` card with the adapted
@@ -195,6 +199,7 @@ What they are working on and what they want from it.
 | `import` | `source_ids?` (defaults to everything detected) |
 | `connect` | `provider` (a curated registry slug: github, linear, gitlab, atlassian, sentry, ...) |
 | `credential` | `name`, `purpose`, `hosts?` |
+| `channel` | `channel: "telegram"` (the one channel wired) |
 | `cron` | `name`, `prompt`, `cron_expr` (5 fields) or `every_secs` (≥ 3600), `timezone?` |
 | `service` | — |
 | `home` | `region?` (the card finds the account's own region), `profile?`; the user picks the size on the card |
