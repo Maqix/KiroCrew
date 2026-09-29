@@ -1046,9 +1046,10 @@ bash setup.sh [--no-start] [--with-extras] [--branch NAME] [--demo ...]
 
 `--demo` runs `scripts/demo-first-run.sh` instead: a throwaway crew in one
 temporary folder (`$TMPDIR/kirocrew-demo`, or `KIROCREW_DEMO_DIR`) on a free
-port, with the cloud home simulated (`KIROCREW_CLOUD_SIMULATE=1`; `--real-aws`
-builds a real one), a sample agent to import, and the user's own MCP servers
-switched off. `--stop` ends the last demo and removes its files. Neither touches
+port, with its chats' working folders there too (`KIROCREW_WORKSPACE`), the
+cloud home simulated (`KIROCREW_CLOUD_SIMULATE=1`; `--real-aws` builds a real
+one), a sample agent to import, and the user's own MCP servers switched off.
+`--stop` ends the last demo and removes its files. Neither touches
 the user's own crew or gateway.
 
 ## Doctor Checks

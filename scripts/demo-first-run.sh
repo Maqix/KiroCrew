@@ -84,18 +84,24 @@ stop_demo() {
   # shellcheck disable=SC1090
   . "$LAST"
   say "Stopping the demo on port $DEMO_PORT"
+  DEMO_WORKSPACE="${DEMO_WORKSPACE:-}"
   KIROCREW_HOME="$DEMO_HOME" KIRO_HOME="$DEMO_HOME/kiro" "$DEMO_KIROCREW" stop --port "$DEMO_PORT" || true
   if [ "${DEMO_REAL_AWS:-0}" = 1 ]; then
     say "This demo could have built a REAL home in AWS. Its cloud instances:"
     KIROCREW_HOME="$DEMO_HOME" KIRO_HOME="$DEMO_HOME/kiro" "$DEMO_KIROCREW" cloud list || true
     note "Destroy any listed above BEFORE removing the demo files, or they keep billing:"
     note "  KIROCREW_HOME='$DEMO_HOME' KIRO_HOME='$DEMO_HOME/kiro' '$DEMO_KIROCREW' cloud destroy <name>"
-    note "Then remove the demo files: rm -rf '$DEMO_HOME' '$LAST'"
+    note "Then remove the demo files: rm -rf '$DEMO_HOME' ${DEMO_WORKSPACE:+'$DEMO_WORKSPACE' }'$LAST'"
     return 0
   fi
   case "$DEMO_HOME" in
     "$STATE"/crews/crew.*) rm -rf "$DEMO_HOME" ;;
     *) note "Not removing $DEMO_HOME: it is not a demo home this script made." ;;
+  esac
+  case "$DEMO_WORKSPACE" in
+    "") ;;
+    "$STATE"/crews/workspace.*) rm -rf "$DEMO_WORKSPACE" ;;
+    *) note "Not removing $DEMO_WORKSPACE: it is not a demo workspace this script made." ;;
   esac
   rm -f "$LAST"
   note "Done: the demo gateway is stopped and its files are removed."
@@ -196,16 +202,21 @@ fi
 say "Step 5/6: setting up a throwaway demo crew"
 mkdir -p "$STATE/crews"
 DEMO_HOME="$(mktemp -d "$STATE/crews/crew.XXXXXX")"
+# The chats' working folders, beside the crew home rather than in it, so none
+# lands in your real workspace.
+DEMO_WORKSPACE="$(mktemp -d "$STATE/crews/workspace.XXXXXX")"
 DEMO_PORT="$("$PY" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 cat >"$LAST" <<EOF
 DEMO_HOME='$DEMO_HOME'
 DEMO_PORT='$DEMO_PORT'
 DEMO_REAL_AWS='$REAL_AWS'
+DEMO_WORKSPACE='$DEMO_WORKSPACE'
 DEMO_KIROCREW='$KIROCREW'
 EOF
-note "Crew home: $DEMO_HOME, on port $DEMO_PORT."
+note "Crew home: $DEMO_HOME, on port $DEMO_PORT; chat folders in $DEMO_WORKSPACE."
 
 export KIROCREW_HOME="$DEMO_HOME"
+export KIROCREW_WORKSPACE="$DEMO_WORKSPACE"
 export KIRO_HOME="$DEMO_HOME/kiro"
 mkdir -p "$KIRO_HOME"
 # A sample local agent to bring over, and nothing from your real ones.
