@@ -2881,6 +2881,8 @@ class _ChatSlot:
         "_steer_delivery_ids",
         "_steer_send_ids",
         "_steer_user_origin",
+        "_steer_channel_origin",
+        "_turn_channel_narrowed",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_audience_fences",
@@ -4007,6 +4009,29 @@ class _ChatSlot:
         # derive it from the slot and has to be told. Absent means NOT the session's
         # own human: an unrecorded steer fails closed into the ordinary drop.
         self._steer_user_origin: dict[str, bool] = {}
+        # Whether an in-flight steer arrived through a MESSAGING CHANNEL rather than
+        # this slot's own composer, keyed and kept in the same LOCKSTEP as the map
+        # above. The requeue reads it for `directive_channel_origin`: a requeued
+        # steer runs as its own turn, and channel authority is the narrower
+        # credential boundary (a directive that turn issues is filed as
+        # channel-created, as a queued channel message's is). A steer the running
+        # turn consumes never reads it -- an injected steer runs under that turn's
+        # provenance, narrowed by the flag below. Absent means "not through a
+        # channel", the composer's case.
+        self._steer_channel_origin: dict[str, bool] = {}
+        # Whether a CHANNEL steer has been admitted into the turn this slot is
+        # running. Set by `steer_into_running_turn(channel_origin=True)` at
+        # admission -- before its RPC, since the client can inject the text and the
+        # model can act on it before the RPC returns -- and read by the turn wherever
+        # it stamps a directive's producer (`apply_session_directive`'s
+        # `producer_is_channel`), so every directive the model emits after channel
+        # text reached it is filed as channel-created, the narrower authority a
+        # channel-origin turn's directives carry. The turn's opener provenance
+        # (`_directive_channel_origin`) is a per-turn argument and cannot change
+        # mid-turn; this flag is the slot-level seam that can. Held for the rest of
+        # the turn, a declined or requeued steer included (narrowing is the direction
+        # that cannot be wrong); the turn resets it at its end and at the next start.
+        self._turn_channel_narrowed: bool = False
         # The containment that held when an in-flight steer was AUTHORIZED, keyed by
         # the same message text and kept in the same LOCKSTEP. The requeue stamps it
         # on the queue entry instead of reading the slot again: its own moment is the
