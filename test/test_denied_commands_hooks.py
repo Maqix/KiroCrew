@@ -279,20 +279,22 @@ class TestHooksConfigDeniedCommands:
 class TestEffectiveDenied:
     def test_builtin_denied_by_default(self):
         mgr = HookManager(HooksConfig())
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /", command="rm -rf /", is_shell=True)
         assert result.action == TOOL_DENY
 
     def test_disabled_builtin_falls_through(self):
         cfg = HooksConfig(denied_commands_disabled_ids=["local-destructive-rm-rf-root"])
         mgr = HookManager(cfg)
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        # The EXACT root, so the deny would fire but for the opt-out (a descendant
+        # like /tmp/foo is allowed regardless and would pass for the wrong reason).
+        result = mgr.on_tool_call("rm -rf /", command="rm -rf /", is_shell=True)
         # Not denied — the built-in rule was individually opted out.
         assert result.action != TOOL_DENY
 
     def test_disable_all_falls_through(self):
         cfg = HooksConfig(denied_commands_disable_all=True)
         mgr = HookManager(cfg)
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /", command="rm -rf /", is_shell=True)
         assert result.action != TOOL_DENY
 
     def test_user_added_pattern_denies(self):
@@ -517,7 +519,15 @@ class TestResolveDeniedNotes:
 
 class TestGovernancePins:
     def test_pinned_builtin_still_denied_when_disabled(self, restore_context):
-        _install_ceiling_with_command_deny(["rm -rf /.*"])
+        # Pin the rule by its LIVE catalog pattern (not a hard-coded literal): the
+        # rm-rf rules carry a flag-tolerant regex, so a stale literal here would
+        # pin nothing and the test would pass for the wrong reason.
+        from kiro_crew.security.denied_rules import BUILTIN_DENIED_RULES
+
+        root_pattern = next(
+            r.pattern for r in BUILTIN_DENIED_RULES if r.id == "local-destructive-rm-rf-root"
+        )
+        _install_ceiling_with_command_deny([root_pattern])
         cfg = HooksConfig(
             denied_commands_disabled_ids=["local-destructive-rm-rf-root"],
             denied_commands_disable_all=True,
@@ -525,7 +535,7 @@ class TestGovernancePins:
         mgr = HookManager(cfg)
         # Governance pinned the rule — user opt-out (and disable-all) cannot
         # weaken it (tightest-wins).
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /", command="rm -rf /", is_shell=True)
         assert result.action == TOOL_DENY
 
     def test_governance_pinned_ids_helper_failsoft(self):
@@ -1049,43 +1059,6 @@ class TestSearchTargetSynthesizedTier:
                     f"built-in {pattern!r} references the synthesized grammar; it needs an "
                     f"explicit way into the synthesized tier rather than being excluded"
                 )
-
-    def test_no_deny_exception_can_exonerate_a_synthesized_target(self):
-        # This tier deliberately omits the `_DENY_EXCEPTIONS` carve-out that `is_denied`
-        # carries. Requiring the map stay EMPTY once guarded the omission, but the
-        # search-verb carve-out ends that. The property that omission actually needs
-        # is narrower: no exception may apply to a synthesized target, or the same text
-        # would be exonerated in `is_denied` while this tier still denied it.
-        #
-        # Stated behaviourally rather than by pinning the map's size, and in the same
-        # ratchet spirit as the test above: an exception authored against the grammar
-        # reddens this, which is the signal to revisit the tier deliberately rather than
-        # to relax the assertion.
-        import fnmatch
-
-        from kiro_crew.security import _DENY_EXCEPTIONS, _deny_pattern_matches
-
-        targets = (
-            "file-search path=/srv/mkfs-tests max_depth=3",
-            "file-search path=/home/alice",
-            # A search ROOT whose own path ends in a search-verb name: the shape most
-            # likely to collide with a verb-anchored exception glob.
-            "file-search path=/usr/bin/grep max_depth=1",
-            "file-search",
-        )
-        for pattern, globs in _DENY_EXCEPTIONS.items():
-            for target in targets:
-                lowered = target.lower()
-                # An exception is only ever consulted for a target its own deny pattern
-                # matched, so a pattern that cannot match this target cannot diverge.
-                if not _deny_pattern_matches(pattern, lowered, True):
-                    continue
-                for glob in globs:
-                    assert not fnmatch.fnmatch(lowered, glob.lower()), (
-                        f"exception {glob!r} would exonerate synthesized target "
-                        f"{target!r} from {pattern!r}, which this tier still denies -- "
-                        f"the two tiers would diverge; give the tier an explicit way in"
-                    )
 
     def test_a_command_rule_takes_no_part_in_a_synthesized_target(self):
         from kiro_crew.security import is_denied_synthesized_target

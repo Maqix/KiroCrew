@@ -1230,6 +1230,777 @@ def _is_dev_mode_out_of_root_confirm(text_lower: str) -> bool:
     return False
 
 
+# ── Recursive-force ``rm`` deletion floor (issues #8237 / #8387) ──
+# ``rm`` recursively force-deleting the filesystem ROOT or the user's HOME is
+# catastrophic; a path UNDER either (``/tmp/scratch``, ``$HOME/.cache``) is an
+# ordinary cleanup and must stay allowed. The catalog literals ``rm -rf /`` /
+# ``rm -rf ~`` only matched one flag spelling, and every attempt to widen them
+# as a REGEX went wrong two ways at once (Security Scope Review on #15316):
+#   * a left-to-right pattern cannot see flags AFTER the operand, which GNU
+#     ``getopt`` accepts (``rm / -rf --no-preserve-root``); and
+#   * a text pattern matches a SUBSTRING of the whole command line, so it fired
+#     on ``/tmp/x`` (a descendant of ``/``) and on the words ``rm -fr /`` sitting
+#     inside a ``git commit -m`` message or a ``grep`` pattern.
+# The only sound closure is argv-STRUCTURAL and EXACT, like the self-protection
+# and git-publish floors: tokenize, look only at the ``rm`` command's OWN argv,
+# collect the flags from every position, and deny only when a resolved operand
+# IS the root or the home directory itself — never a descendant, never a text
+# mention. This floor is therefore the SOLE enforcement (its catalog patterns are
+# stripped from the regex tier in ``is_denied``, exactly as git-publish is), so
+# there is no whole-line text match left to fire on a commit message.
+#
+# The tokens come from ``_split_shell_words`` — the RAW, quote-resolved but
+# ENV-UNEXPANDED split — for two reasons the review named: (1) a home operand
+# must be classified by its written spelling (``~`` / ``$HOME`` / ``${HOME}``),
+# because the expanding tokenizer turns ``$HOME`` into ``/home/user`` which then
+# reads as ROOT, inverting the home rule's opt-out (GPT + Opus finding); and
+# (2) it keeps the classification on what the argv literally is.
+#
+# The floor fires only for a command whose PROGRAM is ``rm`` (``_argv_programs``
+# tracks command boundaries), so ``confirm -rf /``, an ``rm`` mentioned as data
+# (``echo rm -rf /``), and a sibling command's flags (``ls -rf; rm /tmp/x``) do
+# not trigger it.
+
+
+#: ``rm``'s long options, so an abbreviation can be tested for ambiguity. GNU
+#: ``getopt_long`` accepts any UNAMBIGUOUS prefix of a long option, so ``rm
+#: --rec …`` and ``rm --for …`` run the identical recursive/force delete while a
+#: fixed ``--recursive``/``--force`` string comparison would miss them (GPT
+#: security-class, #15316). A prefix is honoured only when it matches exactly ONE
+#: of ``rm``'s long options — ``--r`` resolves to ``--recursive`` (nothing else
+#: begins with ``r``), ``--f`` to ``--force`` — never a prefix shared by two.
+_RM_LONG_OPTIONS: tuple[str, ...] = (
+    "--recursive",
+    "--force",
+    "--dir",
+    "--interactive",
+    "--no-preserve-root",
+    "--one-file-system",
+    "--preserve-root",
+    "--verbose",
+    "--help",
+    "--version",
+)
+
+
+def _rm_long_option_resolves_to(tok: str, target: str) -> bool:
+    """Whether *tok* is an unambiguous long-option abbreviation of *target*.
+
+    *tok* must be ``--`` followed by a NON-EMPTY prefix (``--`` alone is the
+    end-of-options marker, handled elsewhere), and among ``rm``'s long options
+    exactly one must start with that prefix, and it must be *target*. An exact
+    spelling is trivially unambiguous. GNU stops at the first ``=`` (``--rec=…``),
+    so the option name is taken up to it.
+    """
+    if not tok.startswith("--") or tok == "--":
+        return False
+    name = tok[: tok.index("=")] if "=" in tok else tok
+    matches = [opt for opt in _RM_LONG_OPTIONS if opt.startswith(name)]
+    return matches == [target] or (target in matches and name == target)
+
+
+#: Whether an ``rm`` argument token carries the recursive flag: the long option
+#: ``--recursive`` (or an unambiguous prefix of it), or a single-dash short
+#: cluster containing ``r`` (``-r`` / ``-rf`` / ``-fr`` / ``-rfv`` …). A ``--``
+#: long option is never read as a short cluster, so ``--force`` is not recursive.
+def _rm_is_recursive_flag(tok: str) -> bool:
+    if tok.startswith("--"):
+        return _rm_long_option_resolves_to(tok, "--recursive")
+    return bool(re.fullmatch(r"-[a-z]*r[a-z]*", tok))
+
+
+#: Whether an ``rm`` argument token carries the force flag (``--force`` or an
+#: unambiguous prefix of it, or a single-dash short cluster containing ``f``).
+def _rm_is_force_flag(tok: str) -> bool:
+    if tok.startswith("--"):
+        return _rm_long_option_resolves_to(tok, "--force")
+    return bool(re.fullmatch(r"-[a-z]*f[a-z]*", tok))
+
+
+#: The filesystem ROOT or any absolute path UNDER it — ``/``, ``/tmp/x``,
+#: ``/etc``, the ``/*`` glob — matching base ``main``'s ``rm -rf /.*`` contract.
+#:
+#: The floor-only revision that made this EXACT (deny ``/`` but allow ``/tmp/x``)
+#: was overturned: base ``main`` denied a recursive-force delete of the root OR
+#: ANY absolute path under it (``test_builtin_denied_by_default`` pins
+#: ``rm -rf /tmp/foo`` as DENY), and closing #8237 must only ADD denies, never
+#: remove one (First Principles + Design ruling on #15316). So the operand is a
+#: root wipe when it BEGINS with ``/`` — the root itself, a descendant, or the
+#: ``/*`` glob — exactly the tree ``rm -rf /.*`` covered.
+_RM_ROOT_EXACT_RE = re.compile(r"/.*", re.DOTALL)
+#: The HOME directory or any path under it — ``~`` / ``$HOME`` / ``${HOME}`` and
+#: anything after it (``~/.cache``, ``$HOME/x``, the ``~/*`` glob) — matching base
+#: ``main``'s ``rm -rf ~.*`` contract, widened to the ``$HOME`` spellings (#8387).
+#: A variable-name boundary after bare ``$home`` keeps an unrelated variable such
+#: as ``$HOME_BACKUP`` from matching; ``${home}`` is delimited by its own ``}``.
+_RM_HOME_EXACT_RE = re.compile(r"(?:~|\$\{home\}|\$home(?![a-z0-9_])).*", re.IGNORECASE | re.DOTALL)
+#: Escape / quote / substitution characters that can reconstruct the ``rm``
+#: program name from text that does not contain the literal ``rm`` (a folded
+#: ``"r\<nl>m"``, an octal ``$'r\555'``). The cheap pre-filter admits a command
+#: carrying any of these so the walk gets a chance to decode it.
+_RM_OBFUSCATION_MACHINERY_RE = re.compile(r"[\\$`'\"]")
+
+#: Shell control operators that END a command's argv when they appear UNQUOTED
+#: — a glued one (``/;reboot``, ``/&&id``) leaves the real operand before it, so
+#: an operand token is classified only up to the first of these and the argv
+#: ends there. ``&`` covers ``&`` and ``&&``; ``|`` covers ``|`` and ``||``.
+_RM_OPERAND_BOUNDARY_RE = re.compile(r"[;&|\n]")
+
+
+def _rm_operand_before_boundary(operand: str) -> "tuple[str, bool]":
+    """The operand text up to its first unquoted control-operator boundary.
+
+    Returns ``(head, ended)``: *head* is the operand with everything from the
+    first ``;`` / ``&`` / ``|`` / newline onward removed, and *ended* is True
+    when such a boundary was present. The tokens reaching here have already had
+    their quotes resolved (raw split) or normalized away (decoded view), so a
+    remaining operator character is unquoted and genuinely separates commands —
+    ``rm -rf /;reboot`` tokenizes to the single operand ``/;reboot`` whose real
+    target is ``/`` (GPT security-class, #15316). Splitting here classifies that
+    ``/`` and stops the argv, so a command glued after the boundary is neither
+    read as another rm operand nor able to hide the target before it.
+    """
+    match = _RM_OPERAND_BOUNDARY_RE.search(operand)
+    if match is None:
+        return operand, False
+    return operand[: match.start()], True
+
+
+def _rm_strip_surrounding_quotes(token: str) -> str:
+    """Peel balanced surrounding quote pairs from a raw operand token.
+
+    ``_split_shell_words`` leaves a quoted operand quoted (``"$home"``), so an
+    exact operand match needs the wrapper removed. Only a matching leading and
+    trailing quote of the same kind is peeled, to a fixed point, so an operand
+    that merely CONTAINS a quote is left alone.
+    """
+    previous = None
+    while token != previous:
+        previous = token
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+            token = token[1:-1]
+    return token
+
+
+def _rm_walk_frames(text_lower: str, raw_text: "str | None") -> "list[tuple[str, list[str], bool]]":
+    """``(source, norm_tokens, repaired)`` frames for the rm floor to classify.
+
+    The first block is ``_shell_payload_walk(text_lower)`` — the ordinary
+    lowercased walk. When *raw_text* is supplied AND carries an ANSI-C span, a
+    SECOND block is the walk of that text with its ``$'…'`` spans decoded
+    (case-preserved) then lowercased, so the width-sensitive ``\\U`` unicode
+    escape resolves (``is_denied`` lowercases first, which would turn ``\\U`` into
+    ``\\u`` and truncate the read at 4 digits).
+
+    ``repaired`` marks the second block, and the caller uses it to classify a
+    repaired frame ONLY through its decoded ``norm_tokens`` — never through a
+    quote-stripping raw split. ``_decode_shell_quoted_literals`` re-quotes an
+    ANSI-C value with ``shlex.quote`` (``$'\\"/\\"'`` -> ``'"/"'``), so a raw
+    split of the repaired source would strip BOTH the added shell quotes and the
+    LITERAL quotes the decode produced, reading the filename ``"/"`` as the root.
+    The original-text walk (always included) is where a raw ``$HOME`` / ``~`` home
+    operand is classified, so the repaired block loses no coverage by skipping it.
+    Deduplicated: the ordinary command (no ``$'…'``, or the decode changes
+    nothing) yields only the first block.
+    """
+    frames: "list[tuple[str, list[str], bool]]" = [
+        (source, toks, False) for source, toks in _shell_payload_walk(text_lower)
+    ]
+    if raw_text is not None and "$'" in raw_text:
+        repaired = _decode_shell_quoted_literals(raw_text).lower()
+        if repaired != text_lower:
+            frames.extend((source, toks, True) for source, toks in _shell_payload_walk(repaired))
+    return frames
+
+
+def _recursive_force_rm_targets(
+    text_lower: str, *, raw_text: "str | None" = None
+) -> "frozenset[str]":
+    """Which catastrophic target(s) a top-level ``rm`` recursively force-deletes.
+
+    Returns a subset of ``{"root", "home"}`` — ``root`` when a resolved operand
+    IS the filesystem root, ``home`` when one IS the home directory (by ``~`` or
+    the ``$HOME`` variable). Empty when the command is not a recursive-force
+    ``rm`` against such an EXACT target; a descendant (``/tmp/x``,
+    ``$HOME/.cache``) and a mere text mention both return empty.
+
+    ``--no-preserve-root`` is a trigger on its own (meaningless without ``-rf``,
+    and its whole purpose is to defeat the ``/`` guard); otherwise BOTH a
+    recursive and a force flag must be present, in any position. A ``--``
+    end-of-options marker stops flag parsing, so a token after it is an operand
+    even if it is dash-shaped — matching GNU ``rm``.
+
+    Every command FRAME is inspected — the top-level argv and the argv of every
+    nested shell payload (``bash -c '…'``, ``sh -c``, ``$(…)``, a here-string, a
+    chained segment). Each frame is re-split from its RAW source with
+    ``_split_shell_words`` (quote-resolved but ENV-UNEXPANDED), so ``$HOME`` is
+    classified by its written form rather than the home path a shlex expansion
+    would produce (which would read as root). This is the same payload descent
+    the self-protection floor uses, so a wrapper (``sudo rm -rf /``), a nested
+    script (``bash -c 'rm -rf /'``) and a chain (``… && rm -rf /``) are all
+    reached, while the frame's own ``_argv_programs`` scoping keeps a string that
+    is merely an argument to another program (a ``git commit -m`` message, a
+    ``grep`` pattern) from ever being read as an ``rm`` command.
+
+    *raw_text* is the ORIGINAL-case command, when the caller has it. Bash's
+    ANSI-C unicode escapes are CASE-SENSITIVE in width (``\\u`` is 4 hex digits,
+    ``\\U`` is 8), so a ``$'\\U0000002d…'`` spelling decodes correctly only from
+    case-preserved text -- the lowercased ``\\u`` truncates at 4 digits and reads
+    the wrong character. When *raw_text* is supplied its ANSI-C spans are decoded
+    (case-preserved) then lowercased and walked as an ADDITIONAL frame source, so
+    the ``\\U`` spelling is caught the same as its ``\\u`` twin.
+    """
+    # Cheap necessary condition. A plain ``rm`` invocation contains the literal
+    # ``rm``; an OBFUSCATED one (``"r\<nl>m"``, ``$'r\555'``) does not — its ``rm``
+    # is built by escape/quote/substitution machinery whose decoded output can be
+    # any character, so the only sound cheap gate is "contains ``rm`` OR contains
+    # such machinery". When neither is present the walk cannot yield an ``rm``.
+    if "rm" not in text_lower and not _RM_OBFUSCATION_MACHINERY_RE.search(text_lower):
+        return frozenset()
+    found: set[str] = set()
+    for source, norm_tokens, repaired in _rm_walk_frames(text_lower, raw_text):
+        # The DECODED view (payload walk's own tokens) is always classified: it
+        # resolves ANSI-C / unicode escapes and env expansion, so ``rm -rf $'/'``
+        # / ``$'\u002f'`` is caught as the exact root, and a ``$'"/"'`` filename's
+        # LITERAL quotes stay in the token so it is NOT misread as root.
+        found |= _rm_targets_in_argv(norm_tokens, strip_quotes=False)
+        # A REPAIRED frame (from the ANSI-C-decoded copy) is classified ONLY via
+        # its decoded tokens above. Its raw source has been through
+        # ``_decode_shell_quoted_literals`` + ``shlex.quote``, so a quote-stripping
+        # raw split would peel the shell quotes shlex added AND the LITERAL quotes
+        # the decode produced (``$'"/"'`` -> ``'"/"'`` -> ``/``), reading a
+        # filename as the root. The raw-spelling ``$HOME`` / ``~`` classification
+        # it would otherwise add is already covered by the ORIGINAL-text frame.
+        if repaired:
+            if {"root", "home"} <= found:
+                break
+            continue
+        # Non-repaired frame: also classify the RAW split, which keeps ``$HOME`` /
+        # ``~`` unexpanded so home is classified by its written spelling. Surrounding
+        # SHELL quotes are stripped only here (``"$HOME"`` -> ``$HOME``).
+        found |= _rm_targets_in_argv(_split_shell_words(source), strip_quotes=True)
+        # Execution-substitution bodies the shared walk does not surface as their
+        # own frames: a ``$(…)`` / backtick command substitution nested INSIDE a
+        # double-quoted argument (the enclosing quote makes the closing ``)``
+        # quote-inactive, so ``_substitution_bodies`` over-reads it), a bash 5.3
+        # ``${ …;}`` funsub, and a bare ``(…)`` subshell. Each EXECUTES the command
+        # it carries, so an ``rm`` inside one is a real wipe even when the
+        # substitution's OUTPUT is then consumed as data (``grep -rn "$(rm -rf /)"
+        # test/`` runs the wipe before grep starts). Each extracted body is
+        # classified as its own argv — flag order, the exact-operand test and the
+        # glob shape all apply inside it.
+        for body in _rm_exec_substitution_bodies(source):
+            found |= _rm_targets_in_argv(_split_shell_words(body), strip_quotes=True)
+        if {"root", "home"} <= found:
+            break
+    return frozenset(found)
+
+
+#: The BASE-LITERAL spellings of the two ``rm`` deny rules, as whole-line
+#: patterns (``rm -rf /`` / ``rm -rf ~`` followed by anything). They are the
+#: FAIL-CLOSED fallback: the structural floor above needs a tokenizer, and if
+#: that tokenizer RAISES the floor must still deny the one spelling the pre-#8237
+#: bare-literal rule denied WITHOUT any tokenizer — a text ``re.search`` over the
+#: lowercased command. base ``main`` denied ``rm -rf /`` even with no tokenizer,
+#: so a tokenizer hiccup must not turn that into an ALLOW (First Principles
+#: items 5+6, #15316). This recovers ONLY the exact base spelling, not the
+#: widened flag/glob/obfuscation coverage — those depend on the tokenizer and
+#: are simply unavailable when it breaks; the point is that the floor never fails
+#: OPEN on the catastrophic literal.
+_RM_ROOT_LITERAL_RE = re.compile(r"rm -rf /")
+_RM_HOME_LITERAL_RE = re.compile(r"rm -rf ~")
+
+
+def _recursive_force_rm_targets_fail_closed(text_lower: str) -> "frozenset[str]":
+    """Base-literal ``rm`` targets, for when the structural tokenizer RAISED.
+
+    Applies the pre-widening bare-literal check (``rm -rf /`` / ``rm -rf ~`` as a
+    substring of the lowercased command) with NO tokenization, so the floor
+    denies the catastrophic literal even when :func:`_recursive_force_rm_targets`
+    could not run. This is deliberately the SAME shape ``main``'s deny rule had
+    before this change, so the fail path is no weaker than base was.
+    """
+    found: set[str] = set()
+    if _RM_ROOT_LITERAL_RE.search(text_lower):
+        found.add("root")
+    if _RM_HOME_LITERAL_RE.search(text_lower):
+        found.add("home")
+    return frozenset(found)
+
+
+#: A bash 5.3 command funsub: ``${ COMMANDS; }`` / ``${|COMMANDS; }`` — runs the
+#: commands in the current shell (unlike ``$(…)``, no subshell). The body runs to
+#: the matching ``}``; the leading ``|`` (value-returning form) and a trailing
+#: ``;`` are stripped when the body is classified.
+_FUNSUB_OPEN_RE = re.compile(r"\$\{[ \t\n|]")
+
+
+def _index_in_single_quote(source: str, index: int) -> bool:
+    """True if *index* falls inside a single-quoted span of *source*.
+
+    A single quote in bash suppresses every expansion, so a ``${`` (or ``$(``,
+    backtick, ``(``) inside one is literal text, not a construct. But a single
+    quote INSIDE a double-quoted span is itself a literal apostrophe — it opens
+    no span — so a naive count of single quotes flips state on an apostrophe in
+    ``"it's $(rm -rf /)"`` and wrongly reads the executing ``$(…)`` after it as
+    single-quoted (GPT security-class, #15316). So BOTH quote contexts are
+    tracked: a ``'`` toggles single-quote state only when NOT already inside
+    double quotes, and a ``"`` toggles double-quote state only when NOT inside
+    single quotes. A backslash escape outside single quotes skips the next
+    character (in bash a ``\\'`` outside single quotes is a literal apostrophe,
+    not a span opener). The result is single-quote state at *index*.
+    """
+    in_single = False
+    in_double = False
+    i = 0
+    while i < index and i < len(source):
+        ch = source[i]
+        if ch == "\\" and not in_single:
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        i += 1
+    return in_single
+
+
+def _rm_matching_close(source: str, start: int, opener: str, closer: str) -> int:
+    """Index of the *closer* that balances the *opener* already consumed, QUOTE-AWARE.
+
+    Scans from *start* tracking nesting of ``opener``/``closer`` and both quote
+    contexts, so an ``opener``/``closer`` INSIDE a single- or double-quoted span
+    (or backslash-escaped) does not change the depth — ``$(echo "a)b"; rm -rf /)``
+    keeps its real close, where a quote-blind paren count would stop at the ``)``
+    inside ``"a)b"`` and truncate the body before the wipe (GPT security-class,
+    #15316). Returns the index of the balancing ``closer``, or ``len(source)``
+    when the construct is unterminated (the caller then takes the remainder,
+    which only ever feeds the classifier MORE text — the fail-closed direction).
+    """
+    depth = 1
+    j = start
+    n = len(source)
+    in_single = in_double = False
+    while j < n:
+        ch = source[j]
+        if ch == "\\" and not in_single:
+            j += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double:
+            if ch == opener:
+                depth += 1
+            elif ch == closer:
+                depth -= 1
+                if depth == 0:
+                    return j
+        j += 1
+    return n
+
+
+def _rm_matching_backtick(source: str, start: int) -> int:
+    """Index of the backtick closing the one already consumed, QUOTE-AWARE.
+
+    A backtick inside a SINGLE-quoted span is literal and does not close the
+    substitution; inside double quotes a backtick DOES still delimit a command
+    substitution, so only single-quote state suppresses it. A backslash escapes
+    the next character outside single quotes. Returns the closing backtick's
+    index, or ``len(source)`` when unterminated (caller takes the remainder).
+    """
+    j = start
+    n = len(source)
+    in_single = in_double = False
+    while j < n:
+        ch = source[j]
+        if ch == "\\" and not in_single:
+            j += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "`" and not in_single:
+            return j
+        j += 1
+    return n
+
+
+def _rm_exec_substitution_bodies(source: str) -> "list[str]":
+    """Inner command lines of the execution-substitutions the shared walk misses.
+
+    Three shapes, all of which RUN the command they carry (so an ``rm`` inside is
+    executed, not data), and none of which the payload walk surfaces as a frame
+    of its own:
+
+    * a ``$(…)`` command substitution or a backtick one nested INSIDE a
+      double-quoted word — ``grep -rn "$(rm -rf /)" test/``. The enclosing
+      double quote makes the closing ``)`` quote-INACTIVE to the quote-aware
+      body scan, so ``_substitution_bodies`` reads past it; but ``$(…)`` executes
+      inside double quotes and unquoted, so the body is extracted here.
+    * a bash 5.3 ``${ …;}`` funsub — ``grep x ${ rm -rf /;}`` — which the walk
+      does not recognise as a substitution at all.
+    * a bare ``(…)`` SUBSHELL — ``(rm -rf /)`` — which runs its body in a child
+      shell. When it is glued (``(rm``) the tokenizer keeps the ``(`` on the
+      program word, so ``rm`` never reaches program position; extracting the
+      parenthesised body and classifying it as its own argv recovers it. (The
+      spaced form ``( rm -rf / )`` already tokenizes cleanly, so this only ADDS
+      the glued spelling.)
+
+    SINGLE-QUOTE AWARE, and that is load-bearing: inside single quotes ``$(``,
+    a backtick, ``(`` and ``${`` are all LITERAL — bash executes none of them —
+    so ``git commit -m 'see `rm -rf /` warning'`` and ``grep '`rm -rf /`' src/``
+    run no ``rm`` and must NOT be extracted (that is exactly the text false
+    positive the Security Scope lane rejects). An opener inside DOUBLE quotes, or
+    unquoted, does execute and is extracted. Double-quote state is not tracked
+    because it does not suppress these forms.
+
+    Returned bodies are command lines; the caller classifies each as its own
+    argv. Over-extraction (a body that is not really an ``rm``) yields nothing,
+    and an unbalanced/unterminated construct yields the remainder, which only ever
+    feeds the classifier MORE text — the fail-closed direction.
+    """
+    bodies: list[str] = []
+    n = len(source)
+    # ``$(…)`` command substitutions, bare ``(…)`` subshells, and backtick
+    # substitutions — skipped when inside a SINGLE-quoted span, where they are
+    # literal. A ``(`` preceded by ``$`` is the command-sub opener; any other
+    # ``(`` opens a subshell (both matched by the same paren walk).
+    #
+    # Both quote contexts are tracked: a ``'`` toggles single-quote state only
+    # when NOT inside double quotes (an apostrophe in ``"it's $(rm -rf /)"`` is a
+    # literal, and must not suppress the executing ``$(…)`` that follows — GPT
+    # security-class, #15316), and a ``"`` toggles double-quote state only when
+    # NOT inside single quotes. A backslash outside single quotes escapes the
+    # next character.
+    i = 0
+    in_single = False
+    in_double = False
+    while i < n:
+        ch = source[i]
+        if ch == "\\" and not in_single:
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            i += 1
+            continue
+        if in_single:
+            i += 1
+            continue
+        if ch == "(":
+            open_at = i + 1  # body starts just past the '('
+            j = _rm_matching_close(source, open_at, "(", ")")
+            bodies.append(source[open_at:j] if j < n else source[open_at:])
+            i = j + 1
+            continue
+        if ch == "`":
+            j = _rm_matching_backtick(source, i + 1)
+            bodies.append(source[i + 1 : j] if j < n else source[i + 1 :])
+            i = j + 1 if j < n else n
+            continue
+        i += 1
+    # ``${ …;}`` / ``${|…;}`` funsubs, matched to their closing brace — also only
+    # OUTSIDE a single-quoted span (a ``${`` in single quotes is literal).
+    for match in _FUNSUB_OPEN_RE.finditer(source):
+        if _index_in_single_quote(source, match.start()):
+            continue
+        depth = 1
+        j = match.end()
+        while j < n and depth:
+            if source[j] == "{":
+                depth += 1
+            elif source[j] == "}":
+                depth -= 1
+            j += 1
+        body = source[match.end() : j - 1] if depth == 0 else source[match.end() :]
+        # Strip the value-returning ``|`` lead and a trailing statement ``;``.
+        bodies.append(body.lstrip("|").rstrip().rstrip(";"))
+    return bodies
+
+
+#: Exec wrappers that RUN their trailing command, so ``rm`` sitting after one is
+#: still an executed ``rm``. ``_argv_programs`` attributes ``rm`` to the wrapper,
+#: and ``rm`` is itself in ``_DATA_CONSUMER_PROGRAMS`` (a path mover), so the
+#: generic data-consumer exemption cannot tell ``sudo rm`` (executes) from
+#: ``echo rm`` (prints) — this explicit set does. It mirrors the wrappers
+#: ``perm_verb_mention`` documents (``command``/``env``/``exec``/``nohup``/
+#: ``time``/``nice``/``sudo``/``xargs``), plus the common scheduling wrappers.
+_RM_EXEC_WRAPPERS: frozenset[str] = frozenset(
+    {"sudo", "xargs", "env", "exec", "nohup", "time", "nice", "timeout", "command", "stdbuf"}
+)
+
+
+#: Multi-call binaries that DISPATCH to the applet named by their first
+#: (non-flag) argument: ``busybox rm -rf /`` runs the ``rm`` applet, and
+#: ``toybox``/``busybox.exe`` do the same. Here ``rm`` is the dispatcher's first
+#: ARGUMENT, not the line's program word and not behind an exec wrapper, so the
+#: plain program-position scan and the wrapper set both miss it (GPT
+#: security-class, #15316). Unlike an exec wrapper, ONLY the first argument is
+#: the applet — ``busybox echo rm -rf /`` runs ``echo``, not ``rm`` — so the
+#: dispatch is matched positionally, not by wrapper membership.
+_RM_APPLET_DISPATCHERS: frozenset[str] = frozenset({"busybox", "toybox"})
+
+
+def _rm_deescape_unquoted_backslashes(text: str) -> str:
+    """Remove backslash escapes as an UNQUOTED inner shell would, so an escaped
+    program name reforms.
+
+    A ``bash -c $"\\r\\m -rf /"`` payload reaches the inner shell as the script
+    ``\\r\\m -rf /``; unquoted, bash drops each backslash before an ordinary
+    character, so ``\\r\\m`` becomes the word ``rm``. The outer walk's
+    ``_decode_printf_escapes`` instead maps ``\\r`` to whitespace and drops the
+    ``r``, so the ``rm`` never reforms and the wipe was missed (Item 4, #15316).
+
+    Backslashes INSIDE single quotes are literal and are left untouched; a
+    backslash outside single quotes removes itself and keeps the next character
+    (``\\n`` -> ``n``, matching the inner shell's own unquoted lexing rather than
+    the C-escape meaning — the shell does not turn an unquoted ``\\n`` into a
+    newline). A trailing backslash is dropped.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_single = False
+    while i < n:
+        ch = text[i]
+        if ch == "'":
+            in_single = not in_single
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and not in_single and i + 1 < n:
+            out.append(text[i + 1])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+#: ``find``'s two flags that RUN their trailing command span as a real argv
+#: (``-execdir`` differs from ``-exec`` only in the working directory), so an
+#: ``rm`` inside that span is executed, not data. ``-ok``/``-okdir`` prompt first
+#: but still execute, so they are included — the prompt is not a control an agent
+#: session can rely on.
+_FIND_EXEC_FLAGS: frozenset[str] = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+#: The two tokens that TERMINATE a ``find -exec`` command span: ``;`` (run once
+#: per match) and ``+`` (batch). ``{}`` inside the span is the match-path
+#: placeholder, dropped rather than read as an operand.
+_FIND_EXEC_TERMINATORS: frozenset[str] = frozenset({";", "+"})
+
+
+def _rm_targets_in_find_exec(
+    tokens: "list[str]", programs: "list[str]", *, strip_quotes: bool
+) -> "frozenset[str]":
+    """Catastrophic ``rm`` targets inside a ``find … -exec <cmd> … ;/+`` span.
+
+    ``find`` does not read its ``-exec`` argument as data — it runs the span as
+    its own argv once per match (``-exec rm -rf {} ;``), so a rooted delete there
+    is a real wipe the plain program-position scan cannot see (``rm`` is not the
+    line's program, ``find`` is, and ``find`` is not an exec wrapper). GPT
+    security-class finding, #15316: ``find . -exec rm -rf --no-preserve-root /``
+    passed the floor because the exec span was never parsed.
+
+    Only a command whose PROGRAM is ``find`` is inspected (``_argv_programs``
+    scopes it), so ``grep -n -- -exec …`` — where ``-exec`` is data to another
+    program — is untouched. Each ``-exec``/``-execdir``/``-ok``/``-okdir`` span
+    runs from just after the flag to its ``;``/``+`` terminator (or the argv end),
+    with the ``{}`` placeholder dropped, and is classified as its own argv by the
+    same rule — so flag order/position, the exact-vs-descendant operand test and
+    the glob shape all apply inside the span exactly as they do at top level.
+    """
+    found: set[str] = set()
+    i = 0
+    n = len(tokens)
+    while i < n:
+        token = tokens[i]
+        # The flag is find's only when find is the command this token belongs to.
+        if token in _FIND_EXEC_FLAGS and _program_basename(programs[i]) == "find":
+            span: list[str] = []
+            j = i + 1
+            while j < n and tokens[j] not in _FIND_EXEC_TERMINATORS:
+                if tokens[j] != "{}":
+                    span.append(tokens[j])
+                j += 1
+            if span:
+                # The span IS a command argv; classify it with the same rule.
+                found |= _rm_targets_in_argv(span, strip_quotes=strip_quotes)
+            i = j + 1  # step past the terminator
+            continue
+        i += 1
+    return frozenset(found)
+
+
+#: Shell programs whose ``-c`` argument is a command STRING they execute. When a
+#: nested payload's escaped quoting defeats the walk's own descent, the walk can
+#: still hand this frame a FLATTENED argv (``['sh', '-c', 'rm', '-rf', '/']``);
+#: the tokens after ``-c`` are then the executed command, read here as their own
+#: argv so the ``rm`` leads its own command instead of sitting behind ``sh``.
+_RM_SHELL_C_PROGRAMS: frozenset[str] = frozenset(
+    {"sh", "bash", "zsh", "dash", "ksh", "ash", "busybox"}
+)
+
+
+def _rm_targets_in_shell_c(
+    tokens: "list[str]", programs: "list[str]", *, strip_quotes: bool
+) -> "frozenset[str]":
+    """Catastrophic ``rm`` targets in a ``sh -c <cmd>`` argv flattened into a frame.
+
+    The payload walk normally descends ``bash -c '<script>'`` into a frame of its
+    own, but a two-level nest with ESCAPED inner quotes
+    (``bash -c 'sh -c "rm -rf \\"/\\""'``) can defeat the inner extraction and
+    leave the ``sh -c`` frame's argv flattened to ``['sh', '-c', 'rm', '-rf',
+    '/']``. There ``rm`` is not at program position (``sh`` is) and ``sh`` is not
+    an exec wrapper, so the plain scan misses it. When a nested-shell program is
+    followed by a ``-c`` flag, the tokens after ``-c`` are the command string it
+    runs, so they are classified as their own argv — the same treatment
+    ``find -exec`` gets. Scoped to a frame whose PROGRAM is the shell
+    (``_argv_programs``), so a ``-c`` that is data to another command is untouched.
+    """
+    found: set[str] = set()
+    i = 0
+    n = len(tokens)
+    while i < n:
+        if (
+            _program_basename(tokens[i]) in _RM_SHELL_C_PROGRAMS
+            and _program_basename(programs[i]) in _RM_SHELL_C_PROGRAMS
+        ):
+            # Find this shell command's own ``-c`` (before its argv ends), then
+            # read the rest of the argv as the command string it executes.
+            j = i + 1
+            while j < n and not _ends_argv(tokens[j]):
+                if tokens[j] == "-c" and j + 1 < n:
+                    span = []
+                    k = j + 1
+                    while k < n and not _ends_argv(tokens[k]):
+                        span.append(tokens[k])
+                        k += 1
+                    if span:
+                        # The ``-c`` argument is a command STRING the inner shell
+                        # re-parses, so re-split it — its OWN backslash de-escaping
+                        # runs there. ``bash -c $"\r\m -rf /"`` reaches the inner
+                        # shell as the script ``\r\m -rf /``, whose ``\r\m`` the
+                        # inner bash de-escapes to ``rm``; the outer walk's
+                        # printf-escape pass had mangled ``\r`` to whitespace and
+                        # dropped the ``r``. De-escaping the joined payload the way
+                        # the unquoted inner shell does, then splitting, recovers
+                        # the ``rm`` program word (Item 4, #15316); classify it as
+                        # its own argv, and the raw span too.
+                        payload = _rm_deescape_unquoted_backslashes(" ".join(span))
+                        found |= _rm_targets_in_argv(
+                            _split_shell_words(payload), strip_quotes=strip_quotes
+                        )
+                        found |= _rm_targets_in_argv(span, strip_quotes=strip_quotes)
+                    break
+                j += 1
+        i += 1
+    return frozenset(found)
+
+
+def _rm_targets_in_argv(tokens: "list[str]", *, strip_quotes: bool) -> "frozenset[str]":
+    """The catastrophic ``rm`` targets deleted within ONE frame's raw argv.
+
+    Fires for each token whose basename is ``rm`` and that is EXECUTED — either
+    ``rm`` at program position (its command's leading word), or ``rm`` sitting
+    behind an exec wrapper (``sudo``/``xargs``/… — see ``_RM_EXEC_WRAPPERS``).
+    An ``rm`` that is merely an ARGUMENT of another command (``echo rm -rf /``
+    prints, it does not run ``rm``) is NOT executed and is skipped. This is the
+    ``rm`` analogue of ``perm_verb_mention``'s position gate; ``rm`` needs the
+    explicit wrapper set because, unlike ``chmod``, ``rm`` is itself a
+    data-consumer program, so the generic exemption cannot separate the two.
+
+    From each executed ``rm`` its OWN argv is read forward until the command
+    ends, so a sibling command's flags never leak in. A resolved operand is
+    classified EXACTLY: deny only when it IS root (``/``) or IS home
+    (``~``/``$HOME``, optional single trailing slash), never a descendant.
+
+    ``strip_quotes`` peels surrounding SHELL quotes from each operand — True for
+    the raw split (``"$HOME"`` -> ``$HOME``), False for the decoded view where a
+    surrounding quote is a literal character the decode produced (``$'"/"'`` ->
+    ``"/"``, a filename, not the root).
+    """
+    if not tokens:
+        return frozenset()
+    programs = _argv_programs(tokens)
+    found: set[str] = set()
+    found |= _rm_targets_in_find_exec(tokens, programs, strip_quotes=strip_quotes)
+    found |= _rm_targets_in_shell_c(tokens, programs, strip_quotes=strip_quotes)
+    expect_program = True
+    #: Index of the most recent command's program word, so a dispatcher's FIRST
+    #: argument (its applet) can be recognised: ``busybox rm -rf /`` runs ``rm``.
+    program_word_at = -1
+    for i, token in enumerate(tokens):
+        is_program_word = (
+            expect_program and bool(token) and not _shell_normalizer.ENV_ASSIGNMENT_RE.match(token)
+        )
+        starts_command = is_program_word
+        if is_program_word:
+            expect_program = False
+            program_word_at = i
+        if _ends_argv(token):
+            expect_program = True
+        if _program_basename(token) != "rm":
+            continue
+        # Executed iff ``rm`` leads its own command, or the command it belongs to
+        # is an exec wrapper (``sudo rm`` / ``xargs rm``), or ``rm`` is the FIRST
+        # argument of a multi-call dispatcher (``busybox rm`` runs the rm applet).
+        # An ``rm`` that is merely an argument of any other command, or a later
+        # argument of a dispatcher (``busybox echo rm``), is a data mention.
+        dispatched_applet = (
+            i == program_word_at + 1
+            and program_word_at >= 0
+            and _program_basename(tokens[program_word_at]) in _RM_APPLET_DISPATCHERS
+        )
+        executed = starts_command or programs[i] in _RM_EXEC_WRAPPERS or dispatched_applet
+        if not executed:
+            continue
+        has_rec = has_force = has_npr = False
+        root_target = home_target = False
+        end_of_options = False
+        depth = 0
+        for arg in tokens[i + 1 :]:
+            operand = _rm_strip_surrounding_quotes(arg) if strip_quotes else arg
+            # A glued control operator (``/;reboot``, ``/&&id``) leaves the real
+            # operand before it; classify only that head and, outside a
+            # substitution, end this rm's argv at the boundary so a command glued
+            # after it is not read as another operand.
+            glued_boundary = False
+            if depth + _substitution_depth_delta(arg) <= 0:
+                operand, glued_boundary = _rm_operand_before_boundary(operand)
+            if arg == "--" and not end_of_options:
+                end_of_options = True
+            elif not end_of_options and arg == "--no-preserve-root":
+                has_npr = True
+            elif not end_of_options and _rm_is_recursive_flag(arg):
+                has_rec = True
+                if _rm_is_force_flag(arg):
+                    has_force = True
+            elif not end_of_options and _rm_is_force_flag(arg):
+                has_force = True
+            elif operand and _RM_ROOT_EXACT_RE.fullmatch(operand):
+                root_target = True
+            elif operand and _RM_HOME_EXACT_RE.fullmatch(operand):
+                home_target = True
+            depth += _substitution_depth_delta(arg)
+            if depth <= 0 and (glued_boundary or _ends_argv(arg)):
+                break
+            depth = max(depth, 0)
+        if has_npr or (has_rec and has_force):
+            if root_target:
+                found.add("root")
+            if home_target:
+                found.add("home")
+    return frozenset(found)
+
+
 # ── Sandbox-escape floor (ssh back into this same host) ──
 # The agent's shell runs inside a sandbox; sshd does not.  A connection whose
 # TARGET is this same machine re-enters it outside every control in this
