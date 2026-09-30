@@ -83,10 +83,11 @@ row is the one thing bridging the two, and a row that was never written reads he
 as an abandoned process carrying our marker. On such a host the unowned population
 ran 250-504 per pass against 4 genuine strays in 6.5 hours.
 
-Membership is narrower than the slice even for this install's own spawns: an app
-backend's pid record and a long-lived sandboxed subprocess are in neither, so both
-read as unowned on every pass. Turning the budget to 0 is how an operator on such
-a host takes the reading without the signal until that is fixed.
+Membership is narrower than the slice even for this install's own spawns: a
+long-lived sandboxed subprocess is in no record, so it reads as unowned on every
+pass, and once it outlives the age floor only the argv condition keeps it from
+being a kill candidate. Turning the budget to 0 is how an operator on such a host
+takes the reading without the signal until that is fixed.
 
 Why the dead direction acts immediately
 ---------------------------------------
@@ -111,6 +112,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew import platform_compat, session_pid
+from kiro_crew.apps.backend import recorded_backend_pids
 from kiro_crew.mcp_gateway.daemon_control import configured_socket_path
 from kiro_crew.process_identity import audit_kill_decision
 from kiro_crew.runtime_ownership import (
@@ -656,10 +658,11 @@ class RuntimeReconciler:
                     )
                 else:
                     # "not-mine": a row owned by another gateway, or a pid known only
-                    # to the MCP pidfile or the manager's in-memory union. There is no
-                    # row here to remove and there never will be, so this is a steady
-                    # state and not a fault -- at WARNING it would be one line per
-                    # stale pid per cleanup tick for as long as the gateway runs.
+                    # to the MCP pidfile, the app-backend record or the manager's
+                    # in-memory union. There is no row here to remove and there never
+                    # will be, so this is a steady state and not a fault -- at WARNING
+                    # it would be one line per stale pid per cleanup tick for as long
+                    # as the gateway runs.
                     logger.debug(
                         "runtime_reconcile: the record for pid=%s is not ours to retract", pid
                     )
@@ -1090,6 +1093,16 @@ def build_reconciler(
         test (it is inherited), age past the floor, and be signalled -- the exact
         harm this module exists to prevent, delivered by it.
 
+        App backends run in the same slice and are in none of those records: a
+        backend is not a session, not a pooled MCP backend, and not tracked in
+        either pid file. Its own record, ``app_backends.pids.json``, is read too,
+        through :func:`~kiro_crew.apps.backend.recorded_backend_pids`, which leaves
+        out only a row whose process is proven gone and raises on an unreadable
+        file, so a damaged record refuses the pass like the others. That record
+        claims each spawned backend's root process only: an adopted backend is
+        never recorded, and a backend's children have no row, so both stay
+        unowned here.
+
         The session-file snapshot carries each row's OWNER and start identity: the
         identity is what the recycle check compares against, and the owner is what
         decides whether a retraction here can remove the row at all. The
@@ -1108,7 +1121,13 @@ def build_reconciler(
             # authorizing a kill on incomplete membership. The same completeness
             # requirement the scope reaper imposes on kill-authorizing callers.
             raise RuntimeError("the tracked-pid snapshot is incomplete")
-        return set(active_pids()) | _mcp_backend_pids() | tracked | set(snapshot)
+        return (
+            set(active_pids())
+            | _mcp_backend_pids()
+            | recorded_backend_pids()
+            | tracked
+            | set(snapshot)
+        )
 
     def was_recycled(pid: int) -> bool:
         """Whether every identity RECORDED for *pid*, in either file, disagrees with the live one.
@@ -1187,9 +1206,10 @@ def build_reconciler(
         predecessor gateway is a real dead record, but ``_untrack_session_pid``
         matches on the CALLING process's prefix and cannot remove anybody else's row
         -- those are the next gateway start's to clear, once its owner reads dead.
-        And a pid known only to the MCP backend pidfile or to the manager's
-        in-memory union has no row in either tracking file: the MCP sweep owns the
-        first and the manager owns the second. Both answer ``"not-mine"`` FOREVER, by
+        And a pid known only to the MCP backend pidfile, to the app-backend record or
+        to the manager's in-memory union has no row in either tracking file: the MCP
+        sweep owns the first, the app backend's spawn, stop and reap paths the
+        second, and the manager the third. They answer ``"not-mine"`` FOREVER, by
         design, so folding them into the same ``False`` a real failure gets would
         publish one WARNING per stale pid per cleanup tick for the gateway's life --
         a steady state reported as a fault. ``"failed"`` is reserved for a retraction
