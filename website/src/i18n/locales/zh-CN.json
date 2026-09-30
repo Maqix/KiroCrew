@@ -9083,7 +9083,7 @@
       "title_home": "你在云端的家",
       "home_cost": "约 {{amount}}/月，由 {{billedBy}} 计费",
       "home_size_label": "规格",
-      "home_choice_lead": "你的新任务只在 {{productName}} 运行时执行。可以让它留在这台电脑上，也可以给它一个始终在线的云端家。",
+      "home_choice_lead": "选择 {{productName}} 的运行位置：在此设备开机时本地运行，或在云端运行，这样即使此设备关机也能保持可用。",
       "home_choice_here": "这台电脑",
       "home_choice_here_hint": "免费 · 开机时运行",
       "home_choice_cloud": "云端",
@@ -9105,6 +9105,7 @@
       "home_removing": "正在移除它创建的资源…",
       "home_removed": "已移除：AWS 确认堆栈 {{stack}} 已不存在。",
       "home_remove_failed": "移除没有完成。如果 AWS 登录已过期，请重新登录后再试，或在远程 Crew 中移除。",
+      "home_auto_move": "新家准备就绪并登录后，此聊天将迁移过去，此窗口也会自动切换。",
       "home_build": "构建我的家",
       "home_build_signed_in": "我已登录 — 构建我的家",
       "home_aws_signin_intro": "登录 AWS 后即可构建你的家。AWS 登录页面会在你的浏览器中打开。{{productName}} 永远看不到你的密码或密钥。",
@@ -11037,7 +11038,8 @@
       },
       "homeSigninNotice": {
         "opened": "你的家只差一步就能登录 Kiro。登录页面已在你的浏览器中打开。",
-        "on_card": "你的家只差一步就能登录 Kiro。请打开它卡片上的登录链接。"
+        "on_card": "你的家只差一步就能登录 Kiro。请打开它卡片上的登录链接。",
+        "resolved": "你的云端之家已登录 Kiro。请在这里继续这段对话。"
       },
       "handoffDoneNotice": {
         "finished": "“{{title}}”已完成。在这里问我它发现了什么。",

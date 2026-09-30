@@ -127,6 +127,14 @@ def _result_text(card: sc.SetupCard) -> str:
             detail = action.result_detail(card)
     elif card.status in (sc.STATUS_FAILED, sc.STATUS_EXPIRED) and card.error:
         detail = f" Reason: {card.error.get('message', '')}"
+    if (card.outcome or {}).get("home_choice"):
+        detail += (
+            ' The gateway now shows a "Where should your crew live?" card: this machine '
+            "(free, runs while it is on) or a home in the cloud (always on). "
+            "Skipping a scheduled job skips only that step; setup still includes this home choice. "
+            "The card is the question; do not ask it again in prose or say setup is done. "
+            "If they pick the cloud, guide them through the card's steps one at a time."
+        )
     return (
         f'{SETUP_RESULT_PREFIX} {card.kind} card "{_card_title(card)}": {card.status}.{detail}\n'
         "Continue the setup conversation from here; do not re-propose a card the user declined.\n"
@@ -207,7 +215,15 @@ async def propose(
     # The gateway's own steps (privacy, the home question) are not the agent's proposals.
     proposable = [c for c in existing if not _is_gateway_card(c)]
     kept_job = any(_lifts_budget(c) and c.status == sc.STATUS_COMMITTED for c in existing)
-    if not kept_job and len(proposable) >= sc.CARD_BUDGET_BEFORE_FIRST_JOB:
+    home_choice = kind == sc.KIND_HOME and args.get("step") == HOME_CHOICE_STEP
+    if home_choice:
+        home = next((c for c in reversed(existing) if c.kind == sc.KIND_HOME), None)
+        if home is not None:
+            return (
+                f"The home step already has a card ({home.status}). Do not propose it again. "
+                "Use setup_status to check its outcome and continue from there."
+            )
+    if not kept_job and not home_choice and len(proposable) >= sc.CARD_BUDGET_BEFORE_FIRST_JOB:
         return (
             f"Error: this chat already showed {len(proposable)} setup cards without a kept job. "
             "Stop proposing setup steps; help the user with what they asked instead."
@@ -565,6 +581,8 @@ async def decide(
     if found is None:
         raise sc.CardRejected("setup card not found", "card_not_found")
     card: sc.SetupCard = found
+    if card.private.get("home_handoff_receipt"):
+        raise sc.CardRejected("this is a record of a completed setup step", "card_not_pending")
     action = setup_actions.get(card.kind)
     if action is None:
         raise sc.CardRejected(f"unknown setup card kind {card.kind!r}", "unknown_kind")
@@ -580,13 +598,15 @@ async def decide(
         )
         card = await _finish(card, sc.STATUS_DECLINED)
         if action.on_decline is not None:
-            await action.on_decline(state, card)
+            card = await action.on_decline(state, card) or card
         broadcast(state, card)
         _audit(
             "setup_card.decide", "declined", card.session_key, f"kind:{card.kind} card:{card.id}"
         )
         if action.reported:
             await _report(state, card)
+        if action.after_report is not None:
+            await action.after_report(state, card)
         return card
     committer = extra.run if extra is not None else action.commit
     denial = await asyncio.to_thread(_governance_denial, card.kind, card.session_key)
@@ -607,7 +627,15 @@ async def decide(
         )
     broadcast(state, card)
     _audit("setup_card.decide", card.status, card.session_key, f"kind:{card.kind} card:{card.id}")
-    if card.terminal and action.reported:
+    if (
+        card.terminal
+        and action.reported
+        and not (
+            card.kind == sc.KIND_HOME
+            and (card.outcome or {}).get("moved")
+            and not (card.outcome or {}).get("simulated")
+        )
+    ):
         await _report(state, card)
     if card.terminal and action.after_report is not None:
         await action.after_report(state, card)
@@ -734,7 +762,9 @@ async def _show_chosen_home(state: "DashboardState", slot: "_ChatSlot", session_
 
 
 async def _home_choice_due(slot: "_ChatSlot") -> bool:
-    """Whether the first kept job should bring the home question (no card, no script)."""
+    """Whether finishing the first run's job step should bring the home question."""
+    if await asyncio.to_thread(read_first_run_slot) != slot.key:
+        return False
     if _scripted_home() is not None:
         return False
     existing = await asyncio.to_thread(sc.list_cards, slot.key)
@@ -744,10 +774,10 @@ async def _home_choice_due(slot: "_ChatSlot") -> bool:
 async def _offer_home_choice(
     state: "DashboardState", slot: "_ChatSlot", session_key: str
 ) -> sc.SetupCard | None:
-    """At the first kept job, the gateway's own "Where should your crew live?" card.
+    """After the first job is kept or skipped, the gateway's own home question.
 
-    Asked now because it matters now: the job just kept runs only while Kiro Crew
-    runs. The gateway shows it itself so the step always happens; it stays outside
+    The home choice also matters to owners who want no schedules. The gateway
+    shows it itself so the step always happens; it stays outside
     the agent's card budget and stack (payload ``offer``). It asks nothing of AWS
     until the owner picks the cloud (:func:`_choose_home`). Not shown when the chat
     already has a home card or a script answered ``--home``.
@@ -1127,25 +1157,32 @@ async def _commit_cron(
     outcome = dict(card.outcome or {})
     outcome["job_id"] = job_id
     card = await _finish(card, sc.STATUS_COMMITTED, outcome=outcome)
+    return await prepare_home_after_job(state, card)
+
+
+async def prepare_home_after_job(state: "DashboardState", card: sc.SetupCard) -> sc.SetupCard:
+    """Continue to the home choice after keeping or declining a first-run job."""
     slot = state.get_slot(card.slot)
-    if await graduate(state, card.slot) and slot is not None:
-        if await _home_choice_due(slot):
-            # The kept job's result tells the agent the question is on screen; the
-            # card itself is shown right after that result (offer_home_after_job).
-            card = await _finish(
-                card, sc.STATUS_COMMITTED, outcome={**outcome, "home_choice": True}
-            )
+    if slot is not None and await _home_choice_due(slot):
+        # The result announces the question; its row follows the result turn so
+        # the tray keeps the new card expanded (offer_home_after_job).
+        return await _finish(
+            card, card.status, outcome={**(card.outcome or {}), "home_choice": True}
+        )
+    await graduate(state, card.slot)
     return card
 
 
 async def offer_home_after_job(state: "DashboardState", card: sc.SetupCard) -> None:
-    """The cron action's ``after_report``: the home question, after the job's result.
+    """The home question after the kept or skipped job's result.
 
     Shown once the ``[Setup card result]`` turn has started, so the card belongs
     to that turn: the tray shows it in full instead of reading it as a card the
     chat has already moved past.
     """
-    if card.status != sc.STATUS_COMMITTED or not (card.outcome or {}).get("home_choice"):
+    if card.status not in (sc.STATUS_COMMITTED, sc.STATUS_DECLINED) or not (card.outcome or {}).get(
+        "home_choice"
+    ):
         return
     slot = state.get_slot(card.slot)
     if slot is not None:
@@ -1185,9 +1222,9 @@ async def _commit_service(
 async def _commit_home(
     state: "DashboardState", card: sc.SetupCard, input_: dict[str, Any]
 ) -> sc.SetupCard:
-    """Two decisions on one card: "Build my home", then "Move in".
+    """Build the authorized home, then continue its move after sign-in.
 
-    Between them, a home whose build finished without its Kiro sign-in is in
+    A home whose build finished without its Kiro sign-in is in
     phase ``signin``: the commit signs it in (:func:`_sign_home_in`).
     """
     phase = str(card.private.get("phase") or "build")
@@ -1255,6 +1292,8 @@ async def _commit_home(
 
     def _remember(c: sc.SetupCard) -> None:
         c.private["job_id"] = job.id
+        c.private["auto_move"] = True
+        c.private["auto_move_hash"] = c.payload_hash
 
     from kiro_crew.dashboard.home_signin import BROWSER_HERE_KEY
 
@@ -1425,7 +1464,23 @@ async def resume_home_builds(state: "DashboardState") -> int:
             await asyncio.to_thread(sc.update_card, card.id, _removal_interrupted)
             continue
         job_id = str(card.private.get("job_id") or "")
-        if card.status != sc.STATUS_WAITING or not job_id:
+        watcher = _home_watchers.get(card.id)
+        if watcher is not None and not watcher.done():
+            continue
+        if (
+            card.status == sc.STATUS_WORKING
+            and card.private.get("auto_move") is True
+            and card.private.get("phase") == "move"
+        ):
+            card = await _back_to_pending(card, "move_in_interrupted", "the move was interrupted")
+        auto_move = (
+            card.status == sc.STATUS_PENDING
+            and card.private.get("auto_move") is True
+            and card.private.get("phase") == "move"
+            and (card.error or {}).get("code")
+            in (None, "move_in_restarting", "move_in_interrupted", "move_in_chat_busy")
+        )
+        if (card.status != sc.STATUS_WAITING and not auto_move) or not job_id:
             continue
         if _start_home_watch(state, card.id, job_id, may_open=False):
             resumed += 1
@@ -1452,7 +1507,31 @@ async def _watch_home(
         while True:
             await asyncio.sleep(_CONNECT_POLL_SECS)
             card = await asyncio.to_thread(sc.get_card, card_id)
-            if card is None or card.status != sc.STATUS_WAITING:
+            if card is None:
+                return
+            if card.status == sc.STATUS_PENDING and card.private.get("phase") == "move":
+                if card.private.get("auto_move") is not True:
+                    return
+                if card.private.get("auto_move_hash") != card.payload_hash:
+                    card = await _back_to_pending(
+                        card, "card_hash_mismatch", "the home changed; review it before moving"
+                    )
+                    broadcast(state, card)
+                    return
+                slot = state.get_slot(card.slot)
+                if slot is not None and slot.running:
+                    continue
+                try:
+                    card = await decide(state, card.id, sc.DECISION_COMMIT, card.payload_hash, {})
+                except sc.CardRejected as exc:
+                    if exc.code not in ("card_not_pending", "card_not_found"):
+                        card = await _back_to_pending(card, exc.code, str(exc))
+                        broadcast(state, card)
+                    return
+                if (card.error or {}).get("code") == "move_in_chat_busy":
+                    continue
+                return
+            if card.status != sc.STATUS_WAITING:
                 return
             try:
                 job = await asyncio.to_thread(store.get, job_id)
@@ -1470,6 +1549,8 @@ async def _watch_home(
             if job.status == lj.DONE:
                 card = await _home_built(card, job, outcome)
                 broadcast(state, card)
+                if card.private.get("auto_move") is True and card.private.get("phase") == "move":
+                    continue
                 return
             if job.terminal:
                 message = str(job.error or "the home could not be built")
@@ -1631,7 +1712,7 @@ async def _remove_leftover(state: "DashboardState", card_id: str, job: Any) -> N
 
 
 async def _home_built(card: sc.SetupCard, job: Any, outcome: dict[str, Any]) -> sc.SetupCard:
-    """A finished build: offer Move in, or first the home's own Kiro sign-in.
+    """A finished build: continue the move, or request the home's Kiro sign-in.
 
     A build can finish with its sign-in step skipped: the device code ran out
     unapproved, or a gateway restart cut the wait short. That home's agent cannot
@@ -1647,6 +1728,8 @@ async def _home_built(card: sc.SetupCard, job: Any, outcome: dict[str, Any]) -> 
 
     await asyncio.to_thread(sc.update_card, card.id, _mark)
     extra = {"ready": True} if signed_in else {"ready": False, "needs_signin": True}
+    if signed_in and card.private.get("auto_move") is True:
+        extra["auto_move"] = True
     return await _finish(card, sc.STATUS_PENDING, outcome={**outcome, **extra})
 
 
@@ -1675,7 +1758,10 @@ async def _sign_home_in(state: "DashboardState", card: sc.SetupCard) -> sc.Setup
             # Signed in meanwhile (another tab, the Instances hub): move in.
             done = await asyncio.to_thread(_store(state).get, job_id)
             if done is not None:
-                return await _home_built(card, done, _home_outcome(done))
+                card = await _home_built(card, done, _home_outcome(done))
+                if card.private.get("auto_move") is True:
+                    _start_home_watch(state, card.id, job_id, may_open=False)
+                return card
         raise sc.CardRejected(str(body.get("error") or "the sign-in could not start"), code)
     may_open = card.private.get(BROWSER_HERE_KEY) is True
     card = await _finish(card, sc.STATUS_WAITING, outcome=_home_outcome(job))
@@ -1815,11 +1901,18 @@ def _kickoff_facts(slot_key: str = "") -> list[str]:
 
         state = read_state()
         home = state.get("home")
+        if not isinstance(home, dict):
+            facts.append(
+                "The home choice is a required setup step, even if scheduling is skipped. "
+                'After a spoken refusal such as "no scheduled job", call '
+                'setup_card(kind="home", step="choose") and end the turn. '
+                "Do not say setup is done before the home card is answered or declined."
+            )
         if isinstance(home, dict) and home.get("choice") == HOME_CLOUD:
             facts.append(
                 "The user chose a home in the cloud (their AWS account) in the terminal; a "
                 "home card is shown at the top of this chat. Do not wait for it — carry on "
-                "with the setup; offer Move in when the card says the home is ready."
+                "with the setup; it moves this chat automatically when the home is ready."
             )
     except Exception:
         logger.warning("home choice read for the first-run kickoff failed", exc_info=True)
@@ -1883,7 +1976,7 @@ MAIN_CHAT_FALLBACK_TITLE = "Main"
 
 
 async def graduate(state: "DashboardState", slot_key: str) -> bool:
-    """Turn the first-run chat into the main chat once its first job is kept.
+    """Turn the first-run chat into the main chat after its home choice is settled.
 
     Idempotent. Renames the chat after the agent (as an explicit title, so the
     auto-titler leaves it alone), keeps it pinned, records it as the main chat and
@@ -1898,6 +1991,12 @@ async def graduate(state: "DashboardState", slot_key: str) -> bool:
         return False
     slot = state.get_slot(slot_key)
     if slot is None:
+        return False
+    homes = [c for c in await asyncio.to_thread(sc.list_cards, slot_key) if c.kind == sc.KIND_HOME]
+    if homes:
+        if homes[-1].status not in (sc.STATUS_COMMITTED, sc.STATUS_DECLINED):
+            return False
+    elif (_scripted_home() or {}).get("choice") not in (HOME_HERE, "later"):
         return False
     name = await asyncio.to_thread(_agent_name)
     await _set_explicit_title(state, slot, name or MAIN_CHAT_FALLBACK_TITLE)
@@ -1982,6 +2081,8 @@ def _home_state(card: sc.SetupCard) -> str:
     """Where the newest home card stands, for the overview's home line."""
     outcome = card.outcome or {}
     if outcome.get("moved"):
+        if outcome.get("arrived"):
+            return "this home; signed in to Kiro; move complete"
         return "moved in"
     if outcome.get("ready"):
         return "ready to move in (the card offers Move in)"

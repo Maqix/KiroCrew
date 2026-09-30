@@ -56,6 +56,8 @@ export interface SetupCardClassic {
 }
 
 export interface SetupCard {
+  /** A transferred receipt records a decision; it cannot execute an action. */
+  historical?: boolean
   id: string
   slot: string
   kind: SetupCardKind

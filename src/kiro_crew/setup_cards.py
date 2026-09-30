@@ -215,6 +215,7 @@ class SetupCard:
             "created_ts": self.created_ts,
             "decided_ts": self.decided_ts,
             "classic": classic_for(self.kind),
+            **({"historical": True} if self.private.get("home_handoff_receipt") else {}),
         }
 
 

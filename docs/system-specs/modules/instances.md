@@ -1443,6 +1443,13 @@ text prefix — no tool state, no real context window. Ship Layer B too and the
 peer resumes through `session/load` under its own fresh sid, which is the same
 fidelity a local gateway restart gives.
 
+The [Tool Search compatibility path](providers.md) is an exception: a direct
+dashboard turn with Tool Search enabled creates a fresh native session and
+replays Crew's saved history to rebuild the tool registry. A different native
+session ID on the next turn does not, by itself, mean transfer failed. The home
+handoff must preserve setup-result injections in Layer A as well, so this replay
+retains decisions made through cards.
+
 So `bundle_version` 2 carries an optional `layer_b`. It is **optional by
 design**: a v1 sender, or a session that never opened a kiro-cli context, ships
 Layer A only and the peer degrades to the prefix. Both versions stay accepted so
@@ -1483,6 +1490,22 @@ existing session, on either side. Consequences worth stating:
 - there is no "move" verb and nothing in this feature can destroy a
   conversation.
 
+The first-run home move uses this copy path and then a separate owner-only
+`POST /api/setup/home-arrival` to promote the copy to the cloud's main chat,
+restore its title, and remove its Imported filing. It archives the new home's
+welcome chat without deleting its history. This exception belongs to the
+[first-run home handoff](first-run.md#moving-in); ordinary sends and file imports
+keep the rules below.
+
+Home handoffs use a dedicated version 3 bundle with a bounded `home_setup`
+extension. It preserves setup display rows and server-side, non-executable card
+receipts, including the owner's earlier decisions. This extension is owner-only
+and validated against the ordinary speech snapshot; private card state never
+travels. Failed receipt installation is rolled back with the import. A home
+handoff refuses a failed provider-context installation instead of proceeding
+with a partial copy. Version 3 does not downgrade for an older peer. General
+session sends and file exports continue to emit version 2.
+
 ### 14.3 What travels, and what deliberately does not
 
 | Field | Travels? | Why |
@@ -1498,7 +1521,7 @@ existing session, on either side. Consequences worth stating:
 | `workspace` | no | Workspaces are per-instance memory scopes; a matching name still means a different memory. |
 | `folder_id`, `tags`, `tags_revision`, `pinned`, `artifact`, `app`, `linked_session_key`, `forked_from` | no | Local-graph references that would dangle (`tags_revision` is the per-instance change identity of `tags`; it travels with them). |
 
-`bundle_version` is refused when **outside the supported set** (`{1, 2}`) rather
+`bundle_version` is refused when **outside the supported set** (`{1, 2, 3}`) rather
 than best-effort parsed: the two ends are independently-updated installs, and a
 silently misread field would land as corrupted conversation. Accepting both
 versions is what lets a v2 instance still receive a copy from a v1 one.

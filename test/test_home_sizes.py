@@ -306,6 +306,7 @@ class TestTheBuildClick:
         assert out.status == sc.STATUS_WAITING
         assert build[0]["size_key"] == "light" and build[0]["region"] == "eu-north-1"
         assert sc.get_card(card.id).private["settings"]["size"] == "light"
+        assert sc.get_card(card.id).private["auto_move"] is True
 
     @pytest.mark.asyncio
     async def test_no_size_given_builds_the_default(self, monkeypatch, build):

@@ -57,12 +57,14 @@ export default function HomeMovedDetail({ outcome }: { outcome: Record<string, u
   const home = (outcome.home && typeof outcome.home === 'object' ? outcome.home : {}) as Record<string, unknown>
   const homeName = typeof home.name === 'string' ? home.name : ''
   const instanceId = typeof home.instance_id === 'string' ? home.instance_id : ''
+  const remoteKey = typeof home.remote_key === 'string' ? home.remote_key : undefined
+  const arrived = outcome.arrived === true
   // The shared Instances list, so opening the home uses the same select-and-
   // reconnect the crew switcher does.
   const instances = useQuery({
     queryKey: ['instances'],
     queryFn: () => api.listInstances(),
-    enabled: !!instanceId,
+    enabled: !!instanceId && !arrived,
   })
   const { selectInstance } = useSelectInstance(instances.data?.instances ?? [])
 
@@ -82,7 +84,7 @@ export default function HomeMovedDetail({ outcome }: { outcome: Record<string, u
   const connections = strings(reenter.connections)
 
   const open = () => {
-    if (instanceId) selectInstance(instanceId)
+    if (instanceId) selectInstance(instanceId, remoteKey)
     else navigate(YOUR_CREWS_PATH)
   }
 
@@ -94,10 +96,10 @@ export default function HomeMovedDetail({ outcome }: { outcome: Record<string, u
             ? t('components.setupCard.home_moved_where', { name: homeName })
             : t('components.setupCard.home_result_moved')}
         </span>
-        <Btn type="button" onClick={open} className="!py-0.5" data-testid="setup-card-home-open">
+        {!arrived && <Btn type="button" onClick={open} className="!py-0.5" data-testid="setup-card-home-open">
           <ExternalLink className="lucide-inline" aria-hidden="true" />
           {t('components.setupCard.home_open')}
-        </Btn>
+        </Btn>}
       </div>
       {moved.length > 0 && (
         <div data-testid="setup-card-home-jobs-moved">{t('components.setupCard.home_jobs_moved', { names: nameList(moved) })}</div>

@@ -505,12 +505,10 @@ class TestHomeInTheBackground:
         assert building.status == sc.STATUS_WAITING
         for _ in range(200):
             current = sc.get_card(card.id)
-            if current.status == sc.STATUS_PENDING:
+            if current.status == sc.STATUS_COMMITTED:
                 break
             await _real_sleep(0.01)
-        ready = sc.get_card(card.id)
-        assert ready.status == sc.STATUS_PENDING and ready.outcome["ready"] is True
-        moved = await setup_flow.decide(state, card.id, "commit", card.payload_hash, {})
+        moved = sc.get_card(card.id)
         assert moved.status == sc.STATUS_COMMITTED
         assert moved.outcome["moved"] is True and moved.outcome["simulated"] is True
         assert [s["state"] for s in moved.outcome["move_steps"]] == ["done"] * 4
@@ -626,7 +624,7 @@ class TestHomeInTheBackground:
 
 
 class TestWhereTheCrewLives:
-    """At the first kept job the gateway asks where the crew lives, on one home card."""
+    """Keeping or skipping the job step leads to one home card before completion."""
 
     async def _keep_first_job(self, st, dispatched) -> str:
         slot_key = await setup_flow.ensure_first_run_session(st)
@@ -682,10 +680,14 @@ class TestWhereTheCrewLives:
             sc.monthly_estimate_usd(k, home.payload["region"]) for k in offered
         )
         assert home.stakes == "high" and home.status == sc.STATUS_PENDING
+        assert first_run.read_main_slot() is None
+        assert not any(
+            (meta or {}).get("kind") == "main_chat" for _, _, meta in st.slots[slot_key].messages
+        )
         # The kept job's result tells the agent the question is on screen, and why now.
         result = dispatched[-1][2]
         assert "Where should your crew live?" in result
-        assert "runs only while Kiro Crew runs" in result
+        assert "do not ask it again in prose or say setup is done" in result
         # A second kept job asks nothing again.
         cron = sc.create_card(
             slot=slot_key,
@@ -697,6 +699,99 @@ class TestWhereTheCrewLives:
         await setup_flow.decide(st, cron.id, "commit", cron.payload_hash, {})
         self._home(slot_key)
         assert "Where should your crew live?" not in dispatched[-1][2]
+
+    @pytest.mark.asyncio
+    async def test_skipping_the_job_shows_home_after_the_result_without_keeping_a_job(
+        self, monkeypatch
+    ):
+        from kiro_crew.cloud import iam
+
+        monkeypatch.setattr(iam, "reachability_check", _refuse_detect)
+        st = FakeState()
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        st.crons = TestCronPreviewThenKeep.FakeCrons()
+        seen = []
+
+        async def _record(state_, slot, text, inject_kind):
+            seen.append((text, [c for c in sc.list_cards(slot.key) if c.kind == sc.KIND_HOME]))
+
+        monkeypatch.setattr(setup_flow, "_dispatch_envelope_turn", _record)
+        await _propose(
+            st,
+            {"kind": "cron", "name": "Brief", "prompt": "Summarize", "every_secs": 86400},
+            slot=slot_key,
+        )
+        cron = next(c for c in sc.list_cards(slot_key) if c.kind == sc.KIND_CRON)
+        await setup_flow.decide(st, cron.id, "preview", cron.payload_hash, {})
+        skipped = await setup_flow.decide(st, cron.id, "decline", cron.payload_hash, {})
+        assert skipped.status == sc.STATUS_DECLINED
+        assert skipped.outcome["home_choice"] is True
+        assert "Where should your crew live?" in seen[-1][0]
+        assert "job is kept" not in seen[-1][0]
+        assert seen[-1][1] == []
+        assert self._home(slot_key).payload["step"] == "choose"
+        assert st.crons.jobs == {}
+        assert "job_kept" not in first_run.done_stages()
+        assert first_run.read_main_slot() is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer", ["here", "decline"])
+    async def test_a_spoken_job_skip_can_go_straight_to_home_and_finish_without_a_job(
+        self, dispatched, monkeypatch, answer
+    ):
+        from kiro_crew import mcp_core, session_directive
+        from kiro_crew.cloud import iam
+        from kiro_crew.mcp_tools import setup as setup_tools
+
+        monkeypatch.setattr(iam, "reachability_check", _refuse_detect)
+        st = FakeState()
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        monkeypatch.setattr(
+            mcp_core, "_resolve_session_key_strict", lambda: f"dashboard:{slot_key}"
+        )
+        monkeypatch.setattr(setup_tools, "has_dashboard_surface", lambda sk: True)
+        request = setup_tools.setup_card("setup_card", {"kind": "home", "step": "choose"})
+        args = session_directive.decode(request, "setup_card")
+        assert args and args["step"] == "choose"
+        assert (await _propose(st, args, slot=slot_key)).startswith("Setup card shown")
+        home = self._home(slot_key)
+        assert home.payload["step"] == "choose"
+        assert first_run.read_main_slot() is None
+        assert not await setup_flow.graduate(st, slot_key)
+        assert "already has a card" in await _propose(st, args, slot=slot_key)
+        self._home(slot_key)
+        if answer == "here":
+            await setup_flow.decide(st, home.id, "choose", home.payload_hash, {"where": "here"})
+            assert "job they kept" not in dispatched[-1][2]
+        else:
+            await setup_flow.decide(st, home.id, "decline", home.payload_hash, {})
+        assert first_run.read_main_slot() == slot_key
+        assert "job_kept" not in first_run.done_stages()
+        assert not [c for c in sc.list_cards(slot_key) if c.kind == sc.KIND_CRON]
+
+    @pytest.mark.asyncio
+    async def test_home_choice_survives_the_optional_card_budget(self, state):
+        for n in range(sc.CARD_BUDGET_BEFORE_FIRST_JOB):
+            card = sc.create_card(
+                slot="chat-1-1",
+                session_key="dashboard:chat-1-1",
+                kind=sc.KIND_PROFILE,
+                payload={"fields": {"bot_name": str(n)}},
+            )
+            sc.claim_pending(card.id, card.payload_hash, to_status=sc.STATUS_DECLINED)
+        out = await _propose(state, {"kind": "home", "step": "choose"})
+        assert out.startswith("Setup card shown")
+        assert self._home("chat-1-1").payload["step"] == "choose"
+
+    @pytest.mark.asyncio
+    async def test_home_choice_still_requires_user_provenance_and_governance(
+        self, state, monkeypatch
+    ):
+        args = {"kind": "home", "step": "choose"}
+        assert (await _propose(state, args, user_facing=False)).startswith("Error:")
+        monkeypatch.setattr(setup_flow, "_governance_denial", lambda kind, sk: "denied")
+        assert "blocked by policy" in await _propose(state, args)
+        assert not sc.list_cards("chat-1-1")
 
     @pytest.mark.asyncio
     async def test_a_scripted_answer_or_a_home_card_already_there_asks_nothing(self, dispatched):
@@ -733,6 +828,7 @@ class TestWhereTheCrewLives:
         out = await setup_flow.decide(st, home.id, "choose", home.payload_hash, {"where": "here"})
         assert out.status == sc.STATUS_COMMITTED and out.outcome == {"stayed": True}
         assert 'kind "service"' in dispatched[-1][2]
+        assert first_run.read_main_slot() == slot_key
 
     @pytest.mark.asyncio
     async def test_the_cloud_moves_the_same_card_on_under_a_new_hash(self, dispatched, monkeypatch):
@@ -752,6 +848,8 @@ class TestWhereTheCrewLives:
         assert "step" not in out.payload and out.payload[setup_flow.HOME_STEP_KEY] is True
         assert out.payload["aws_signed_in"] is True and out.payload["aws_account"] == "…9012"
         assert out.payload["size_options"] and out.private["phase"] == "build"
+        assert first_run.read_main_slot() is None
+        assert not await setup_flow.graduate(st, slot_key)
         assert st.events[-1][1]["card"]["hash"] == out.payload_hash
         # The old face commits nothing.
         with pytest.raises(sc.CardRejected) as exc:
@@ -794,11 +892,27 @@ async def _fast_sleep(secs):
 
 class TestMainChat:
     @pytest.mark.asyncio
-    async def test_keeping_the_first_job_graduates_the_first_run_chat(
+    async def test_a_failed_home_can_be_replaced_before_setup_completes(self, dispatched):
+        st = FakeState()
+        slot_key = await setup_flow.ensure_first_run_session(st)
+        failed = sc.create_card(
+            slot=slot_key, session_key=f"dashboard:{slot_key}", kind=sc.KIND_HOME, payload={}
+        )
+        await setup_flow._finish(failed, sc.STATUS_FAILED)
+        assert not await setup_flow.graduate(st, slot_key)
+        replacement = sc.create_card(
+            slot=slot_key, session_key=f"dashboard:{slot_key}", kind=sc.KIND_HOME, payload={}
+        )
+        await setup_flow.decide(st, replacement.id, "decline", replacement.payload_hash, {})
+        assert first_run.read_main_slot() == slot_key
+
+    @pytest.mark.asyncio
+    async def test_a_settled_home_choice_graduates_the_first_run_chat(
         self, dispatched, monkeypatch
     ):
         st = FakeState()
         slot_key = await setup_flow.ensure_first_run_session(st)
+        first_run.record_home_choice("here")
         slot = st.slots[slot_key]
         slot._title_epoch = 0
         monkeypatch.setattr(setup_flow, "_agent_name", lambda: "Nova")
@@ -816,6 +930,7 @@ class TestMainChat:
     ):
         st = FakeState()
         slot_key = await setup_flow.ensure_first_run_session(st)
+        first_run.record_home_choice("here")
         slot = st.slots[slot_key]
         slot._title_epoch = 0
         monkeypatch.setattr(setup_flow, "_agent_name", lambda: "")

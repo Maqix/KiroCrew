@@ -121,7 +121,12 @@ class FakeManager:
             "summary": {"items": ["memory (merged)", "crons (merged)", "skills (merged)"]},
         }
         self.import_raises: Exception | None = None
-        self.send_reply: tuple[bool, dict] = (True, {"key": "chat-9-1", "resume_mode": "full"})
+        self.send_reply: tuple[bool, dict] = (
+            True,
+            {"key": "chat-9-1", "resume_mode": "session_load", "home_setup_version": 1},
+        )
+        self.arrivals: list[dict] = []
+        self.arrival_status = 200
 
     async def connect(self, instance_id):
         self.connected.append(instance_id)
@@ -131,6 +136,13 @@ class FakeManager:
     async def proxy_request(
         self, instance_id, method, path, *, params=None, data=None, content_type=""
     ):
+        if path == "api/setup/home-arrival":
+            self.arrivals.append(json.loads(data))
+            yield SimpleNamespace(
+                status=self.arrival_status,
+                content=_Content(json.dumps({"main_slot": "chat-9-1"}).encode()),
+            )
+            return
         self.log.append(("import", instance_id))
         self.imports.append(
             {
@@ -282,6 +294,8 @@ class TestHappyPath:
             "name": HOME_NAME,
             "remote_key": "chat-9-1",
             "messages": 1,
+            "resume_mode": "session_load",
+            "home_setup_version": 1,
         }
         assert moved.outcome["jobs_moved"] == [{"id": "j-brief", "name": "Dev brief"}]
         assert moved.outcome["jobs_kept_here"] == [
@@ -333,14 +347,15 @@ class TestHappyPath:
         moved = await _move(state, _ready_home_card())
 
         assert moved.outcome["reenter"]["secrets"] == ["GITHUB_TOKEN", "TELEGRAM_BOT_TOKEN"]
-        slot, kind, text = dispatched[-1]
-        assert (slot, kind) == ("chat-1-1", "setup_result")
+        assert dispatched == []  # The local agent must not restart after its snapshot moved.
+        text = setup_move_in.result_detail(moved.outcome)
         assert HOME_NAME in text
         assert "Your crews" in text
         assert "switched off here: Dev brief" in text
         assert "Backup notes" in text
         assert "GITHUB_TOKEN" in text and "TELEGRAM_BOT_TOKEN" in text
-        assert "kept its own settings" in text
+        assert moved.outcome["settings_moved"] is True
+        assert "kept its own settings" not in text
         store = (data_home() / "setup" / sc.CARDS_FILE).read_text()
         for where in (text, store, json.dumps(state.events)):
             assert SENTINEL_SECRET not in where
@@ -459,7 +474,7 @@ class TestRetry:
         assert state.crons.enabled["j-brief"] is True
         assert mgr.imports == [] and dispatched == []
 
-        mgr.send_reply = (True, {"key": "chat-9-1"})
+        mgr.send_reply = (True, {"key": "chat-9-1", "home_setup_version": 1})
         moved = await _move(state, sc.get_card(card.id))
         assert moved.status == sc.STATUS_COMMITTED
         assert len(mgr.sent) == 2 and len(mgr.imports) == 1
@@ -536,16 +551,21 @@ class TestJobsFollowTheChat:
             "j-backup": "dashboard:chat-2-2",
         }
         assert moved.outcome["jobs_follow_chat"] == ["Dev brief", "Old digest"]
-        assert "now report to its copy on the home: Dev brief, Old digest" in dispatched[-1][2]
+        assert (
+            "now report to its copy on the home: Dev brief, Old digest"
+            in setup_move_in.result_detail(moved.outcome)
+        )
 
     @pytest.mark.asyncio
-    async def test_an_unknown_copy_key_leaves_the_archive_as_it_was(self, state, bound, dispatched):
+    async def test_an_unknown_copy_key_stops_before_moving_schedules(
+        self, state, bound, dispatched
+    ):
         state.instances_manager.send_reply = (True, {"resume_mode": "full"})
         moved = await _move(state, _ready_home_card())
-        assert moved.status == sc.STATUS_COMMITTED
-        posted = state.instances_manager.imports[0]["data"]
-        assert bound in posted
-        assert moved.outcome["jobs_follow_chat"] == []
+        assert moved.status == sc.STATUS_PENDING
+        assert moved.error["code"] == "move_in_chat_failed"
+        assert state.instances_manager.imports == []
+        assert state.crons.enabled["j-brief"] is True
 
     def test_only_crons_json_is_rewritten(self):
         buf = io.BytesIO()
@@ -676,3 +696,33 @@ class TestJobsInArchive:
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("kirocrew-export-x/MANIFEST.json", "{}")
         assert setup_move_in.jobs_in_archive(buf.getvalue()) == ([], [])
+
+
+@pytest.mark.asyncio
+async def test_adoption_carries_title_and_progress_and_retry_reuses_chat(
+    state, exported, dispatched
+):
+    state.slots["chat-1-1"].title = "Sam's crew"
+    first_run.mark_stage("hello")
+    first_run.mark_stage("connect")
+    mgr = state.instances_manager
+    mgr.arrival_status = 404
+    card = _ready_home_card()
+    failed = await _move(state, card)
+    assert failed.status == sc.STATUS_PENDING
+    assert failed.error["code"] == "move_in_adopt_failed"
+    assert state.crons.enabled["j-brief"] is False
+    mgr.arrival_status = 200
+    moved = await _move(state, failed)
+    assert moved.status == sc.STATUS_COMMITTED
+    assert len(mgr.sent) == len(mgr.imports) == 1
+    assert len(mgr.arrivals) == 2
+    for arrival in mgr.arrivals:
+        assert {k: arrival[k] for k in ("slot", "title", "stages")} == {
+            "slot": "chat-9-1",
+            "title": "Sam's crew",
+            "stages": ["hello", "connect"],
+        }
+        assert arrival["preferences"] == {"fields": {}, "persona": {}}
+        assert arrival["outcome"]["home"]["remote_key"] == "chat-9-1"
+    assert sc.get_card(card.id).private["move"]["adopted"] is True

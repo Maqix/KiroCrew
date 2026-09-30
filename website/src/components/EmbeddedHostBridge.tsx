@@ -16,7 +16,8 @@
  * our switch requests (see InstancesViewport / tunnelOrigin), so trust is gated
  * on both ends. Non-embedded (top-level) dashboards mount this as a no-op.
  */
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../store'
 import { setHostModel, type HostModel } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
@@ -96,6 +97,9 @@ function parseHostModel(data: unknown): HostModel | null {
 
 export default function EmbeddedHostBridge() {
   const dispatch = useAppDispatch()
+  const navigate = useNavigate()
+  const navigateRef = useRef(navigate)
+  navigateRef.current = navigate
 
   useEffect(() => {
     if (!isEmbeddedPane()) return
@@ -111,6 +115,7 @@ export default function EmbeddedHostBridge() {
     // is sent only from the parent's ready handler, after readiness is recorded,
     // so once it lands there is no pending announce left to revive readiness.
     let acked = false
+    let openedSession: string | undefined
     const retryTimers: number[] = []
 
     // The App tree reached this bridge: the last `boot` stage before `ready`.
@@ -148,6 +153,16 @@ export default function EmbeddedHostBridge() {
       }
       const model = parseHostModel(e.data)
       if (!model) return
+      const slot = e.data.openSession
+      if (typeof slot === 'string' && /^chat-[A-Za-z0-9:_.-]{1,123}$/.test(slot)) {
+        if (openedSession !== slot) {
+          openedSession = slot
+          navigateRef.current(`/chat?sid=${encodeURIComponent(slot)}`)
+        }
+        window.parent.postMessage({ type: 'mc-session-opened', v: 1, slot }, e.origin)
+      } else {
+        openedSession = undefined
+      }
       dispatch(setHostModel(model))
       document.documentElement.classList.toggle(MAC_INSET_CLASS, model.macInset)
       document.documentElement.classList.toggle(WIN_INSET_CLASS, model.winInset)

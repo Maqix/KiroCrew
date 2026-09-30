@@ -38,7 +38,8 @@ import { api } from '../api/client'
 import { WARM_SET_CAP_AUTO_CEILING } from '../utils/remoteCrew'
 import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
-import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
+import { clearPaneReady, instanceSessionOpened, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
+import { useHomeMoveHandoff } from '../hooks/useHomeMoveHandoff'
 import InstanceTabBar, { visibleInstanceTabs, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
 import { parseLoopbackOriginPort, resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import {
@@ -131,6 +132,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const warm = useAppSelector(s => s.instances.warm)
+  const openSessions = useAppSelector(s => s.instances.openSessions)
   const activeId = useAppSelector(s => s.instances.activeId)
   const mru = useAppSelector(s => s.instances.mru)
   const unread = useAppSelector(s => s.instances.unread)
@@ -174,6 +176,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     enabled: !embedded,
   })
   const warmCap = instancesQuery.data?.warm_set_cap || WARM_SET_CAP_AUTO_CEILING
+  useHomeMoveHandoff(instancesQuery.data?.instances ?? [], !embedded)
 
   // Current warm map in a ref so the refresh callback (used by the long-lived
   // postMessage listener) always sees the latest ports without re-subscribing.
@@ -372,7 +375,10 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         }
         return
       }
-      if (data.type === 'mc-unread-slots') {
+      if (data.type === 'mc-session-opened') {
+        if (e.source !== iframeRefs.current.get(id)?.contentWindow || data.v !== 1) return
+        if (typeof data.slot === 'string') dispatch(instanceSessionOpened({ id, slot: data.slot }))
+      } else if (data.type === 'mc-unread-slots') {
         const count = Number(data.count)
         if (!Number.isFinite(count) || count < 0) return
         dispatch(setUnread({ id, count }))
@@ -924,9 +930,10 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // boundary in some engines and the receiver validates element-wise anyway.
         pinnedCrews,
         stableOrder,
+        openSession: openSessions?.[id],
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, winInset, focusMode, pinnedCrews, stableOrder],
+    [instancesQuery.data, warm, unread, activeId, macInset, winInset, focusMode, pinnedCrews, stableOrder, openSessions],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback

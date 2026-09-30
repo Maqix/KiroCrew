@@ -135,6 +135,8 @@ interface InstancesState {
    *  so the viewport can tell a live pane from one still loading / dead. */
   ready: Record<string, boolean>
   host: HostModel | null
+  /** A chat to open once its pane's router is ready; cleared on acknowledgement. */
+  openSessions: Record<string, string>
   crewForms: CrewFormState
 }
 
@@ -145,6 +147,7 @@ const initialState: InstancesState = {
   unread: {},
   ready: {},
   host: null,
+  openSessions: {},
   crewForms: { add: null, edit: null },
 }
 
@@ -152,6 +155,15 @@ const instancesSlice = createSlice({
   name: 'instances',
   initialState,
   reducers: {
+    openInstanceSession(state, action: PayloadAction<{ id: string; slot: string }>) {
+      if (!state.openSessions) state.openSessions = {}
+      state.openSessions[action.payload.id] = action.payload.slot
+    },
+    instanceSessionOpened(state, action: PayloadAction<{ id: string; slot: string }>) {
+      if (state.openSessions?.[action.payload.id] === action.payload.slot) {
+        delete state.openSessions[action.payload.id]
+      }
+    },
     setWarm(state, action: PayloadAction<{ id: string; conn: WarmConn }>) {
       const { id, conn } = action.payload
       const prev = state.warm[id]
@@ -179,6 +191,7 @@ const instancesSlice = createSlice({
       delete state.warm[id]
       delete state.unread[id]
       if (state.ready) delete state.ready[id]
+      if (state.openSessions) delete state.openSessions[id]
       state.mru = state.mru.filter(x => x !== id)
       if (state.activeId === id) state.activeId = null
     },
@@ -229,6 +242,8 @@ const instancesSlice = createSlice({
 })
 
 export const {
+  openInstanceSession,
+  instanceSessionOpened,
   setWarm,
   setActiveId,
   removeWarm,

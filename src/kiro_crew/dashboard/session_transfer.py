@@ -16,7 +16,9 @@ so the two machines need not be online at the same time. It adds no format.
 :func:`_validate_bundle` refuses an unrecognised version outright while silently
 dropping keys it does not know: a version bump would stop an instance that has
 not updated from receiving anything, where a new optional key costs it nothing.
-Nothing in this module ever requires a field to be present.
+The dedicated first-run home handoff uses version 3 instead: its setup cards
+and decisions are required, so an older peer must refuse it rather than discard
+them. Ordinary exports and sends remain version 2.
 
 **``source`` is recorded, never applied.** It carries what the conversation ran
 under — model, reasoning effort, tool-approval policy, workspace, project, plus
@@ -143,7 +145,8 @@ BUNDLE_VERSION = 2
 #: from an older one; anything OUTSIDE the set is refused rather than
 #: best-effort parsed, because a silently misread field lands as corrupted
 #: conversation.
-_SUPPORTED_BUNDLE_VERSIONS = (1, 2)
+HOME_BUNDLE_VERSION = 3
+_SUPPORTED_BUNDLE_VERSIONS = (1, 2, HOME_BUNDLE_VERSION)
 
 
 class TransferBundle(dict[str, Any]):
@@ -776,6 +779,7 @@ async def build_transfer_bundle_async(
     origin: str = "",
     with_source: bool = False,
     include_layer_b: bool = True,
+    with_home_setup: bool = False,
 ) -> TransferBundle:
     """Serialise *slot*'s visible conversation into a portable bundle, with the
     disk read off the event loop.
@@ -1037,6 +1041,7 @@ async def build_transfer_bundle_async(
             layer_b_sid,
             layer_b_withheld,
             source,
+            **({"setup_slot": slot.key} if with_home_setup else {}),
         )
         # Re-check the guards AFTER the await, not only before it. A rewind or a
         # mid-stream flush can land during the threaded read, and the boundary
@@ -1104,6 +1109,7 @@ def _read_and_assemble(
     layer_b_sid: str = "",
     layer_b_skipped: bool = False,
     source: dict[str, Any] | None = None,
+    setup_slot: str = "",
 ) -> TransferBundle:
     """Read the transcript + Layer B and assemble the bundle. **Runs in a thread.**
 
@@ -1123,6 +1129,11 @@ def _read_and_assemble(
         # which means there was never a context to carry.
         layer_b_skipped = True
     payload = _assemble_bundle(history, title, agent, origin, layer_b, layer_b_skipped, source)
+    if setup_slot:
+        from kiro_crew.dashboard import setup_transfer
+
+        payload["home_setup"] = setup_transfer.build(history, setup_slot)
+        payload["bundle_version"] = HOME_BUNDLE_VERSION
     return TransferBundle(payload, publication_keys=publication_keys)
 
 
@@ -1465,6 +1476,8 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
             f"(this instance speaks {list(_SUPPORTED_BUNDLE_VERSIONS)})",
             "transfer_version_unsupported",
         )
+    if version == HOME_BUNDLE_VERSION and "home_setup" not in body:
+        return {}, _reject("setup handoff is missing", "transfer_bad_home_setup")
 
     raw_messages = body.get("messages")
     if not isinstance(raw_messages, list):
@@ -1551,6 +1564,24 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
                 "transfer_layer_b_too_large",
             )
         validated["layer_b"] = {"envelope": env, "events": events}
+
+    if "home_setup" in body:
+        from kiro_crew.dashboard import setup_transfer
+
+        try:
+            handoff = setup_transfer.validate(body["home_setup"])
+        except (ValueError, TypeError, RecursionError):
+            return {}, _reject("invalid setup handoff", "transfer_bad_home_setup")
+        visible = [
+            {k: row[k] for k in ("role", "content", "ts")}
+            for row in handoff["rows"]
+            if row["role"] in _VISIBLE_ROLES
+        ]
+        # Both presentations must describe the same guarded snapshot.
+        scrubbed = _assemble_bundle(messages, "", "", "")["messages"]
+        if visible != scrubbed:
+            return {}, _reject("setup history does not match", "transfer_bad_home_setup")
+        validated["home_setup"] = handoff
 
     return validated, None
 
@@ -1691,7 +1722,15 @@ async def _install_arrived_bundle(
     if body_err is not None:
         return body_err
 
-    bundle, err = _validate_bundle(body)
+    if isinstance(body, dict) and "home_setup" in body:
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        denied = await require_owner_dashboard_request(request, "setup_cards.home_transfer")
+        if denied is not None:
+            return denied
+        bundle, err = await asyncio.to_thread(_validate_bundle, body)
+    else:
+        bundle, err = _validate_bundle(body)
     if err is not None:
         sel().log_api_access(
             caller=caller,
@@ -1704,6 +1743,7 @@ async def _install_arrived_bundle(
         return err
 
     messages = bundle["messages"]
+    handoff = bundle.get("home_setup")
     # Agent resolution scans the agents directory and parses each manifest, so it
     # cannot run on the event loop. Only pay the thread hop when a hint was
     # actually sent — the common case is an empty hint, which resolves to "" with
@@ -1739,7 +1779,21 @@ async def _install_arrived_bundle(
     rows: list[dict] = [
         {"role": m["role"], "content": m["content"], "ts": m["ts"]} for m in messages
     ]
+    receipts: list[dict] = []
+    if handoff is not None:
+        from kiro_crew.dashboard import setup_transfer
+
+        rows, receipts = setup_transfer.remap(handoff)
     rows = await asyncio.to_thread(_redact_history_rows, rows)
+
+    handoff_landed = False
+
+    async def _rollback_receipts() -> None:
+        if receipts and not handoff_landed:
+            await asyncio.to_thread(setup_transfer.remove_receipts, receipts)
+
+    if receipts:
+        keep.push_async_callback(_rollback_receipts)
 
     # The marked title travels as the persisted title so the shared path restores
     # it; ``origin`` is NOT set on the metadata snapshot -- that key is the
@@ -1852,6 +1906,16 @@ async def _install_arrived_bundle(
     layer_b = bundle.get("layer_b")
 
     try:
+        if receipts:
+            receipt_write = asyncio.create_task(
+                asyncio.to_thread(setup_transfer.install_receipts, slot.key, receipts)
+            )
+            try:
+                await asyncio.shield(receipt_write)
+            except asyncio.CancelledError:
+                # Settle the writer before the stack removes its receipts.
+                await receipt_write
+                raise
         if layer_b:
             # Files in a thread (blocking IO), join on the loop (the live map's
             # whole-file write is unsynchronised against concurrent session
@@ -1869,6 +1933,8 @@ async def _install_arrived_bundle(
                     await asyncio.to_thread(_unlink_layer_b_files, layer_b_sid)
                     layer_b_sid = ""
             resume_mode = "session_load" if resumable else "prefix"
+            if handoff is not None and not resumable:
+                raise ValueError("the setup conversation's provider context could not be installed")
 
         # Mark the IMPORTED TAB when it arrived without resumable context. The
         # sender's row is gone the moment its menu closes; the tab title is the
@@ -2341,6 +2407,7 @@ async def _install_arrived_bundle(
 
     _sync_dashboard_slots(state)
     state.push_slots_update()
+    handoff_landed = True
     return web.json_response(
         {
             "ok": True,
@@ -2350,5 +2417,6 @@ async def _install_arrived_bundle(
             # Resume fidelity, so the SENDER can say "Sent" vs "Sent (transcript
             # only)" instead of showing the same green row either way.
             "resume_mode": resume_mode,
+            **({"home_setup_version": setup_transfer.VERSION} if handoff is not None else {}),
         }
     )

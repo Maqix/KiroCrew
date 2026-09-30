@@ -162,7 +162,7 @@ class TestTheRegistryDeclares:
 class TestTheToolSchema:
     """Generated from the registry, and the same schema the tool declared by hand."""
 
-    def test_the_input_schema_is_unchanged(self):
+    def test_the_input_schema_includes_the_home_choice_step(self):
         schema = setup_tools.schemas()[0]["inputSchema"]
         assert schema == {
             "type": "object",
@@ -195,6 +195,11 @@ class TestTheToolSchema:
                 "cron_expr": {"type": "string", "description": "cron: 5-field expression"},
                 "every_secs": {"type": "integer", "description": "cron: interval, >= 3600"},
                 "timezone": {"type": "string", "description": "cron: IANA timezone"},
+                "step": {
+                    "type": "string",
+                    "enum": ["choose"],
+                    "description": "home: choose: ask this machine or AWS, including after scheduling is skipped",
+                },
                 "region": {"type": "string", "description": "home: AWS region"},
                 "profile": {"type": "string", "description": "home: AWS CLI profile"},
                 "size": {"type": "string", "description": "home: size key, default light"},
@@ -204,7 +209,7 @@ class TestTheToolSchema:
         # The same order too: the schema is serialized onto every request.
         assert list(schema["properties"]) == [
             "kind", "fields", "file", "content", "source_ids", "provider", "name", "purpose",
-            "hosts", "channel", "prompt", "cron_expr", "every_secs", "timezone", "region",
+            "hosts", "channel", "prompt", "cron_expr", "every_secs", "timezone", "step", "region",
             "profile", "size",
         ]  # fmt: skip
 

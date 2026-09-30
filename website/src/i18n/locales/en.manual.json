@@ -3628,7 +3628,7 @@
       "title_home": "Your home in the cloud",
       "home_cost": "About {{amount}}/month, billed by {{billedBy}}",
       "home_size_label": "Size",
-      "home_choice_lead": "Your new job runs only while {{productName}} is running. Keep the crew on this machine, or give it a home in the cloud that is always on.",
+      "home_choice_lead": "Choose where {{productName}} lives: on this machine while it is on, or in the cloud so it stays available when this machine is off.",
       "home_choice_here": "This machine",
       "home_choice_here_hint": "free · runs while it’s on",
       "home_choice_cloud": "In the cloud",
@@ -3650,6 +3650,7 @@
       "home_removing": "Removing what it created…",
       "home_removed": "Removed: AWS confirms the stack {{stack}} is gone.",
       "home_remove_failed": "The removal did not finish. Sign in to AWS again if it has expired, then try again, or remove it from Remote Crew.",
+      "home_auto_move": "Once your home is ready and signed in, this chat moves there and this window switches automatically.",
       "home_build": "Build my home",
       "home_build_signed_in": "I signed in — build my home",
       "home_aws_signin_intro": "Sign in to AWS to build your home. The AWS sign-in page opens in your browser. {{productName}} never sees your password or keys.",
@@ -4857,7 +4858,8 @@
       },
       "homeSigninNotice": {
         "opened": "Your home is waiting for one click to sign in to Kiro. The sign-in page opened in your browser.",
-        "on_card": "Your home is waiting for one click to sign in to Kiro. Open the sign-in link on its card."
+        "on_card": "Your home is waiting for one click to sign in to Kiro. Open the sign-in link on its card.",
+        "resolved": "Your cloud home is signed in to Kiro. Continue this conversation here."
       },
       "handoffDoneNotice": {
         "finished": "“{{title}}” finished. Ask me here for what it found.",

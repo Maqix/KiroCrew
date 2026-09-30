@@ -16,7 +16,7 @@
  *     cache), never Redux, never logged, and never rendered back.
  *   - High-stakes cards (a credential, a connection, a channel, the service) look
  *     different from low-stakes ones -- accent border, a shield, an explicit verb
- *     on the button -- and nothing auto-advances.
+ *     on the button. A home's authorized build continues its move after sign-in.
  *   - Every card offers "Use classic setup" unless the gateway says `none`.
  *
  * Live state arrives three ways: the decide response, the owner-only
@@ -418,7 +418,7 @@ function ResultLine({ card, title, busy, actionError, onRemove }: {
     card.status === 'committed' ? 'text-ok' : card.status === 'failed' ? 'text-danger' : 'text-muted'
   const detail = card.status === 'committed' ? committedDetail(card) : null
   const statusKey = resultStatusKey(card)
-  const leftover = homeLeftover(card)
+  const leftover = card.historical ? null : homeLeftover(card)
   const removal = leftover ? homeRemovalState(card) : ''
   return (
     <div className="flex flex-col gap-1 min-w-0" data-testid="setup-card-result">

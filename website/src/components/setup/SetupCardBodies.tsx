@@ -907,17 +907,18 @@ export function HomeBody({ card, busy, run, footer, compact }: SetupBodyProps) {
 
   // Built: offer the move.
   if (ready) {
+    const automatic = o.auto_move === true && !card.error
     return (
       <>
         {badge}
-        <p className={LEAD}>{t('components.setupCard.home_ready')}</p>
+        <p className={LEAD}>{t(automatic ? 'components.setupCard.home_moving' : 'components.setupCard.home_ready')}</p>
         {/* After a failed move the card is back here with the move's steps on
             it: show those, so the step that failed (and its reason, in its
             detail) stays visible beside the retry. */}
         {moveSteps.length > 0
           ? <StepList steps={moveSteps} testId="setup-card-move-steps" />
           : <StepList steps={steps} testId="setup-card-steps" />}
-        {footer({ primary: { label: t('components.setupCard.home_move_in'), onClick: () => run('commit') } })}
+        {footer(automatic ? {} : { primary: { label: t('components.setupCard.home_move_in'), onClick: () => run('commit') } })}
       </>
     )
   }
@@ -1040,6 +1041,7 @@ export function HomeBody({ card, busy, run, footer, compact }: SetupBodyProps) {
       {meta && (
         <p className="mt-1 text-[12px] text-muted min-w-0 break-words" data-testid="setup-card-home-meta">{meta}</p>
       )}
+      {!simulated && <p className="mt-1 text-[12px] text-muted">{t('components.setupCard.home_auto_move')}</p>}
       {!signedIn && (
         <div className="mt-2 flex flex-col gap-2 min-w-0" data-testid="setup-card-home-aws-signin">
           {creating ? (

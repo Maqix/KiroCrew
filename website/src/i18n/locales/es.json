@@ -9339,7 +9339,7 @@
       "title_home": "Tu hogar en la nube",
       "home_cost": "Unos {{amount}}/mes, facturado por {{billedBy}}",
       "home_size_label": "Tamaño",
-      "home_choice_lead": "Tu nuevo trabajo solo se ejecuta mientras {{productName}} está en marcha. Deja tu crew en esta máquina o dale un hogar en la nube siempre encendido.",
+      "home_choice_lead": "Elige dónde funciona {{productName}}: en este equipo mientras esté encendido, o en la nube para que siga disponible cuando el equipo esté apagado.",
       "home_choice_here": "Esta máquina",
       "home_choice_here_hint": "gratis · funciona mientras está encendida",
       "home_choice_cloud": "En la nube",
@@ -9361,6 +9361,7 @@
       "home_removing": "Eliminando lo que creó…",
       "home_removed": "Eliminado: AWS confirma que la pila {{stack}} ya no existe.",
       "home_remove_failed": "La eliminación no terminó. Si tu sesión de AWS caducó, vuelve a iniciarla y luego inténtalo de nuevo, o elimínalo desde Crew remoto.",
+      "home_auto_move": "Cuando tu hogar esté listo y haya iniciado sesión, este chat se trasladará allí y esta ventana cambiará automáticamente.",
       "home_build": "Construir mi hogar",
       "home_build_signed_in": "Ya inicié sesión — construir mi hogar",
       "home_aws_signin_intro": "Inicia sesión en AWS para construir tu hogar. La página de inicio de sesión de AWS se abre en tu navegador. {{productName}} nunca ve tu contraseña ni tus claves.",
@@ -11353,7 +11354,8 @@
       },
       "homeSigninNotice": {
         "opened": "Tu hogar está esperando un solo clic para iniciar sesión en Kiro. La página de inicio de sesión se abrió en tu navegador.",
-        "on_card": "Tu hogar está esperando un solo clic para iniciar sesión en Kiro. Abre el enlace de inicio de sesión de su tarjeta."
+        "on_card": "Tu hogar está esperando un solo clic para iniciar sesión en Kiro. Abre el enlace de inicio de sesión de su tarjeta.",
+        "resolved": "Tu hogar en la nube ya inició sesión en Kiro. Continúa esta conversación aquí."
       },
       "handoffDoneNotice": {
         "finished": "“{{title}}” terminó. Pregúntame aquí qué encontró.",

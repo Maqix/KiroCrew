@@ -198,6 +198,22 @@ async def move_in(state: "DashboardState", card: sc.SetupCard) -> sc.SetupCard:
             )
             await progress.mark("carry", "done", _carry_detail(record))
             _audit(card, "carry", "ok", instance_id)
+        if not record.get("adopted"):
+            await _adopt_chat(
+                state,
+                mgr,
+                inst.id,
+                card.slot,
+                chat["remote_key"],
+                outcome={
+                    "home": {"name": inst.name, "remote_key": chat["remote_key"]},
+                    "jobs_moved": list(record.get("jobs_moved") or []),
+                    "jobs_kept_here": list(record.get("jobs_kept_here") or []),
+                    "carried": list(record.get("items") or []),
+                    "reenter": await asyncio.to_thread(left_behind),
+                },
+            )
+            record = await _save_record(card, {**record, "adopted": True, "settings_moved": True})
     except sc.CardRejected as exc:
         await _switch_on(state, unconfirmed)
         await progress.fail(str(exc))
@@ -466,6 +482,8 @@ def _recorded_chat(record: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "remote_key": key if isinstance(key, str) and _REMOTE_KEY_RE.match(key) else "",
         "messages": messages if isinstance(messages, int) else 0,
+        "resume_mode": chat.get("resume_mode", "prefix"),
+        "home_setup_version": chat.get("home_setup_version"),
     }
 
 
@@ -665,7 +683,11 @@ async def _send_chat(
     if getattr(slot, "memory_mode", "persistent") != "persistent":
         raise not_persistent
     try:
-        bundle = await build_transfer_bundle_async(state, slot, origin=local_instance_label())
+        bundle = await build_transfer_bundle_async(
+            state, slot, origin=local_instance_label(), with_home_setup=True
+        )
+        if bundle.get("layer_b_skipped"):
+            raise SnapshotUnstable("the setup provider context is not ready")
         await asyncio.to_thread(_hold_for_publication, state, slot_history_key(slot), bundle)
     except (TranscriptBusy, SnapshotUnstable):
         raise sc.CardRejected(
@@ -684,10 +706,67 @@ async def _send_chat(
             "move_in_chat_failed",
         )
     key = payload.get("key") if isinstance(payload, dict) else None
+    if not isinstance(key, str) or not _REMOTE_KEY_RE.fullmatch(key):
+        raise sc.CardRejected("your home did not return the chat's address", "move_in_chat_failed")
+    if payload.get("home_setup_version") != 1 or (
+        bundle.get("layer_b") and payload.get("resume_mode") != "session_load"
+    ):
+        raise sc.CardRejected(
+            "your home did not confirm the complete setup conversation; update it and retry",
+            "move_in_chat_failed",
+        )
     return {
-        "remote_key": key if isinstance(key, str) and _REMOTE_KEY_RE.match(key) else "",
+        "remote_key": key,
         "messages": len(bundle.get("messages", [])),
+        "resume_mode": payload.get("resume_mode", "prefix"),
+        "home_setup_version": payload.get("home_setup_version"),
     }
+
+
+async def _adopt_chat(
+    state: "DashboardState",
+    mgr: Any,
+    instance_id: str,
+    source_key: str,
+    remote_key: str,
+    *,
+    outcome: dict[str, Any] | None = None,
+) -> None:
+    """Finish the dedicated home handoff without changing general imports."""
+    from kiro_crew.dashboard.handlers._shared import read_capped_response
+    from kiro_crew.dashboard.setup_transfer import read_preferences
+    from kiro_crew.first_run import done_stages
+
+    source = state.get_slot(source_key)
+    body = {
+        "slot": remote_key,
+        "title": str(getattr(source, "title", "") or sf.FIRST_RUN_TITLE)[:256],
+        "stages": await asyncio.to_thread(done_stages),
+        "preferences": await asyncio.to_thread(read_preferences),
+        "outcome": outcome or {},
+    }
+    async with mgr.proxy_request(
+        instance_id,
+        "POST",
+        "api/setup/home-arrival",
+        data=json.dumps(body).encode(),
+        content_type="application/json",
+    ) as resp:
+        raw = await read_capped_response(resp, _IMPORT_REPLY_MAX_BYTES)
+        try:
+            reply = json.loads(raw)
+        except ValueError:
+            reply = None
+        if resp.status == 409 and _peer_code(reply) == "turn_running":
+            raise sc.CardRejected("your home's welcome chat is finishing", "move_in_chat_busy")
+        if not (
+            resp.status == 200 and isinstance(reply, dict) and reply.get("main_slot") == remote_key
+        ):
+            raise sc.CardRejected(
+                "your chat has arrived, but your home could not make it the main chat; "
+                "update Kiro Crew on your home and retry Move in",
+                "move_in_adopt_failed",
+            )
 
 
 # ── what stays behind ───────────────────────────────────────────────────────

@@ -53,10 +53,11 @@ async def _preview(
     return await sf._preview_cron(state, card, input_)
 
 
-async def _on_decline(state: "DashboardState", card: sc.SetupCard) -> None:
+async def _on_decline(state: "DashboardState", card: sc.SetupCard) -> sc.SetupCard:
     from kiro_crew.dashboard import setup_flow as sf
 
     await sf._discard_preview_job(state, card)
+    return await sf.prepare_home_after_job(state, card)
 
 
 def _vet(session_key: str) -> str | None:
@@ -72,15 +73,6 @@ def _result_detail(card: sc.SetupCard) -> str:
     detail = (
         f" The job is kept (job id {job_id}) and runs {card.payload.get('schedule_human', '')}."
     )
-    if outcome.get("home_choice"):
-        # The first kept job: the gateway put the home question on screen with it.
-        detail += (
-            ' The gateway now shows a "Where should your crew live?" card: this machine '
-            "(free, runs while it is on) or a home in the cloud (always on). In one "
-            "sentence, say why it matters now: the job runs only while Kiro Crew runs. "
-            "The card is the question; do not ask it again in prose. If they pick the "
-            "cloud, guide them through the card's steps one at a time."
-        )
     return detail
 
 

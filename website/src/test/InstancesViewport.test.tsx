@@ -3,7 +3,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstancesViewport from '../components/InstancesViewport'
-import { removeWarm, setActiveId, setWarm } from '../store/instancesSlice'
+import { openInstanceSession, removeWarm, setActiveId, setWarm } from '../store/instancesSlice'
 import {
   consumeChatHandoff,
   installSoftNavigate,
@@ -70,6 +70,35 @@ beforeEach(() => {
 })
 
 describe('InstancesViewport', () => {
+  it('opens the moved chat in a warm pane without reloading and requires that pane to acknowledge', async () => {
+    const store = createTestStore({ instances: {
+      warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1',
+      mru: ['cd-1'], unread: {}, ready: { 'cd-1': true },
+    } })
+    renderWithProviders(<InstancesViewport />, { store })
+    await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
+    const frame = document.querySelector('iframe')!
+    const src = frame.src
+    const origin = new URL(src).origin
+    const child = { postMessage: vi.fn() } as unknown as Window
+    Object.defineProperty(frame, 'contentWindow', { configurable: true, get: () => child })
+    act(() => { store.dispatch(openInstanceSession({ id: 'cd-1', slot: 'chat-9-1' })) })
+    await waitFor(() => expect(child.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'mc-host-model', openSession: 'chat-9-1' }),
+      origin,
+    ))
+    const reply = { type: 'mc-session-opened', v: 1, slot: 'chat-9-1' }
+    act(() => { window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin, data: reply,
+    })) })
+    expect(store.getState().instances.openSessions['cd-1']).toBe('chat-9-1')
+    act(() => { window.dispatchEvent(new MessageEvent('message', {
+      source: child, origin, data: reply,
+    })) })
+    expect(store.getState().instances.openSessions['cd-1']).toBeUndefined()
+    expect(document.querySelector('iframe')).toBe(frame)
+    expect(frame.src).toBe(src)
+  })
   it('renders nothing when embedded (a pane never hosts nested panes)', () => {
     vi.mocked(isEmbeddedPane).mockReturnValue(true)
     const store = createTestStore({

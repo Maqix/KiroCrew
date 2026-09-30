@@ -5,7 +5,7 @@ agent sets Kiro Crew up with the user. Every change the agent wants is a
 **setup card**: a server-side pending action rendered inline in the chat, which
 commits only when the owner clicks it. The chat can also build a **home** in the
 owner's own AWS account in the background and move the crew into it. When the
-first job is kept, the chat becomes the **main chat**, where the user works from
+home choice is settled, the chat becomes the **main chat**, where the user works from
 then on. The design and its rationale are in
 [rfc-one-chat-first-run.md](../../request-for-change/rfc-one-chat-first-run.md);
 this spec is the contract the code keeps.
@@ -90,7 +90,7 @@ text carries facts the gateway gathered (other agents detected, curated
 connections, whether the service is installed, and a `--home cloud` answer) and
 the `$crew-setup` token, so the skill body is expanded into that turn. Only a
 `kirocrew start --home cloud` answer puts a home card on screen at this point;
-every other first run asks where the crew lives once its first job is kept (see
+every other first run asks where the crew lives after scheduling is kept or skipped (see
 [The home step](#the-home-step)).
 
 ## Lifecycle of a card
@@ -143,7 +143,7 @@ for a picked region), so a click carrying the old hash is refused.
 | `channel` | agent | the channel (Telegram, the one in `setup_cards.CHANNELS`) | stores the bot token typed into the card and turns the channel on, then goes `waiting` with a one-time pairing code; a `/pair <code>` DM to the bot allowlists that sender and commits. See [Channel pairing](#channel-pairing) |
 | `cron` | agent | name, prompt summary, schedule in words, timezone (the full prompt is private); at most hourly (`CRON_MIN_EVERY_SECS`) | `preview`: creates the job disabled and silent, runs it once and shows the output, then returns to `pending`. `commit` (Keep it): makes it non-silent and enables it, and lifts the card budget. `decline`: removes the preview job. See [Job previews](#job-previews) |
 | `service` | agent | platform, the command, whether a terminal is needed, installed | macOS: installs the launchd agent. Linux: verifies the unit exists (the owner runs `kirocrew stop && kirocrew service install`, which needs sudo) |
-| `home` | the gateway, as the first run's home step at its first kept job and for `kirocrew start --home cloud`; the agent, on request | while it asks where the crew lives (`step: "choose"`): the region and the price floor (`from_usd`) only; then provider, region, AWS profile, whether AWS is signed in and the account's last four digits, the account's plan, the size options, estimated monthly cost, who bills it, whether the run is simulated; the sign-up links when not signed in; the region picker when no region answers | one card for the whole journey, each step a decision on it: `choose` ([The home step](#the-home-step)), `aws_signin` ([Signing in to AWS](#signing-in-to-aws)), `region` ([Asking for the region](#asking-for-the-region)), then `commit` by phase: Build ([Building the home](#building-the-home)), Sign the home in to Kiro ([The home's Kiro sign-in](#the-homes-kiro-sign-in)), Move in ([Moving in](#moving-in)). Commits with `moved: true`, or with `stayed: true` when the owner keeps the crew on this machine; decline ("Not now") answers nothing. A failed card whose build a restart cut short offers `remove` ([What a restart leaves in AWS](#what-a-restart-leaves-in-aws)) |
+| `home` | the gateway, as the first run's home step after a kept or declined job and for `kirocrew start --home cloud`; the agent, on request | while it asks where the crew lives (`step: "choose"`): the region and the price floor (`from_usd`) only; then provider, region, AWS profile, whether AWS is signed in and the account's last four digits, the account's plan, the size options, estimated monthly cost, who bills it, whether the run is simulated; the sign-up links when not signed in; the region picker when no region answers | one card for the whole journey, each step a decision on it: `choose` ([The home step](#the-home-step)), `aws_signin` ([Signing in to AWS](#signing-in-to-aws)), `region` ([Asking for the region](#asking-for-the-region)), then `commit` by phase: Build ([Building the home](#building-the-home)), Sign the home in to Kiro ([The home's Kiro sign-in](#the-homes-kiro-sign-in)), Move in ([Moving in](#moving-in)). Commits with `moved: true`, or with `stayed: true` when the owner keeps the crew on this machine; decline ("Not now") answers nothing. A failed card whose build a restart cut short offers `remove` ([What a restart leaves in AWS](#what-a-restart-leaves-in-aws)) |
 
 ## Invariants
 
@@ -239,9 +239,9 @@ A kind is one module plus copy. The steps, in order:
      `stack_exempt` (a pending card holds no other proposal back, nor is held
      back), `lifts_budget` (a committed card lifts the card budget),
      `gateway_card` (which of its cards are the gateway's own step, outside the
-     budget and the one-at-a-time rule), `on_claim`, `on_decline`,
-     `after_report` (runs after the `[Setup card result]` turn, for a card that
-     must appear after it), and `scopes`
+     budget and the one-at-a-time rule), `on_claim`, `on_decline` (may return an
+     updated card with the next-step outcome), `after_report` (runs after the
+     `[Setup card result]` turn for both commits and declines), and `scopes`
      plus `vet` for a governance scope beyond `capabilities.setup`.
      `governed=False` and `reported=False` are for a gateway-only kind only.
 
@@ -344,32 +344,36 @@ A home is a crew in the owner's own AWS account, built by the existing launch
 engine (`handlers_cloud.start_launch_job`, the EC2 template) while setup carries
 on locally. One `home` card carries the whole journey, in this order: where the
 crew lives (the first run's own card), an AWS sign-in if needed, the region if AWS
-names none, the size and Build, the home's own Kiro sign-in, then Move in. A simulated home
+names none, the size and Build, the home's own Kiro sign-in, then an automatic move. A simulated home
 ([Pieces](#pieces)) walks the same card without AWS. The card's facts come from
 `_home_payload`, which reads them read-only and side by side through
 `aws.run_aws` and never changes anything in the account.
 
 ### The home step
 
-Where the crew lives is a step of its own, asked in the chat, never in the
-terminal, and asked when it matters: once the first job is kept, because that job
-runs only while Kiro Crew runs. (User testing: shown right after privacy, the
-question arrived with too little context and the card was too big.) When the
-first job's cron card commits and `graduate` turns the chat into the main chat,
-`_commit_cron` marks the step due (`outcome.home_choice`), and the cron action's
-`after_report` (`offer_home_after_job`) calls `_offer_home_choice` once the kept
-job's `[Setup card result]` is in the chat. Shown before that turn, the tray read
-the card as one the chat had moved past and opened it folded. It is a home card
-with payload `offer: true` (`setup_actions.home.HOME_STEP_KEY`) and `step: "choose"`
-(`HOME_PHASE_KEY`, `HOME_CHOICE_STEP`; private `phase: "choose"`): "Where should
-your crew live?". The gateway shows it itself, so the step always happens, once:
-not when the chat already has a home card (the agent proposed one) or a script
-answered `--home`. Its payload asks nothing of AWS (`_choice_payload`): the
-region (the profile's, else `HOME_DEFAULT_REGION`) and `from_usd`, the cheapest
-monthly estimate of any size a plan offers, in that region. The card is two
-native radio rows, "This machine: free · runs while it's on" and "In the cloud:
-always on · from $14/mo", with a lead sentence saying why it matters now, and
-**Continue** (disabled until a row is picked) and **Not now**.
+Where the crew lives is the final setup choice, asked in the chat after the
+job step is kept **or skipped**. Declining scheduling ends only that step.
+`prepare_home_after_job` marks the home question due (`outcome.home_choice`)
+on a first-run cron card that is committed or declined, and its `after_report`
+(`offer_home_after_job`) shows the question after the result turn starts, so the
+tray opens it expanded. A declined preview is removed and never enabled.
+
+A spoken refusal such as "no scheduled job" needs no cron card: `crew-setup`
+and the kickoff facts direct the agent to call
+`setup_card(kind="home", step="choose")` in that turn. The home action preserves
+and validates `step` through the MCP directive and builds the same choice card,
+without reading AWS. `setup_status` reports this next step until a home card or
+a scripted answer exists. This final choice is exempt from the optional-card
+budget; user provenance and governance still apply. An existing home card is
+reused, including one already declined, rather than proposed again.
+
+The choice card carries `offer: true` (`setup_actions.home.HOME_STEP_KEY`) and
+`step: "choose"` (`HOME_PHASE_KEY`, `HOME_CHOICE_STEP`; private `phase: "choose"`).
+Its payload (`_choice_payload`) contains the region (the profile's, else
+`HOME_DEFAULT_REGION`) and `from_usd`, the cheapest monthly estimate offered in
+that region. It offers "This machine: free · runs while it's on" and "In the
+cloud: always on · from $14/mo", with **Continue** disabled until a row is picked,
+and **Not now**. The copy applies whether or not the user kept a scheduled job.
 
 Continue is the `choose` decision (`input.where`), a claimed decision on the home
 action (`setup_actions/home.py`), so it is hash-bound and governed like a commit
@@ -386,9 +390,9 @@ answer is refused (`home_choose_first`), an unknown answer is
 `invalid_decision`. Not now declines it; a home stays one "move me to the cloud"
 away in any later chat, where the agent proposes `kind: "home"`.
 
-The kept job's own result tells the agent the question is on screen
-(`outcome.home_choice` on the cron card, worded by `setup_actions/cron.py`): say
-in one sentence why it matters now, do not ask it again in prose, and guide the
+The kept or skipped job's result tells the agent the question is on screen
+(`outcome.home_choice` on the cron card, worded by `setup_flow._result_text`).
+It must not conclude setup or ask the question again in prose; it guides the
 cloud's steps one at a time. The card is the gateway's (`gateway_card`), so it
 counts toward neither the agent's card budget nor the one-at-a-time rule. A
 script's `kirocrew start --home cloud` shows the build card right after privacy
@@ -595,7 +599,11 @@ private settings, since only the payload is hash-bound. The click records
 whether the owner's browser is on this machine (`on_claim`, see
 [The home's Kiro sign-in](#the-homes-kiro-sign-in)), starts the launch job,
 goes `waiting`, and a watcher (`_watch_home`) mirrors the build's steps onto the
-card until it is done (`pending`, `ready`) or fails. A build that fails on the
+card until it is ready to move or fails. The authorized Build click also stores
+`auto_move` and its approved payload hash: after the home is signed in, the
+watcher waits for an idle setup chat and continues through the ordinary
+hash-bound, governance-checked `decide` path. A changed payload or a policy
+refusal requires a new decision; the progress state never grants permission. A build that fails on the
 account's spend limit is `home_spend_limit` rather than the generic
 `home_build_failed`.
 
@@ -739,14 +747,18 @@ home is never held here.
 
 When a live home's build is done, the card's private record holds the EC2
 instance id the launch registered in the Instances hub ("Added to Your crews").
+New builds move automatically after their own Kiro sign-in. The watcher waits
+for the source chat to finish a turn, retries a busy snapshot, and resumes a
+pending or interrupted move after a gateway restart. Other failures leave the
+card with its reason and a Move in retry. Legacy cards keep that explicit action.
 Move in (`setup_move_in.move_in`) runs four steps, each on the card as it runs
 (`outcome.move_steps`); a simulated home walks four steps and moves nothing:
 
 1. **Reach.** Needs `instances.enabled` and the tunnel manager the gateway starts
    at boot, the same gate every `/api/instances` route applies. When Remote Crew
-   is off, the owner's Move in click is the opt-in: it sets `instances.enabled`,
-   restarts the gateway once, and returns the card to `pending` with
-   `move_in_restarting`, so the owner presses Move in again once the chat is back.
+   is off, the authorized home move sets `instances.enabled`, restarts the
+   gateway once, and returns the card to `pending` with `move_in_restarting`.
+   A new build resumes automatically; a legacy card offers Move in again.
    Then it finds the registry record whose `ssm_target` is that instance id and
    connects it (`SshTunnelManager.connect`).
 2. **Pack.** `portability.create_export_zip`: memory (every store), schedules,
@@ -773,16 +785,49 @@ Move in (`setup_move_in.move_in`) runs four steps, each on the card as it runs
    card returns to `pending` with the reason. A schedule the home rejected, or
    every schedule when the home could not read its own schedule list, comes back
    on here and is listed as kept. The merge restores `config.json` only on a
-   home that has none, so a home usually keeps its own settings; the result says
-   so. A home that answered the chat step without a key gets the archive
-   unchanged.
+   home that has none; the arrival step separately applies the setup profile
+   and persona. A chat reply without a valid slot key stops the move before any
+   schedules are handed over.
+
+After carry, the owner-only `POST /api/setup/home-arrival` adopts the transferred
+slot as the home's first-run and main chat (`setup_home_arrival.adopt_main_chat`).
+The dedicated transfer uses bundle version 3 and `setup_transfer` to carry the
+full setup display history from the same guarded snapshot as the provider
+context: speech, tool rows, setup-card references and setup-result injections.
+The card faces travel as bounded, redacted receipts with fresh target IDs.
+They are stored server-side, terminal and inert: no private state, credential
+codes or executable decisions travel. Ordinary sends remain version 2 and
+speech-only. An older peer refuses the home bundle rather than silently
+discarding its cards; a failed provider-context installation fails the handoff.
+With Tool Search enabled, dashboard startup deliberately rebuilds the native
+session and replays Crew's durable history (see [providers](providers.md)).
+The setup-result injections therefore carry the user's card-only answers into
+the first cloud prompt too; a copied native session file alone cannot do that.
+
+Arrival applies only the saved agent name, language, timezone, technical level,
+user role and SOUL/USER persona; cloud runtime configuration, privacy consent
+and security policy remain local. It completes the carried home receipt after
+the archive lands. The sign-in notice keeps its system-notice identity and
+reports that the cloud is signed in, rather than repeating an outstanding login
+request. The arrived receipt has no action to open this same home again.
+The main chat's live crew overview identifies this home as signed in and the
+move as complete, including when native context still contains an older sign-in
+request.
+It keeps the source title, clears the Imported folder, pins `kirocrew-main`, and
+persists that metadata before recording the main marker. Known setup stages
+travel as presentation progress only; privacy consent, secrets and grants do
+not. The cloud's previous welcome chat is archived, never deleted. A busy
+welcome chat delays completion; the previous key survives a retry. Generic
+session imports retain their provenance title and folder. Both gateways must
+support the arrival endpoint; an older home leaves a retryable error and the
+already copied chat is reused after updating it.
 
 The chat goes before the carry so the archive can name the copy's key: a moved
 job never runs on the home under an owner key that names no chat there. SC5 (a job
 runs on exactly one crew) fixes the order inside step 4: the home's cron service
 loads an imported job on its next sync, so switching the local copies off after the
 import would leave both running for a moment. The card's `private.move` records
-each finished step (the chat's copy key, then the carry), so pressing Move in
+each finished step (the chat's copy key, the carry, then adoption), so pressing Move in
 again never sends the chat or the archive twice: a retry after a failed carry
 packs afresh, keeps the recorded copy key and carries again. A failed chat step
 has moved nothing else. A reply lost after the home applied the archive is the one
@@ -795,19 +840,29 @@ The committed outcome names the home (`home.instance_id`, `home.name`,
 `jobs_follow_chat` (the jobs now owned by the chat's copy), `carried` (the home's
 import summary items), `settings_moved`, and `reenter`: the vault's secret names,
 the credential file's credential names, and the curated connections holding a
-grant here, never a value. The `[Setup card result]` turn tells the agent where
-the chat now lives, which schedules report to it there, and what the user enters
-again on the home. The dashboard draws the committed card from that outcome
-(`components/setup/HomeMovedDetail.tsx`). Every step is audited as
+grant here, never a value. A successful live move does not start another local
+agent turn after the snapshot. The dashboard draws the committed card from that
+outcome (`components/setup/HomeMovedDetail.tsx`). A move observed in this window
+switches automatically to `home.remote_key` on the cloud, including when the
+owner navigated to another local page during the build. Opening a historical
+confirmation never redirects by itself, and another active crew keeps focus.
+The Open your home action also targets that exact conversation. The parent
+relays `openSession` in its host model; the existing iframe navigates without a
+reload and acknowledges with `mc-session-opened`. Pending navigation survives a
+cold pane's readiness handshake; only its own frame and origin can acknowledge. Every step is audited as
 `setup_card.move_in`.
 
 ## The main chat
 
-When the first-run chat's first cron card is kept, `setup_flow.graduate` makes
-it the **main chat**: it records `main` in the first-run state, renames the slot
+Once the first run's home card is committed or declined, `setup_flow.graduate`
+makes it the **main chat**, even when no job was kept: it records `main` in the first-run state, renames the slot
 after the agent (`agent.bot_name`, an explicit title the auto-titler leaves
-alone), keeps it pinned, and appends a `main_chat` system notice. The keep also
-marks the `job_kept` stage, which starts [the first week](#the-first-week).
+alone), keeps it pinned, and appends a `main_chat` system notice. A missing,
+pending or failed home choice prevents the completion notice. A scripted
+`--home here|later` already answers the choice; a kept or declined job can then
+graduate directly. A cloud move adopts this conversation as the remote main
+chat. Only keeping a job marks `job_kept` and starts [the first week](#the-first-week);
+skipping scheduling does neither.
 `_theme_payload` reports `main_slot`; `kirocrew start` lands on it. Like the
 rest of the state file, the marker is presentation only: it decides where the
 product opens and whether the overview is attached, never what a turn may do.

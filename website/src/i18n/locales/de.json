@@ -9211,7 +9211,7 @@
       "title_home": "Dein Zuhause in der Cloud",
       "home_cost": "Etwa {{amount}}/Monat, abgerechnet von {{billedBy}}",
       "home_size_label": "Größe",
-      "home_choice_lead": "Deine neue Aufgabe läuft nur, solange {{productName}} läuft. Behalte deine Crew auf diesem Rechner oder gib ihr ein Zuhause in der Cloud, das immer an ist.",
+      "home_choice_lead": "Wähle, wo {{productName}} läuft: auf diesem Gerät, solange es eingeschaltet ist, oder in der Cloud, damit es auch bei ausgeschaltetem Gerät verfügbar bleibt.",
       "home_choice_here": "Dieser Rechner",
       "home_choice_here_hint": "kostenlos · läuft, solange er an ist",
       "home_choice_cloud": "In der Cloud",
@@ -9233,6 +9233,7 @@
       "home_removing": "Wird entfernt, was erstellt wurde…",
       "home_removed": "Entfernt: AWS bestätigt, dass der Stack {{stack}} nicht mehr existiert.",
       "home_remove_failed": "Das Entfernen wurde nicht abgeschlossen. Wenn deine AWS-Anmeldung abgelaufen ist, melde dich erneut an und versuche es noch einmal, oder entferne es unter Remote-Crew.",
+      "home_auto_move": "Sobald dein Zuhause bereit und angemeldet ist, wird dieser Chat dorthin übertragen und dieses Fenster wechselt automatisch.",
       "home_build": "Mein Zuhause bauen",
       "home_build_signed_in": "Ich bin angemeldet — Zuhause bauen",
       "home_aws_signin_intro": "Melde dich bei AWS an, um dein Zuhause zu bauen. Die AWS-Anmeldeseite öffnet sich in deinem Browser. {{productName}} sieht nie dein Passwort oder deine Schlüssel.",
@@ -11195,7 +11196,8 @@
       },
       "homeSigninNotice": {
         "opened": "Dein Zuhause wartet auf einen Klick, um sich bei Kiro anzumelden. Die Anmeldeseite hat sich in deinem Browser geöffnet.",
-        "on_card": "Dein Zuhause wartet auf einen Klick, um sich bei Kiro anzumelden. Öffne den Anmeldelink auf seiner Karte."
+        "on_card": "Dein Zuhause wartet auf einen Klick, um sich bei Kiro anzumelden. Öffne den Anmeldelink auf seiner Karte.",
+        "resolved": "Dein Zuhause in der Cloud ist bei Kiro angemeldet. Setze dieses Gespräch hier fort."
       },
       "handoffDoneNotice": {
         "finished": "„{{title}}“ ist fertig. Frag mich hier, was dabei herausgekommen ist.",

@@ -17,11 +17,11 @@ import type { ChatMessage } from '../../types'
 import NoticeCard from './NoticeCard'
 
 /** Whether a `home_signin` row's page opened here, or null for any other row. */
-export function homeSigninOf(m: Pick<ChatMessage, 'role' | 'kind' | 'meta'>): { opened: boolean } | null {
+export function homeSigninOf(m: Pick<ChatMessage, 'role' | 'kind' | 'meta'>): { opened: boolean; resolved: boolean } | null {
   if (m.role !== 'assistant') return null
-  const meta = (m.meta ?? {}) as { kind?: unknown; opened?: unknown }
+  const meta = (m.meta ?? {}) as { kind?: unknown; opened?: unknown; resolved?: unknown }
   if ((m.kind ?? meta.kind) !== 'home_signin') return null
-  return { opened: meta.opened === true }
+  return { opened: meta.opened === true, resolved: meta.resolved === true }
 }
 
 export default function HomeSigninNotice({ message }: { message: ChatMessage }) {
@@ -31,7 +31,7 @@ export default function HomeSigninNotice({ message }: { message: ChatMessage }) 
   return (
     <div className="w-full min-w-0" data-testid="home-signin-notice" data-opened={signin.opened}>
       <NoticeCard
-        content={signin.opened ? t('pages.chat.homeSigninNotice.opened') : t('pages.chat.homeSigninNotice.on_card')}
+        content={signin.resolved ? t('pages.chat.homeSigninNotice.resolved') : signin.opened ? t('pages.chat.homeSigninNotice.opened') : t('pages.chat.homeSigninNotice.on_card')}
         icon={LogIn}
         emphasis
       />

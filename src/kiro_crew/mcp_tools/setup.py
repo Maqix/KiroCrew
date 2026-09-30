@@ -83,7 +83,7 @@ def setup_card(name: str, args: dict[str, Any]) -> str:
 
 
 def setup_status(name: str, args: dict[str, Any]) -> str:
-    from kiro_crew.first_run import done_stages, read_first_run_slot
+    from kiro_crew.first_run import done_stages, read_first_run_slot, read_state
 
     sk, err = mcp_core.require_strict_session_key("Error: setup_status needs a session.")
     if err:
@@ -94,6 +94,16 @@ def setup_status(name: str, args: dict[str, Any]) -> str:
     if slot and sk == f"dashboard:{slot}":
         stages = done_stages()
         lines.append("First-run stages done: " + (", ".join(stages) if stages else "none") + ".")
+        homes = [c for c in cards if c.kind == sc.KIND_HOME]
+        if not homes and not read_state().get("home"):
+            lines.append(
+                'Next setup step: call setup_card(kind="home", step="choose"), even if '
+                "the user skipped scheduling. Do not conclude setup before this choice."
+            )
+        elif homes and homes[-1].status not in (sc.STATUS_COMMITTED, sc.STATUS_DECLINED):
+            lines.append(
+                "The home step is not settled. Check its status; do not say setup is done."
+            )
     if not cards:
         lines.append("No setup cards in this session.")
     for card in cards[-20:]:

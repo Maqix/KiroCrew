@@ -147,6 +147,89 @@ async def test_bundle_carries_only_visible_roles():
 
 
 @pytest.mark.asyncio
+async def test_home_handoff_uses_full_guarded_history_and_inert_receipts(monkeypatch):
+    from kiro_crew import setup_cards as sc
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard.handlers import _shared
+
+    card = sc.create_card(
+        slot="slot-1",
+        session_key="dashboard:slot-1",
+        kind="connect",
+        payload={"provider": "github"},
+    )
+    sc.update_card(card.id, lambda c: setattr(c, "status", "declined"))
+    rows = [
+        {"role": "assistant", "content": "Connect GitHub?", "ts": "t1"},
+        {
+            "role": "inject",
+            "content": "",
+            "ts": "t2",
+            "meta": {"setupCard": {"id": card.id, "kind": "connect"}},
+        },
+        {
+            "role": "inject",
+            "content": "GitHub declined",
+            "ts": "t3",
+            "meta": {"injectKind": "setup_result"},
+        },
+        {"role": "tool", "content": "The home is ready", "ts": "t4", "meta": {"done": True}},
+    ]
+    bundle = await build_transfer_bundle_async(
+        _state(rows), _slot(rows[-1:], disk_older=3), with_home_setup=True
+    )
+    assert bundle["bundle_version"] == 3
+    assert bundle["home_setup"]["rows"] == rows
+
+    async def owner(*args):
+        return None
+
+    monkeypatch.setattr(_shared, "require_owner_dashboard_request", owner)
+    target = await _run_import(st, monkeypatch, bundle, return_slot=True)
+    assert [r["content"] for r in target.messages] == [r["content"] for r in rows]
+    receipt = sc.list_cards(target.key)[0]
+    assert receipt.id != card.id and receipt.status == "declined"
+    assert target.messages[1]["meta"]["setupCard"]["id"] == receipt.id
+
+    # Tool Search rebuilds a native session from Crew's history. Card-only
+    # answers must reach that first prompt even when nobody typed a user row.
+    from kiro_crew.context import build_session_replay
+
+    replay = build_session_replay(None, "dashboard:" + target.key, pending_messages=target.messages)
+    assert "GitHub declined" in replay
+    assert "Connect GitHub?" in replay
+
+
+@pytest.mark.asyncio
+async def test_failed_home_import_removes_receipts_and_refuses_context_loss(monkeypatch):
+    from kiro_crew import setup_cards as sc
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard import setup_transfer
+    from kiro_crew.dashboard.handlers import _shared
+
+    card = sc.create_card(slot="source", session_key="dashboard:source", kind="privacy", payload={})
+    rows = [
+        {"role": "assistant", "content": "Welcome", "ts": ""},
+        {"role": "inject", "content": "", "ts": "", "meta": {"setupCard": {"id": card.id}}},
+    ]
+    body = {
+        **st._assemble_bundle(rows, "Welcome", "", ""),
+        "bundle_version": 3,
+        "home_setup": setup_transfer.build(rows, "source"),
+        "layer_b": {"envelope": {}, "events": "{}\n"},
+    }
+
+    async def owner(*args):
+        return None
+
+    monkeypatch.setattr(_shared, "require_owner_dashboard_request", owner)
+    monkeypatch.setattr(st, "_write_layer_b_files", lambda *args: None)
+    with pytest.raises(ValueError, match="provider context"):
+        await _run_import(st, monkeypatch, body)
+    assert [c.id for c in sc.load_cards()] == [card.id]
+
+
+@pytest.mark.asyncio
 async def test_bundle_does_not_carry_project_or_model():
     """The two fields deliberately dropped — a dangling path and an
     entitlement-specific model id (see the module docstring in the source)."""

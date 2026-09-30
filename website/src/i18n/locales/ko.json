@@ -9083,7 +9083,7 @@
       "title_home": "클라우드 홈",
       "home_cost": "월 약 {{amount}}, {{billedBy}}에서 청구",
       "home_size_label": "크기",
-      "home_choice_lead": "새 작업은 {{productName}} 실행 중에만 실행됩니다. 크루를 이 컴퓨터에 두거나, 항상 켜져 있는 클라우드 홈을 마련하세요.",
+      "home_choice_lead": "{{productName}}의 실행 위치를 선택하세요. 이 기기가 켜져 있는 동안 여기서 실행하거나, 기기가 꺼져 있어도 사용할 수 있도록 클라우드에서 실행할 수 있습니다.",
       "home_choice_here": "이 컴퓨터",
       "home_choice_here_hint": "무료 · 켜져 있는 동안 실행",
       "home_choice_cloud": "클라우드",
@@ -9105,6 +9105,7 @@
       "home_removing": "만든 항목을 삭제하는 중…",
       "home_removed": "삭제됨: AWS에서 {{stack}} 스택이 없어졌음을 확인했습니다.",
       "home_remove_failed": "삭제가 완료되지 않았습니다. AWS 로그인이 만료되었다면 다시 로그인한 뒤 다시 시도하거나, 원격 크루에서 삭제하세요.",
+      "home_auto_move": "새 홈이 준비되고 로그인이 완료되면 이 채팅이 그곳으로 이동하고 이 창도 자동으로 전환됩니다.",
       "home_build": "내 홈 만들기",
       "home_build_signed_in": "로그인했음 — 내 홈 만들기",
       "home_aws_signin_intro": "홈을 만들려면 AWS에 로그인하세요. AWS 로그인 페이지가 브라우저에서 열립니다. 비밀번호나 키는 {{productName}}에 절대 전달되지 않습니다.",
@@ -11037,7 +11038,8 @@
       },
       "homeSigninNotice": {
         "opened": "홈이 Kiro에 로그인하려면 클릭 한 번만 남았습니다. 로그인 페이지가 브라우저에서 열렸습니다.",
-        "on_card": "홈이 Kiro에 로그인하려면 클릭 한 번만 남았습니다. 홈 카드의 로그인 링크를 여세요."
+        "on_card": "홈이 Kiro에 로그인하려면 클릭 한 번만 남았습니다. 홈 카드의 로그인 링크를 여세요.",
+        "resolved": "클라우드 홈이 Kiro에 로그인되었습니다. 여기서 이 대화를 계속하세요."
       },
       "handoffDoneNotice": {
         "finished": "‘{{title}}’ 작업이 끝났습니다. 무엇을 찾았는지 여기서 물어보세요.",

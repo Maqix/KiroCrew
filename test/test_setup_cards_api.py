@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from unittest.mock import Mock
+
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp import StreamReader, web
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from kiro_crew import first_run
 from kiro_crew import setup_cards as sc
@@ -170,3 +173,51 @@ async def test_a_stranger_cannot_move_the_main_chat(as_stranger):
         r = await client.post("/api/setup/main-chat", json={"slot": "chat-3-3"})
         assert r.status == 403
     assert first_run.read_main_slot() is None
+
+
+def _arrival_request(body):
+    raw = json.dumps(body).encode()
+    payload = StreamReader(Mock(_reading_paused=False), limit=4096)
+    payload.feed_data(raw)
+    payload.feed_eof()
+    return make_mocked_request(
+        "POST",
+        "/api/setup/home-arrival",
+        app=_app(owner=True),
+        payload=payload,
+        headers={"Content-Type": "application/json", "Content-Length": str(len(raw))},
+    )
+
+
+@pytest.mark.asyncio
+async def test_home_arrival_is_owner_only(as_stranger):
+    response = await handlers.api_setup_home_arrival(_arrival_request({"slot": "chat-9-1"}))
+    assert response.status == 403
+
+
+@pytest.mark.asyncio
+async def test_home_arrival_validates_input_and_returns_adopted_chat(as_owner, monkeypatch):
+    from kiro_crew.dashboard import setup_home_arrival
+
+    calls = []
+
+    async def adopt(state, slot, title, stages, **kwargs):
+        calls.append((slot, title, stages))
+        assert kwargs["preferences"] == {"fields": {}, "persona": {}}
+        return slot
+
+    monkeypatch.setattr(setup_home_arrival, "adopt_main_chat", adopt)
+    response = await handlers.api_setup_home_arrival(
+        _arrival_request({"slot": "chat-9-1", "title": [], "stages": []})
+    )
+    assert response.status == 400 and calls == []
+    response = await handlers.api_setup_home_arrival(
+        _arrival_request({"slot": "chat-9-1", "title": "Welcome", "stages": ["hello"]})
+    )
+    assert response.status == 200
+    assert json.loads(response.body) == {"main_slot": "chat-9-1"}
+    assert calls == [("chat-9-1", "Welcome", ["hello"])]
+    response = await handlers.api_setup_home_arrival(
+        _arrival_request({"title": "x" * (1024 * 1024)})
+    )
+    assert response.status == 413 and len(calls) == 1

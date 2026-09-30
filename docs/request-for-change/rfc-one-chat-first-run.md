@@ -492,7 +492,7 @@ first-week tip (§5.8); the dashboard-app offer is not built yet.
 
 ### 5.7 The home, built while you talk
 
-When the first job is kept, every first run shows a deterministic compact
+After scheduling is kept or skipped, every first run shows a compact
 **"Where should your crew live?"** card, whether or not AWS is signed in on this
 machine: "This machine: free · runs while it's on" or "In the cloud: always on ·
 from $14/mo" (the cheapest size in the card's region), then Continue or
@@ -508,8 +508,8 @@ they have none, sign in (§6.8 rule 2), and the agent guides them through those
 steps in the chat. Once they press Build, the card stays in the chat and shows
 the build's progress, then the home's own one-click Kiro sign-in (§6.8 rule 5).
 Nothing waits on it: name, import, connect and the preview job all happen
-locally meanwhile. When the home is healthy and signed in, the card turns into
-**Move in**: one click hands the crew over (memory, schedules, settings, SOUL.md
+locally meanwhile. When the home is healthy and signed in, the crew moves
+automatically (memory, schedules, settings, SOUL.md
 and USER.md, and this chat) and the same conversation continues from the home.
 The build runs in AWS and in the gateway, not in the browser, so closing the tab
 or letting the laptop sleep does not stop it. A gateway restart mid-build takes
@@ -521,7 +521,8 @@ and billing, and offers to remove them with the same teardown Remote Crew uses.
 
 ### 5.8 The first week: small steps, not a longer first run
 
-The first run stops at the first kept job; everything it did not cover waits.
+The first run ends after the home choice is settled, even when scheduling was
+skipped; everything it did not cover waits.
 Muse does the same: its feature tour runs as a scheduled job over the first
 days, not inside the first conversation. For Kiro Crew:
 
@@ -811,9 +812,11 @@ first run any longer. Five rules shape it:
 2. **Money and credentials are the user's, and the user says yes.** Nothing is
    asked in the terminal, and nothing is built without the owner's click on a
    card that states the cost.
-   - **The home step.** When the first job is kept the gateway shows the home
-     card on every first run (§5.7), first as the question where the crew lives,
-     which reads nothing from AWS. Only once the owner picks the cloud does the
+   - **The home step.** When the first job is kept or skipped the gateway shows
+     the home card on every first run (§5.7), first as the question where the crew lives,
+     which reads nothing from AWS. A spoken scheduling refusal goes straight
+     to this card too; setup is not done before the home choice is settled.
+     Only once the owner picks the cloud does the
      same card, re-issued under a new hash, make one read-only reachability
      check against the AWS profile: signed in, it names the account's last four
      digits; signed out, it offers sign-in and account creation. "This machine"
@@ -887,6 +890,14 @@ first run any longer. Five rules shape it:
    at every moment (SC5): the local copies go off before the archive reaches the
    home and come back on if the home does not confirm it. The contract is in
    [first-run](../system-specs/modules/first-run.md#moving-in).
+
+   The handoff preserves the setup cards, their decisions and tool history in
+   the main conversation, alongside the provider context. The target stores
+   card faces as inert receipts with new IDs; their old actions cannot run
+   again. The cloud applies the saved setup profile and persona, resolves the
+   sign-in notice, and completes the home receipt before the window switches.
+   Runtime settings, privacy consent and grants remain owned by the cloud.
+   A peer too old to preserve this handoff must refuse it explicitly.
 
 5. **Signing the home in: its own sign-in, one click.** The prototype's home
    signs in to Kiro with its own device code, for the same kind of identity this
@@ -980,7 +991,7 @@ Crew keeps its many sessions, crews and apps, but gives the user one place to
 run all of them from.
 
 - **The first run graduates into it.** The hatching phases are Egg → first run →
-  **main**. When the first job is kept, the gateway posts a deterministic notice
+  **main**. When the home step is settled, the gateway posts a deterministic notice
   ("Setup is done — this is your main chat"), renames the session after the
   agent (`bot_name`), keeps it pinned first, and records it as the main chat. An
   install that never had a first run can make any chat its main chat later.

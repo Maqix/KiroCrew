@@ -225,3 +225,31 @@ class TestAWatcherComesBack:
         assert await setup_flow.resume_home_builds(_State(root)) == 0
         assert started == []
         assert sc.get_card(no_job.id).status == sc.STATUS_WAITING
+
+
+@pytest.mark.asyncio
+async def test_restart_resumes_an_authorized_move_without_another_click(jobs, monkeypatch):
+    root, before = jobs
+    job = _job(before, status=lj.DONE, signin_detected=True, instance_id="i-0123")
+    card = _waiting_card(job.id, phase="move")
+
+    def interrupted(c):
+        c.status = sc.STATUS_WORKING
+        c.private.update(auto_move=True, auto_move_hash=c.payload_hash)
+
+    sc.update_card(card.id, interrupted)
+    calls = []
+
+    async def move(state, c):
+        calls.append(c.id)
+        return await setup_flow._finish(c, sc.STATUS_COMMITTED, outcome={"moved": True})
+
+    monkeypatch.setattr(setup_flow, "_move_in", move)
+    monkeypatch.setattr(setup_flow, "_governance_denial", lambda *args: None)
+    try:
+        assert await setup_flow.resume_home_builds(_State(root)) == 1
+        await asyncio.wait_for(asyncio.gather(*setup_flow._home_watchers.values()), timeout=5)
+        assert sc.get_card(card.id).status == sc.STATUS_COMMITTED
+        assert calls == [card.id]
+    finally:
+        await _drain()

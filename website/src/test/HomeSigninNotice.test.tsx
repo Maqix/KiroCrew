@@ -24,6 +24,15 @@ const OPENED = row({ kind: 'home_signin', opened: true, card: 'sc-0123456789abcd
 const ON_CARD = row({ kind: 'home_signin', opened: false, card: 'sc-0123456789abcdef' })
 
 describe('HomeSigninNotice', () => {
+  it('shows a completed sign-in after arrival instead of asking again', () => {
+    render(<SystemNoticeRow message={row({ kind: 'home_signin', opened: true, resolved: true })} />)
+    expect(screen.getByTestId('home-signin-notice')).toHaveTextContent(
+      'Your cloud home is signed in to Kiro. Continue this conversation here.',
+    )
+    expect(screen.queryByText(/waiting for one click/)).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+
   it('is a system notice, drawn by the system-notice renderer, never as a reply', () => {
     expect(isSystemNoticeKind('home_signin')).toBe(true)
     expect(isSystemNoticeRow(OPENED)).toBe(true)

@@ -10,7 +10,7 @@
  *   and connection NAMES to set up again there.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -21,6 +21,9 @@ import { server } from '../../integration/mocks/server'
 import { createTestStore } from './helpers'
 import SetupCard from '../components/setup/SetupCard'
 import type { SetupCard as Card } from '../api/setupCards'
+import { setupCardQueryKey } from '../api/setupCards'
+import { setActiveId } from '../store/instancesSlice'
+import { useHomeMoveHandoff } from '../hooks/useHomeMoveHandoff'
 
 // "Open your home" selects the instance and connects it; the connect itself
 // (tunnel + token mint) is the crew switcher's and is not under test here.
@@ -49,6 +52,11 @@ function LocationProbe() {
   return <div data-testid="location">{loc.pathname}</div>
 }
 
+function Handoff() {
+  useHomeMoveHandoff([])
+  return null
+}
+
 function renderHomeCard(card: Card) {
   server.use(http.get(`/api/setup/cards/${card.id}`, () => HttpResponse.json(card)))
   const store = createTestStore()
@@ -58,13 +66,13 @@ function renderHomeCard(card: Card) {
       <Provider store={store}>
         <MemoryRouter initialEntries={['/chat']}>
           <Routes>
-            <Route path="*" element={<><SetupCard cardId={card.id} /><LocationProbe /></>} />
+            <Route path="*" element={<><Handoff /><SetupCard cardId={card.id} /><LocationProbe /></>} />
           </Routes>
         </MemoryRouter>
       </Provider>
     </QueryClientProvider>,
   )
-  return { store, ...utils }
+  return { store, qc, ...utils }
 }
 
 const MOVE_STEPS = [
@@ -82,6 +90,54 @@ beforeEach(() => {
 })
 
 describe('home card — a live move-in', () => {
+  it('an arrived receipt confirms the move without offering to open this same home', async () => {
+    const { store } = renderHomeCard(home({ status: 'committed', historical: true, outcome: {
+      moved: true, arrived: true, settings_moved: true,
+      home: { name: 'nova-home', remote_key: 'chat-9-1' },
+    } }))
+    expect(await screen.findByTestId('setup-card-home-moved')).toHaveTextContent('nova-home')
+    expect(screen.queryByTestId('setup-card-home-open')).toBeNull()
+    expect(store.getState().instances.activeId).toBeNull()
+  })
+
+  it('switches this window to the copied main chat as the watched move finishes', async () => {
+    const card = home({ status: 'waiting' })
+    const { store, qc } = renderHomeCard(card)
+    await waitFor(() => expect(qc.getQueryData(setupCardQueryKey(card.id))).toBeDefined())
+    await act(async () => {
+      qc.setQueryData(setupCardQueryKey(card.id), home({ status: 'committed', outcome: {
+        moved: true, home: { instance_id: 'inst-1', remote_key: 'chat-9-1', name: 'nova-home' },
+      } }))
+    })
+    await waitFor(() => expect(store.getState().instances.activeId).toBe('inst-1'))
+    expect(store.getState().instances.openSessions).toEqual({ 'inst-1': 'chat-9-1' })
+    act(() => { store.dispatch(setActiveId(null)) })
+    expect(store.getState().instances.activeId).toBeNull()
+  })
+
+  it('an old move confirmation does not switch crews but opens the exact chat on click', async () => {
+    const { store } = renderHomeCard(home({ status: 'committed', outcome: {
+      moved: true, home: { instance_id: 'inst-1', remote_key: 'chat-9-1', name: 'nova-home' },
+    } }))
+    const open = await screen.findByTestId('setup-card-home-open')
+    expect(store.getState().instances.activeId).toBeNull()
+    await userEvent.click(open)
+    expect(store.getState().instances.openSessions).toEqual({ 'inst-1': 'chat-9-1' })
+  })
+
+  it('a finished move does not steal focus from another crew', async () => {
+    const card = home({ status: 'waiting' })
+    const { store, qc } = renderHomeCard(card)
+    await waitFor(() => expect(qc.getQueryData(setupCardQueryKey(card.id))).toBeDefined())
+    await act(async () => {
+      store.dispatch(setActiveId('another-crew'))
+      qc.setQueryData(setupCardQueryKey(card.id), home({ status: 'committed', outcome: {
+        moved: true, home: { instance_id: 'inst-1', remote_key: 'chat-9-1' },
+      } }))
+    })
+    await screen.findByTestId('setup-card-home-open')
+    expect(store.getState().instances.activeId).toBe('another-crew')
+  })
   it('shows each move step’s detail under it while the move is working', async () => {
     renderHomeCard(home({
       status: 'working',

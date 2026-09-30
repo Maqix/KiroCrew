@@ -9339,7 +9339,7 @@
       "title_home": "La tua casa nel cloud",
       "home_cost": "Circa {{amount}}/mese, fatturato da {{billedBy}}",
       "home_size_label": "Dimensione",
-      "home_choice_lead": "Il tuo nuovo lavoro gira solo mentre {{productName}} è in esecuzione. Tieni la tua crew su questa macchina o dalle una casa nel cloud, sempre accesa.",
+      "home_choice_lead": "Scegli dove eseguire {{productName}}: su questo dispositivo finché è acceso, oppure nel cloud per mantenerlo disponibile anche quando il dispositivo è spento.",
       "home_choice_here": "Questa macchina",
       "home_choice_here_hint": "gratis · gira finché è accesa",
       "home_choice_cloud": "Nel cloud",
@@ -9361,6 +9361,7 @@
       "home_removing": "Rimozione di ciò che ha creato…",
       "home_removed": "Rimosso: AWS conferma che lo stack {{stack}} non esiste più.",
       "home_remove_failed": "La rimozione non è terminata. Se l’accesso ad AWS è scaduto, accedi di nuovo e riprova, oppure rimuovilo da Crew remota.",
+      "home_auto_move": "Quando la tua casa sarà pronta e avrà effettuato l’accesso, questa chat verrà trasferita lì e questa finestra passerà automaticamente alla nuova casa.",
       "home_build": "Costruisci la mia casa",
       "home_build_signed_in": "Ho effettuato l'accesso — costruisci la mia casa",
       "home_aws_signin_intro": "Accedi ad AWS per costruire la tua casa. La pagina di accesso di AWS si apre nel tuo browser. {{productName}} non vede mai la tua password né le tue chiavi.",
@@ -11353,7 +11354,8 @@
       },
       "homeSigninNotice": {
         "opened": "La tua casa aspetta un solo clic per accedere a Kiro. La pagina di accesso si è aperta nel tuo browser.",
-        "on_card": "La tua casa aspetta un solo clic per accedere a Kiro. Apri il link di accesso sulla sua scheda."
+        "on_card": "La tua casa aspetta un solo clic per accedere a Kiro. Apri il link di accesso sulla sua scheda.",
+        "resolved": "La tua casa nel cloud ha effettuato l’accesso a Kiro. Continua questa conversazione qui."
       },
       "handoffDoneNotice": {
         "finished": "«{{title}}» ha finito. Chiedimi qui cosa ha trovato.",

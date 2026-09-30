@@ -78,15 +78,16 @@ class SetupAction:
     build: Builder | None = None
     #: Extra decisions by name (each also in ``setup_cards.DECISIONS``).
     decisions: Mapping[str, Decision] = field(default_factory=dict)
-    #: Runs after a ``decline`` is recorded (the cron card removes its preview job).
-    on_decline: Callable[["DashboardState", SetupCard], Awaitable[None]] | None = None
+    #: Runs after a ``decline`` is recorded; may return the updated card.
+    #: The cron card removes its preview job and records the home question due.
+    on_decline: Callable[["DashboardState", SetupCard], Awaitable[SetupCard | None]] | None = None
     #: Runs right after a click claims the card, before its committer, with
     #: whether the owner's request came straight from this machine.
     on_claim: Callable[[SetupCard, bool], Awaitable[SetupCard]] | None = None
     #: The committed card's detail sentence in the ``[Setup card result]`` turn.
     result_detail: Callable[[SetupCard], str] | None = None
     #: Runs after the ``[Setup card result]`` turn is dispatched, for what must
-    #: appear AFTER it in the chat (the home question after a kept job: shown
+    #: appear AFTER it in the chat (the home question after a kept or skipped job: shown
     #: before the result, the tray read it as a card the chat had moved past).
     after_report: Callable[["DashboardState", SetupCard], Awaitable[None]] | None = None
     #: Every governance scope the kind answers to. ``capabilities.setup`` always

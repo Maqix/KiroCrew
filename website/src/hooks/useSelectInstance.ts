@@ -22,7 +22,7 @@ import { useCallback } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { type InstanceView } from '../api/client'
 import { useAppDispatch, useAppSelector } from '../store'
-import { setActiveId, type WarmConn } from '../store/instancesSlice'
+import { openInstanceSession, setActiveId, type WarmConn } from '../store/instancesSlice'
 import { connectInstanceInto } from '../lib/connectInstance'
 
 /** Stable empty fallback for partial (test) stores — see the guarded read below. */
@@ -46,7 +46,8 @@ export function useSelectInstance(instances: InstanceView[]) {
 
   /** Switch to instance `id`, or to the Local dashboard when `id` is null. */
   const selectInstance = useCallback(
-    (id: string | null) => {
+    (id: string | null, slot?: string) => {
+      if (id && slot) dispatch(openInstanceSession({ id, slot }))
       dispatch(setActiveId(id))
       if (id === null) return
       const inst = instances.find(i => i.id === id)

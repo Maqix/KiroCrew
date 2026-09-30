@@ -3,7 +3,7 @@
 One card carries the whole journey: Sign in to AWS (``aws_signin``), the region
 when AWS names none (``region``), Build, the home's own Kiro sign-in, then Move
 in. The first run's own card (payload ``offer``, the gateway's step, not the
-agent's) comes when its first job is kept and starts one step earlier: the
+agent's) comes when the job step is kept or skipped and starts one step earlier: the
 question where the crew lives (``choose``), which moves the same card on to the
 cloud's steps or settles it on this machine. A build a gateway restart cut short
 leaves a failed card that can remove what it created (``remove``). Its build runs
@@ -35,13 +35,31 @@ HOME_CLOUD = "cloud"
 
 
 def _validate(args: dict[str, Any]) -> dict[str, Any]:
-    return sc.build_home(args)
+    settings = sc.build_home(args)
+    if "step" in args:
+        if args["step"] != HOME_CHOICE_STEP:
+            raise sc.CardRejected("the home proposal step must be choose", "home_step_invalid")
+        settings["step"] = HOME_CHOICE_STEP
+    return settings
 
 
 async def _build(args: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     from kiro_crew.dashboard import setup_flow as sf
 
-    return await asyncio.to_thread(sf._home_payload, sc.build_home(args))
+    settings = _validate(args)
+    build = (
+        sf._choice_payload if settings.pop("step", None) == HOME_CHOICE_STEP else sf._home_payload
+    )
+    return await asyncio.to_thread(build, settings)
+
+
+async def _after_report(state: "DashboardState", card: sc.SetupCard) -> None:
+    from kiro_crew.dashboard import setup_flow as sf
+
+    if card.status in (sc.STATUS_COMMITTED, sc.STATUS_DECLINED) and not (
+        (card.outcome or {}).get("moved") and not (card.outcome or {}).get("simulated")
+    ):
+        await sf.graduate(state, card.slot)
 
 
 async def _commit(
@@ -112,8 +130,8 @@ def _result_detail(card: sc.SetupCard) -> str:
     if outcome.get("stayed"):
         return (
             " The user keeps the crew on this machine. Offer the keep-running service now "
-            '(setup_card kind "service"), in one sentence: the job they kept runs only '
-            "while Kiro Crew runs."
+            '(setup_card kind "service"), in one sentence: Kiro Crew stays available '
+            "only while it runs."
         )
     if outcome.get("moved") and not outcome.get("simulated"):
         from kiro_crew.dashboard.setup_move_in import result_detail
@@ -135,6 +153,11 @@ ACTION = SetupAction(
         "card shows the monthly cost and the user starts the build"
     ),
     arguments={
+        "step": {
+            "type": "string",
+            "enum": [HOME_CHOICE_STEP],
+            "description": "choose: ask this machine or AWS, including after scheduling is skipped",
+        },
         "region": {"type": "string", "description": "AWS region"},
         "profile": {"type": "string", "description": "AWS CLI profile"},
         "size": {
@@ -160,6 +183,7 @@ ACTION = SetupAction(
     },
     on_claim=_on_claim,
     result_detail=_result_detail,
+    after_report=_after_report,
     stack_exempt=True,
     gateway_card=lambda card: bool(card.payload.get(HOME_STEP_KEY)),
 )

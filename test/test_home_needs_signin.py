@@ -100,6 +100,8 @@ def _card(monkeypatch, *, phase: str = "build", status: str = sc.STATUS_WAITING,
 
     def _set(c: sc.SetupCard) -> None:
         c.status = status
+        if c.private.get("auto_move"):
+            c.private["auto_move_hash"] = c.payload_hash
 
     return sc.update_card(card.id, _set)
 
@@ -211,3 +213,60 @@ class TestSignTheHomeIn:
         card = _card(monkeypatch, phase="signin", status=sc.STATUS_PENDING)
         await setup_flow.decide(state, card.id, "commit", card.payload_hash, {}, same_machine=True)
         assert sc.get_card(card.id).private[BROWSER_HERE_KEY] is True
+
+
+@pytest.mark.asyncio
+async def test_authorized_home_automatically_moves_after_signin_and_retries_busy_chat(
+    state, monkeypatch
+):
+    card = _card(monkeypatch, auto_move=True)
+    calls = []
+
+    async def move(state_, card_):
+        calls.append(card_.id)
+        if len(calls) == 1:
+            raise sc.CardRejected("snapshot busy", "move_in_chat_busy")
+        return await setup_flow._finish(card_, sc.STATUS_COMMITTED, outcome={"moved": True})
+
+    monkeypatch.setattr(setup_flow, "_move_in", move)
+    done = await _watch(monkeypatch, state, card, [_job(signed=True)])
+    assert done.status == sc.STATUS_COMMITTED
+    assert calls == [card.id, card.id]
+
+
+@pytest.mark.asyncio
+async def test_automatic_move_still_waits_for_the_homes_own_signin(state, monkeypatch):
+    card = _card(monkeypatch, auto_move=True)
+    done = await _watch(monkeypatch, state, card, [_job(signed=False)])
+    assert done.status == sc.STATUS_PENDING
+    assert done.private["phase"] == "signin"
+
+
+@pytest.mark.asyncio
+async def test_automatic_move_resumes_from_pending_after_gateway_restart(state, monkeypatch):
+    card = _card(monkeypatch, auto_move=True, phase="move", status=sc.STATUS_PENDING)
+
+    async def move(state_, card_):
+        return await setup_flow._finish(card_, sc.STATUS_COMMITTED, outcome={"moved": True})
+
+    monkeypatch.setattr(setup_flow, "_move_in", move)
+    done = await _watch(monkeypatch, state, card, [_job(signed=True)])
+    assert done.status == sc.STATUS_COMMITTED
+
+
+@pytest.mark.asyncio
+async def test_automatic_move_still_checks_governance(state, monkeypatch):
+    card = _card(monkeypatch, auto_move=True)
+    monkeypatch.setattr(setup_flow, "_governance_denial", lambda *args: "home moves disabled")
+    done = await _watch(monkeypatch, state, card, [_job(signed=True)])
+    assert done.status == sc.STATUS_PENDING
+    assert done.error["code"] == "governance_denied"
+
+
+@pytest.mark.asyncio
+async def test_a_changed_payload_is_not_automatically_approved(state, monkeypatch):
+    card = _card(monkeypatch, auto_move=True)
+    sc.update_card(card.id, lambda c: c.private.update(auto_move_hash="different"))
+    done = await _watch(monkeypatch, state, card, [_job(signed=True)])
+    assert done.status == sc.STATUS_PENDING
+    assert done.error["code"] == "card_hash_mismatch"

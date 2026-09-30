@@ -9339,7 +9339,7 @@
       "title_home": "Sua casa na nuvem",
       "home_cost": "Cerca de {{amount}}/mês, cobrado por {{billedBy}}",
       "home_size_label": "Tamanho",
-      "home_choice_lead": "Sua nova tarefa só roda enquanto o {{productName}} está em execução. Mantenha sua crew nesta máquina ou dê a ela uma casa na nuvem, sempre ligada.",
+      "home_choice_lead": "Escolha onde o {{productName}} funciona: nesta máquina enquanto estiver ligada, ou na nuvem para continuar disponível quando a máquina estiver desligada.",
       "home_choice_here": "Esta máquina",
       "home_choice_here_hint": "grátis · roda enquanto está ligada",
       "home_choice_cloud": "Na nuvem",
@@ -9361,6 +9361,7 @@
       "home_removing": "Removendo o que ela criou…",
       "home_removed": "Removido: a AWS confirma que a pilha {{stack}} não existe mais.",
       "home_remove_failed": "A remoção não terminou. Se o seu login na AWS expirou, entre de novo e tente outra vez, ou remova em Crew remota.",
+      "home_auto_move": "Quando sua casa estiver pronta e conectada, esta conversa será transferida para lá e esta janela mudará automaticamente.",
       "home_build": "Construir minha casa",
       "home_build_signed_in": "Já entrei — construir minha casa",
       "home_aws_signin_intro": "Entre na AWS para construir sua casa. A página de login da AWS abre no seu navegador. O {{productName}} nunca vê sua senha nem suas chaves.",
@@ -11353,7 +11354,8 @@
       },
       "homeSigninNotice": {
         "opened": "Sua casa está esperando um clique para entrar no Kiro. A página de login abriu no seu navegador.",
-        "on_card": "Sua casa está esperando um clique para entrar no Kiro. Abra o link de login no cartão dela."
+        "on_card": "Sua casa está esperando um clique para entrar no Kiro. Abra o link de login no cartão dela.",
+        "resolved": "Sua casa na nuvem está conectada ao Kiro. Continue esta conversa aqui."
       },
       "handoffDoneNotice": {
         "finished": "“{{title}}” terminou. Pergunte aqui o que ele encontrou.",

@@ -9339,7 +9339,7 @@
       "title_home": "Ton chez-toi dans le cloud",
       "home_cost": "Environ {{amount}}/mois, facturé par {{billedBy}}",
       "home_size_label": "Taille",
-      "home_choice_lead": "Ta nouvelle tâche ne s’exécute que tant que {{productName}} tourne. Garde ta crew sur cette machine, ou donne-lui un chez-toi dans le cloud, toujours allumé.",
+      "home_choice_lead": "Choisissez où fonctionne {{productName}} : sur cet appareil tant qu’il est allumé, ou dans le cloud pour rester disponible quand cet appareil est éteint.",
       "home_choice_here": "Cette machine",
       "home_choice_here_hint": "gratuit · tourne tant qu’elle est allumée",
       "home_choice_cloud": "Dans le cloud",
@@ -9361,6 +9361,7 @@
       "home_removing": "Suppression de ce qui a été créé…",
       "home_removed": "Supprimé : AWS confirme que la pile {{stack}} n’existe plus.",
       "home_remove_failed": "La suppression n’a pas abouti. Si ta connexion AWS a expiré, reconnecte-toi, puis réessaie, ou supprime-la depuis Crew distante.",
+      "home_auto_move": "Une fois votre foyer prêt et connecté, cette conversation y sera transférée et cette fenêtre basculera automatiquement.",
       "home_build": "Construire mon chez-moi",
       "home_build_signed_in": "Je suis connecté — construire mon chez-moi",
       "home_aws_signin_intro": "Connecte-toi à AWS pour construire ton chez-toi. La page de connexion AWS s’ouvre dans ton navigateur. {{productName}} ne voit jamais ton mot de passe ni tes clés.",
@@ -11353,7 +11354,8 @@
       },
       "homeSigninNotice": {
         "opened": "Ton chez-toi attend un seul clic pour se connecter à Kiro. La page de connexion s’est ouverte dans ton navigateur.",
-        "on_card": "Ton chez-toi attend un seul clic pour se connecter à Kiro. Ouvre le lien de connexion sur sa carte."
+        "on_card": "Ton chez-toi attend un seul clic pour se connecter à Kiro. Ouvre le lien de connexion sur sa carte.",
+        "resolved": "Ton chez-toi dans le cloud est connecté à Kiro. Continue cette conversation ici."
       },
       "handoffDoneNotice": {
         "finished": "« {{title}} » est terminé. Demande-moi ici ce qu’il a trouvé.",

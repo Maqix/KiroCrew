@@ -64,3 +64,20 @@ def test_the_tools_are_registered():
     names = {d["name"] for d in setup_tools.schemas()}
     assert names == set(setup_tools.HANDLERS) == {"setup_card", "setup_status"}
     assert "setup_card" in session_directive.DIRECTIVE_TOOLS
+
+
+def test_status_keeps_home_as_the_next_step_when_no_job_was_kept(dashboard_key):
+    from kiro_crew import first_run
+
+    first_run.record_slot("chat-1-1")
+    out = setup_tools.setup_status("setup_status", {})
+    assert 'setup_card(kind="home", step="choose")' in out
+    assert "even if the user skipped scheduling" in out
+    first_run.record_home_choice("later")
+    assert "Next setup step" not in setup_tools.setup_status("setup_status", {})
+
+
+def test_home_rejects_an_unknown_proposal_step(dashboard_key):
+    out = setup_tools.setup_card("setup_card", {"kind": "home", "step": "finish"})
+    assert out.startswith("Error:")
+    assert not session_directive.has_marker(out)

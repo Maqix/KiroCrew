@@ -188,6 +188,48 @@ async def api_setup_first_run_retry(request: web.Request) -> web.Response:
     return web.json_response({"slot": slot})
 
 
+async def api_setup_home_arrival(request: web.Request) -> web.Response:
+    """POST /api/setup/home-arrival — continue setup in its transferred chat."""
+    denied = await require_owner_dashboard_request(request, "setup_cards.home_arrival")
+    if denied is not None:
+        return denied
+    body, err = await read_bounded_json(request, max_bytes=1024 * 1024)
+    if body is None:
+        return err or _error("body must be a JSON object", "invalid_body", 400)
+    slot, title, stages = body.get("slot"), body.get("title"), body.get("stages", [])
+    if not (
+        isinstance(slot, str)
+        and 0 < len(slot) <= 128
+        and isinstance(title, str)
+        and 0 < len(title) <= 256
+        and isinstance(stages, list)
+        and len(stages) <= 8
+        and all(isinstance(stage, str) for stage in stages)
+    ):
+        return _error("invalid home arrival", "invalid_body", 400)
+    from kiro_crew.dashboard.setup_home_arrival import adopt_main_chat
+    from kiro_crew.dashboard.setup_transfer import validate_preferences
+
+    try:
+        preferences = validate_preferences(body.get("preferences", {}))
+        outcome = body.get("outcome", {})
+        if not isinstance(outcome, dict):
+            return _error("invalid home outcome", "invalid_body", 400)
+        main = await adopt_main_chat(
+            request.app["state"],
+            slot,
+            title,
+            stages,
+            preferences=preferences,
+            outcome=outcome,
+        )
+    except sc.CardRejected as exc:
+        return _error(str(exc), exc.code, _STATUS_FOR_CODE.get(exc.code, 422))
+    except ValueError:
+        return _error("invalid home preferences", "invalid_body", 400)
+    return web.json_response({"main_slot": main})
+
+
 def register_routes(app: web.Application) -> None:
     app.router.add_get("/api/setup/first-run", api_setup_first_run)
     app.router.add_post("/api/setup/first-run/retry", api_setup_first_run_retry)
@@ -196,3 +238,4 @@ def register_routes(app: web.Application) -> None:
     app.router.add_get("/api/setup/cards/{card_id}/approvals", api_setup_card_approvals)
     app.router.add_post("/api/setup/cards/{card_id}/decide", api_setup_card_decide)
     app.router.add_post("/api/setup/main-chat", api_setup_main_chat)
+    app.router.add_post("/api/setup/home-arrival", api_setup_home_arrival)

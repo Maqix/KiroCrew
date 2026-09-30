@@ -8,6 +8,7 @@ import { renderWithProviders, createTestStore } from './helpers'
 import InstanceTabBar from '../components/InstanceTabBar'
 import EmbeddedHostBridge from '../components/EmbeddedHostBridge'
 import type { HostModel } from '../store/instancesSlice'
+import { useLocation } from 'react-router-dom'
 
 // Embedded panes never hit the instances API; mock it to a no-op so the import
 // is inert and any accidental call is observable.
@@ -201,6 +202,30 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
 })
 
 describe('EmbeddedHostBridge (option B relay)', () => {
+  it('opens the transferred session in the existing pane and acknowledges its parent', async () => {
+    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    function Location() {
+      const location = useLocation()
+      return <div data-testid="arrival-location">{location.pathname}{location.search}</div>
+    }
+    renderWithProviders(<><EmbeddedHostBridge /><Location /></>)
+    const data = { type: 'mc-host-model', ...model(), openSession: 'chat-9-1' }
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', { source: null, origin: 'http://localhost:7777', data }))
+    })
+    expect(screen.getByTestId('arrival-location')).toHaveTextContent(/^\/$/)
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', { source: window.parent, origin: 'http://localhost:7777', data }))
+    })
+    await waitFor(() => expect(screen.getByTestId('arrival-location')).toHaveTextContent('/chat?sid=chat-9-1'))
+    expect(post).toHaveBeenCalledWith({ type: 'mc-session-opened', v: 1, slot: 'chat-9-1' }, 'http://localhost:7777')
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        source: window.parent, origin: 'http://localhost:7777', data: { ...data, openSession: '//other.example' },
+      }))
+    })
+    expect(screen.getByTestId('arrival-location')).toHaveTextContent('/chat?sid=chat-9-1')
+  })
   it('pings the parent on mount and ingests a relayed model + toggles the mac inset', async () => {
     const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
     const store = createTestStore()
