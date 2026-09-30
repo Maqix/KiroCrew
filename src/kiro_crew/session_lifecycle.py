@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, MutableMapping, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
@@ -29,6 +31,7 @@ from kiro_crew.kiro_prerequisite import (
 )
 from kiro_crew.messaging import turn_ceiling
 from kiro_crew.messaging.link import canonical_key
+from kiro_crew.messaging.queue_drain import entry_channel, wake_other_drains
 from kiro_crew.metrics.sessions import (
     END_REASON_DESTROYED,
     END_REASON_DISCARDED,
@@ -59,7 +62,7 @@ _END_REASON_SID_RETAINED = "destroyed_sid_retained"
 _SID_RETENTION_UNKNOWN = "<unreadable session map>"
 #: ``compacting`` is the one outcome that changed nothing: a cooperative Stop
 #: arrived while the session's own ``/compact`` turn held it, and cancelling that
-#: turn would have failed the compaction and recycled the session (#14841). The
+#: turn would fail the compaction and recycle the session. The
 #: caller tells the user, and the compaction finishes or times out on its own.
 #: A ``force`` stop is never answered this way -- it is the user's escape hatch.
 StopOutcome = Literal["soft", "hard", "idle", "compacting"]
@@ -67,9 +70,255 @@ StopOutcome = Literal["soft", "hard", "idle", "compacting"]
 #: What a channel says for the ``compacting`` outcome. One string, so every
 #: surface that declines the Stop declines it in the same words.
 STOP_DECLINED_COMPACTING_TEXT = (
-    "⏳ Compacting context — nothing was stopped. The compaction finishes on its own "
-    "in a few minutes; send your message afterwards."
+    "⏳ Compacting context — nothing was stopped. The compaction finishes on its own; "
+    "a message sent now runs once it has. Send stop again within a minute to force it, "
+    "which restarts the session (the agent keeps only a recent excerpt of the conversation)."
 )
+
+#: How long after a declined stop a repeat counts as the second press and forces.
+#: ONE constant for every surface: the dashboard's escalation gate
+#: (``slot_projection.stop_declined_armed``) imports it from here, and the
+#: composer's "click again" hint mirrors the same number.
+STOP_DECLINED_ESCALATION_SECS = 60.0
+
+#: Count bound on live decline markers. A marker lives for one window and is
+#: swept on every write, so the bound is only reached by that many DISTINCT
+#: (session, presser) pairs declined inside one minute. Past it the oldest marker
+#: is dropped and the drop is counted and logged: that presser's repeat is
+#: declined once more rather than forcing, which is the safe side.
+STOP_DECLINED_MARKERS_MAX = 256
+#: Retained-string bound on each half of a marker's key. Both halves are
+#: externally derived (a session key from a route, a presser from a sender id).
+#: A longer one is refused at the point of retention, not truncated: a truncated
+#: key could collide two pressers, which is the sharing this keying exists to
+#: prevent. The refusal is counted and logged like an overflow.
+STOP_DECLINED_KEY_MAX_CHARS = 512
+
+_logger = logging.getLogger(__name__)
+
+#: Live decline markers, oldest first: ``(session key, presser)`` -> monotonic time
+#: of the decline. Keyed by the PRESSER as well as the session because one session
+#: key is shared by every member of a group route and, under
+#: ``dm_scope = "unified"``, by every allow-listed person's DM: a marker keyed by
+#: session alone lets one person's declined Stop arm the next person's press as
+#: the FORCE that resets the session under both of them. Module level so every
+#: channel dispatcher shares one record through the two functions below, exactly
+#: as they share the probe.
+_stop_declined_markers: OrderedDict[tuple[str, str], float] = OrderedDict()
+#: Markers refused or evicted since import, so the overflow is said out loud.
+_stop_declined_dropped = 0
+
+
+def _stop_declined_key(key: str, presser: str) -> tuple[str, str] | None:
+    """The marker key for *key* pressed by *presser*, or None past the string bound."""
+    if len(key) > STOP_DECLINED_KEY_MAX_CHARS or len(presser) > STOP_DECLINED_KEY_MAX_CHARS:
+        return None
+    return (key, presser)
+
+
+def _count_stop_declined_drop(reason: str, key: str, presser: str) -> None:
+    global _stop_declined_dropped
+    _stop_declined_dropped += 1
+    _logger.warning(
+        "stop-declined marker %s (session=%.64s presser=%.64s); %d dropped so far, "
+        "cap %d markers / %d chars per key",
+        reason,
+        key,
+        presser,
+        _stop_declined_dropped,
+        STOP_DECLINED_MARKERS_MAX,
+        STOP_DECLINED_KEY_MAX_CHARS,
+    )
+
+
+def note_stop_declined(key: str, presser: str, *, now: float | None = None) -> None:
+    """Record that *presser*'s stop on *key* was just declined for compaction.
+
+    *presser* is REQUIRED, with no default, for the reason ``stop_running_turn``'s
+    ``owner`` is: a channel wired up later cannot inherit a session-wide marker by
+    leaving it out. A channel that genuinely cannot name its presser passes ``""``,
+    which arms a marker only that same anonymous route can consume.
+    """
+    current = time.monotonic() if now is None else now
+    marker = _stop_declined_key(key, presser)
+    if marker is None:
+        _count_stop_declined_drop("refused: key past the string bound", key, presser)
+        return
+    for stale in [
+        m
+        for m, at in _stop_declined_markers.items()
+        if current - at >= STOP_DECLINED_ESCALATION_SECS
+    ]:
+        del _stop_declined_markers[stale]
+    _stop_declined_markers.pop(marker, None)
+    _stop_declined_markers[marker] = current
+    while len(_stop_declined_markers) > STOP_DECLINED_MARKERS_MAX:
+        evicted, _ = _stop_declined_markers.popitem(last=False)
+        _count_stop_declined_drop("evicted: past the count bound", *evicted)
+
+
+def clear_stop_declined(key: str, *, fold: Callable[[str], str] | None = None) -> int:
+    """Drop every decline marker on *key*; returns how many.
+
+    Called when the compaction that declined them ENDS (``_set_compacting`` off):
+    a marker is a memory of one refusal, and the next compaction on the key,
+    even one starting inside the window, owes its own first refusal. Without
+    this a person declined on compaction A could hard-reset compaction B with
+    what reads to them as a first press. *fold* is the manager's key fold: a
+    channel presses with its own spelling of the key, which the probe folds onto
+    the live one, so a marker is this compaction's when its key folds to *key*.
+    """
+    same = (lambda k: k == key) if fold is None else (lambda k: k == key or fold(k) == key)
+    stale = [m for m in _stop_declined_markers if same(m[0])]
+    for m in stale:
+        del _stop_declined_markers[m]
+    return len(stale)
+
+
+def consume_stop_declined(key: str, presser: str, *, now: float | None = None) -> bool:
+    """Whether *presser*'s fresh decline on *key* arms THIS stop as the forcing press.
+
+    Only the presser who was declined can spend the marker. Consumes it either
+    way: a stale one is dropped, a fresh one is spent by the press it armed.
+    """
+    marker = _stop_declined_key(key, presser)
+    if marker is None:
+        return False
+    at = _stop_declined_markers.pop(marker, None)
+    if at is None:
+        return False
+    current = time.monotonic() if now is None else now
+    return current - at < STOP_DECLINED_ESCALATION_SECS
+
+
+async def force_stop_keeping_others(
+    sessions: Any, key: str, owned_by: Callable[[dict], bool]
+) -> bool:
+    """A channel's forced stop on *key* that drops ONLY the presser's queued work.
+
+    The forced stop hard-resets the session, and ``reset`` pops the ``_Session``
+    with its queue and unlinks every queued attachment -- ``preserve_queue`` only
+    skips ``stop_turn``'s own clear, it cannot save what the pop discards. On a
+    key several people share (a group route, ``dm_scope = "unified"``) that is
+    other people's unanswered messages. So the queue is DETACHED before the stop
+    (``detach_queue``, files kept), the presser's entries are dropped from the
+    handles after it (``clear_queue(only=...)`` unlinks their files whether or
+    not a session holds the key), and the rest are handed to the successor the
+    hard stop respawns: ``get_or_create`` claims that successor (or builds it),
+    ``restore_queue`` puts them at its head, ``release`` lets its drain run, and
+    ``wake_other_drains`` starts the channels those entries belong to
+    (``hand_queue_to_successor``). If no successor starts, the kept entries are
+    parked, files intact, for the hard stop's own respawn retry. Returns whether
+    the running turn was ended.
+    """
+    taken = tuple(sessions.detach_queue(key))
+    try:
+        ended = (await sessions.stop_turn(key, force=True, preserve_queue=True)) == "hard"
+    except BaseException:
+        sessions.restore_queue(key, taken)
+        raise
+    mine = tuple(e for e in taken if owned_by(e[2]))
+    others = tuple(e for e in taken if not owned_by(e[2]))
+    if mine:
+        sessions.clear_queue(key, only=mine)
+    if not others:
+        return ended
+    await hand_queue_to_successor(sessions, key, others)
+    return ended
+
+
+#: Count bound on queue entries parked for a key whose successor could not start.
+#: Past it the OLDEST parked entry is dropped (its files unlinked) and the drop is
+#: logged: parking is a retry buffer for one failed start, not a second queue.
+PARKED_QUEUE_MAX = 64
+
+#: Queue entries a forced stop kept but could not hand to a successor because
+#: none would start (a provider failing to spawn). Retained rather than dropped:
+#: they are other people's unanswered messages and their staged attachments.
+#: Drained onto the key's queue by the next ``hand_queue_to_successor`` for the
+#: key, and by the hard stop's own respawn path calling it, so a start that
+#: later succeeds delivers them.
+_parked_queue: dict[str, list[Any]] = {}
+
+
+def _park_queue(sessions: Any, key: str, entries: tuple[Any, ...]) -> None:
+    parked = _parked_queue.setdefault(key, [])
+    parked.extend(entries)
+    dropped = 0
+    while len(parked) > PARKED_QUEUE_MAX:
+        oldest = parked.pop(0)
+        sessions.clear_queue(key, only=(oldest,))  # unlinks the handle's files
+        dropped += 1
+    if dropped:
+        _logger.warning(
+            "parked queue for %s past its bound (%d): dropped the %d oldest entr(y/ies)",
+            key,
+            PARKED_QUEUE_MAX,
+            dropped,
+        )
+
+
+def take_parked_queue(key: str) -> tuple[Any, ...]:
+    """Remove and return the entries parked for *key* (empty when none)."""
+    return tuple(_parked_queue.pop(key, ()))
+
+
+async def hand_queue_to_successor(sessions: Any, key: str, entries: tuple[Any, ...]) -> bool:
+    """Put *entries* (plus anything already parked for *key*) at the head of the
+    key's successor queue and wake their channels. Returns whether they landed.
+
+    ``get_or_create`` claims the successor or builds it; on a failed build the
+    entries are PARKED, files kept, for the next call on this key -- the hard
+    stop's own eager respawn retries the start and calls back here, so a
+    provider that starts on its second attempt still delivers them. Nothing is
+    unlinked on failure: these are other people's unanswered messages.
+    """
+    pending = take_parked_queue(key) + tuple(entries)
+    if not pending:
+        return True
+    try:
+        await sessions.get_or_create(key)
+    except Exception:
+        _park_queue(sessions, key, pending)
+        _logger.warning(
+            "no successor for %s yet: %d queue entr(y/ies) parked for its next start",
+            key,
+            len(pending),
+            exc_info=True,
+        )
+        return False
+    try:
+        sessions.restore_queue(key, pending)
+    finally:
+        sessions.release(key)
+    channels = [entry_channel(e[2]) for e in pending]
+    if any(channels):
+        await wake_other_drains(waker="", session_key=key, channels=channels)
+    return True
+
+
+def compaction_in_flight(sessions: Any, key: str) -> bool:
+    """Whether an automatic compaction holds the session a Stop would cancel.
+
+    The ONE probe a stop path runs BEFORE its side effects (the Stop record, a
+    queue clear, a pending-file unlink), because ``stop_turn`` declining after
+    them leaves a Stop that ended nothing having destroyed queued work. Callers:
+    the dashboard stop and interrupt routes, Slack (events, handler,
+    interactions), the shared ``messaging.commands.stop_running_turn`` (Discord,
+    Telegram, Teams), the Webex, WeCom and Weixin dispatchers, WhatsApp, and Spec
+    Builder's Pause. Fail-soft
+    to False and ``is True`` rather than truthiness: a manager double without the
+    method, or one answering a truthy Mock, keeps the ordinary stop path.
+    """
+    probe = getattr(sessions, "is_compacting", None)
+    if not callable(probe):
+        return False
+    try:
+        return probe(key) is True
+    except Exception:
+        return False
+
+
 ProviderFactory = Callable[..., Any]
 _ANY_SESSION = object()
 
@@ -2636,12 +2885,21 @@ class SessionLifecycleService:
             logger.debug("_send_abort_for_session failed for %s", key, exc_info=True)
 
     async def _eager_respawn(self, key: str) -> None:
-        """Respawn after hard kill and release its acquired turn semaphore."""
+        """Respawn after hard kill and release its acquired turn semaphore.
+
+        Also the retry for queue entries a forced channel stop parked because the
+        successor did not start the first time (``hand_queue_to_successor``): a
+        start that succeeds here delivers them.
+        """
         try:
             await self._owner.get_or_create(key)
             self._owner.release(key)
         except Exception:
             self._deps.logger.debug("Eager respawn failed for %s", key, exc_info=True)
+            return
+        parked = take_parked_queue(key)
+        if parked:
+            await hand_queue_to_successor(self._owner, key, parked)
 
     async def drain_all_providers(self) -> list[Any]:
         """Pop every registered session and return its providers.

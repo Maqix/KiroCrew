@@ -1572,9 +1572,55 @@ class SessionAllocationService:
             return True
         return False
 
-    def clear_queue(self, key: str, owned_by: Callable[[dict], bool] | None = None) -> None:
+    def detach_queue(self, key: str) -> tuple[Any, ...]:
+        """Take every queued entry OUT of the live queue, keeping its files.
+
+        For a Stop that must neither run nor lose what was queued when it was
+        pressed: taken before the first await, so an end-of-turn drain during the
+        stop finds nothing to start; then either ``clear_queue(only=...)`` drops
+        it (the stop went through) or ``restore_queue`` puts it back (declined).
+        """
+        session = self._sessions.get(self._owner._fold_key(key))
+        if session is None:
+            return ()
+        taken = tuple(session.queue)
+        session.queue.clear()
+        return taken
+
+    def restore_queue(self, key: str, entries: tuple[Any, ...]) -> None:
+        """Put ``detach_queue``'s entries back at the head, ahead of newer arrivals."""
+        session = self._sessions.get(self._owner._fold_key(key))
+        if session is None or not entries:
+            return
+        session.queue.extendleft(reversed(entries))
+
+    def clear_queue(
+        self,
+        key: str,
+        owned_by: Callable[[dict], bool] | None = None,
+        *,
+        only: tuple[Any, ...] | None = None,
+    ) -> None:
         key = self._owner._fold_key(key)
         session = self._sessions.get(key)
+        if only is not None:
+            # Identity, not equality: two entries can carry the same text. The
+            # entries need not still be IN the queue -- ``detach_queue`` takes
+            # them out first -- so their files are unlinked from the HANDLES,
+            # before the session guard: a hard stop pops the session between
+            # the detach and this clear, and the detached entries were never on
+            # the popped queue the teardown unlinks.
+            for _, _, kwargs in only:
+                self._deps.unlink_queued_temp_paths(kwargs)
+            if session is None:
+                return
+            wanted = {id(item) for item in only}
+            kept = [item for item in session.queue if id(item) not in wanted]
+            if len(kept) != len(session.queue):
+                session.queue.clear()
+                session.queue.extend(kept)
+            # ``cancelled`` left alone, as on the ``owned_by`` branch below.
+            return
         if session is None:
             return
         if owned_by is None:

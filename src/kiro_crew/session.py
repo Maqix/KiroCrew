@@ -3173,8 +3173,25 @@ class SessionManager:
         """Consume a queued-message cancellation marker."""
         return self._allocation_boundary().is_cancelled(key, msg_ts)
 
-    def clear_queue(self, key: str, owned_by: Callable[[dict], bool] | None = None) -> None:
+    def detach_queue(self, key: str) -> tuple[Any, ...]:
+        """Take the queued entries out of the live queue, keeping their files."""
+        return self._allocation_boundary().detach_queue(key)
+
+    def restore_queue(self, key: str, entries: tuple[Any, ...]) -> None:
+        """Put ``detach_queue``'s entries back at the head of the queue."""
+        self._allocation_boundary().restore_queue(key, entries)
+
+    def clear_queue(
+        self,
+        key: str,
+        owned_by: Callable[[dict], bool] | None = None,
+        *,
+        only: tuple[Any, ...] | None = None,
+    ) -> None:
         """Clear queued messages and their temporary paths.
+
+        *only* narrows the clear to the handles ``detach_queue`` returned, so a
+        Stop drops what was queued when it was pressed and nothing admitted since.
 
         *owned_by* narrows the clear to the entries it selects, for a caller acting for
         ONE principal rather than for the whole session: under
@@ -3188,7 +3205,7 @@ class SessionManager:
         Omitted, the whole queue goes, which is what a whole-session request means:
         teardown, a generation bump, a fresh conversation.
         """
-        self._allocation_boundary().clear_queue(key, owned_by)
+        self._allocation_boundary().clear_queue(key, owned_by, only=only)
 
     async def is_provider_alive(self, key: str) -> bool | None:
         """Probe a folded session provider outside the registry lock."""

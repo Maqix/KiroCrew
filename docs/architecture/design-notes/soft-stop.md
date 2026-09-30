@@ -93,7 +93,7 @@ knobs later is the trigger to reconsider the shape.
 ### `SessionManager.stop_turn`
 
 ```python
-StopOutcome = Literal["soft", "hard", "idle"]
+StopOutcome = Literal["soft", "hard", "idle", "compacting"]
 
 async def stop_turn(
     self, key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None
@@ -102,6 +102,35 @@ async def stop_turn(
 
 The sequence:
 
+0. If the session's own automatic `/compact` turn holds it and `force` is not
+   set, return `"compacting"` before anything else: nothing is recorded, nothing
+   is cleared, and the caller reports that nothing was stopped. Callers with side
+   effects of their own probe `session_lifecycle.compaction_in_flight` before
+   them and run them only after an outcome other than `"compacting"`.
+   The declined press arms a second-press hatch for the person who pressed:
+   the dashboard keeps it on the slot (`_stop_declined_at`), the channels in
+   `session_lifecycle.note_stop_declined` / `consume_stop_declined`, keyed by
+   session AND presser because a group route or `dm_scope = "unified"` puts
+   several people on one session key and one person's decline must not arm
+   another's first press as the force that resets the session under both. The
+   marker store is swept of expired entries on every write and count-bounded
+   (`STOP_DECLINED_MARKERS_MAX`, key halves bounded by
+   `STOP_DECLINED_KEY_MAX_CHARS`); an eviction or refusal is counted and logged.
+   Every marker a compaction's declines armed dies when that compaction ends
+   (`_set_compacting` off clears the slot's `_stop_declined_at` through the
+   compacting observer and the channel markers through `clear_stop_declined`,
+   folding each marker's key onto the live one), so a second compaction that
+   starts inside the window owes its own first refusal.
+   A repeat by the same presser inside `STOP_DECLINED_ESCALATION_SECS` forces
+   through `session_lifecycle.force_stop_keeping_others`: the queue is detached
+   before the hard stop (the reset pops the session and its queue, and
+   `preserve_queue` alone cannot save what the pop discards), the presser's own
+   entries are dropped from the handles, and the other people's are handed to
+   the successor the hard stop respawns, so the reset is theirs and the queue
+   stays everyone's; when no successor starts they are parked (count-bounded,
+   `PARKED_QUEUE_MAX`) for the hard stop's own respawn retry rather than dropped. `clear_queue(only=...)` unlinks its handles' files before
+   the session guard, since a hard stop can pop the session between the detach
+   and the clear.
 1. Clear the queue, unless `preserve_queue=True` (the interrupt flow, which wants
    the next queued message to run).
 2. If `force`, go straight to the hard kill.
