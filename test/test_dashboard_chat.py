@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -37,6 +38,11 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
 )
 from kiro_crew.history import ConversationLog
+
+#: Smallest valid 1x1 PNG, for tests that need a real image file on disk.
+_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
 
 
 class _StageManager:
@@ -21716,18 +21722,20 @@ class TestRunChatTransientRetry:
         assert slot._poisoned_reset_used is True
 
     @pytest.mark.asyncio
-    async def test_a_current_turn_image_path_in_text_is_not_retained_history(
+    async def test_a_current_turn_image_attachment_is_not_retained_history(
         self, tmp_path, monkeypatch
     ):
-        """Empty dashboard attachment lists do not prove the turn shipped no
-        image: a channel turn (and a dashboard turn that types a path) carries it
-        as a bare path in the message text, which ``build_prompt_blocks`` inlines
-        as a CURRENT-turn image block. Such a rejection is of the image the user
-        just sent, so the healthy conversation must survive and the verbatim
-        replay must never re-inline the same bytes."""
+        """A send whose ``meta.images`` names a picture shipped it as a
+        CURRENT-turn image block, so a rejection is of the image the user just
+        sent: the healthy conversation must survive and the verbatim replay must
+        never re-inline the same bytes. The structured list is the ONLY proof --
+        ``build_prompt_blocks`` never scans the text for a path."""
         from kiro_crew.dashboard.chat import _run_chat
 
-        async def _fail(msg):
+        seen: list[dict] = []
+
+        async def _fail(msg, **kw):
+            seen.append(kw)
             raise self._image_error()
             yield  # pragma: no cover
 
@@ -21737,18 +21745,130 @@ class TestRunChatTransientRetry:
         slot = state.get_or_create_slot("s1")
         slot._titled = True
 
-        # No _attachments: the image rides in the text, exactly as the Slack
-        # event handler appends its attachment paths. Use the host's own path
-        # grammar: ``image_refs._PATH_RE`` is platform-gated, so a POSIX path
-        # is prose on Windows and would not be inlined there.
         shot = r"C:\Users\me\shot.bmp" if os.name == "nt" else "/home/me/shot.bmp"
-        await _run_chat(state, slot, f"{shot} look at this")
+        await _run_chat(
+            state,
+            slot,
+            f"![image]({shot})\n\nlook at this",
+            _attachments=[shot],
+            _attachment_meta={"images": [shot]},
+        )
 
+        # The runner handed the provider the structured list, not just text.
+        assert [a.path for a in seen[0]["attachments"]] == [shot]
         state.sessions.discard_conversation.assert_not_awaited()
         state.sessions.reset.assert_not_awaited()
         assert slot._queue == []
         assert any(t.startswith("❌") for t in self._err_texts(slot))
         assert slot._poisoned_reset_used is False
+
+    @pytest.mark.asyncio
+    async def test_a_retry_from_the_redacted_row_copy_opens_the_real_upload(
+        self, tmp_path, monkeypatch
+    ):
+        """Regenerate, edit-resend and rewind rebuild the turn from the
+        PERSISTED row's ``meta.images`` -- the copy the redactor rewrote -- and
+        edit-resend adds the client's newly attached paths through the same
+        redacting normalizer. A picture whose sender-chosen filename looked
+        like a credential must still reach the builder as the file the server
+        minted, or exactly the paths a user retries with drop it silently."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_delivery import attachment_meta
+        from kiro_crew.dashboard.slot_queue_repository import (
+            retained_image_meta,
+            with_added_images,
+        )
+
+        uploads = tmp_path / "uploads"
+        uploads.mkdir()
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", uploads)
+        real = uploads / f"{'0' * 32}_ghp_{'A' * 36}.png"
+        real.write_bytes(_PNG_BYTES)
+        added = uploads / f"{'1' * 32}_sk-ant-api03-{'x' * 40}.png"
+        added.write_bytes(_PNG_BYTES)
+
+        # The persisted row: text and list as the transcript stores them.
+        row_meta = attachment_meta({"images": [str(real)]})
+        assert row_meta["images"] != [str(real)]
+        text = f"![image]({row_meta['images'][0]})\n\nlook again"
+        # Edit-resend's shape: the row's list plus the request's added list,
+        # both through the redacting normalizer.
+        rebuilt = with_added_images(
+            retained_image_meta(row_meta, text, text),
+            attachment_meta({"images": [str(added)]})["images"],
+        )
+        assert all("[REDACTED" in p for p in rebuilt["images"])
+
+        seen: list[dict] = []
+
+        async def _ok(msg, **kw):
+            seen.append(kw)
+            yield "done"
+
+        # The resolver may list the upload directory; that work must not run
+        # on the gateway's event-loop thread.
+        import threading
+
+        from kiro_crew.dashboard import chat_runner as _runner
+
+        loop_thread = threading.get_ident()
+        built_on: list[int] = []
+        _orig = _runner._turn_prompt_attachments
+
+        def _spy(*args, **kwargs):
+            built_on.append(threading.get_ident())
+            return _orig(*args, **kwargs)
+
+        monkeypatch.setattr(_runner, "_turn_prompt_attachments", _spy)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_ok)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        await _run_chat(
+            state,
+            slot,
+            text,
+            _attachments=list(rebuilt["images"]),
+            _attachment_meta=rebuilt,
+        )
+
+        assert [a.path for a in seen[0]["attachments"]] == [str(real), str(added)]
+        assert built_on and all(t != loop_thread for t in built_on), "list built on the loop thread"
+
+    @pytest.mark.asyncio
+    async def test_a_typed_image_path_in_text_is_a_mention_so_the_recovery_runs(
+        self, tmp_path, monkeypatch
+    ):
+        """A path typed into the message is prose, never an upload: the builder
+        emits no image block for it, so a rejection on such a turn can only be of
+        an image retained in NATIVE history -- exactly what the discard-once
+        recovery exists for."""
+        from kiro_crew.dashboard.chat import _run_chat
+
+        calls: list[str] = []
+
+        async def _fail(msg, **kw):
+            calls.append(msg)
+            assert "attachments" not in kw, "a typed path must not become an attachment"
+            raise self._image_error()
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_fail)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        shot = r"C:\Users\me\shot.bmp" if os.name == "nt" else "/home/me/shot.bmp"
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, f"{shot} look at this")
+            await self._drain_bg(state)
+
+        state.sessions.discard_conversation.assert_awaited_once()
+        assert slot._poisoned_reset_used is True
 
     @pytest.mark.asyncio
     async def test_a_stop_during_the_discard_drops_the_queued_recovery(self, tmp_path, monkeypatch):

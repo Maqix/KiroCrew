@@ -10,6 +10,8 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.prompt_attachments import named_in_text
+
 if TYPE_CHECKING:
     from kiro_crew.subagent import SubagentDelivery
 
@@ -80,6 +82,19 @@ MAX_DURABLE_QUEUE_SCAN = 4 * MAX_DURABLE_QUEUE_ENTRIES
 #: be readable as "unknown" rather than as "the person's", and this key is what a
 #: consumer asks instead of trying to tell the two apart from the actor alone.
 RESTORED_QUEUE_KEY = "_restored_from_disk"
+
+#: The PROVIDER copy of a queued send's image list: the validated raw paths,
+#: unredacted, stamped on the entry beside its redacted ``meta.images``
+#: (``chat_delivery.prompt_image_paths``). Process-local by the same
+#: construction as the provenance flags -- the writer emits only
+#: :data:`_DURABLE_QUEUE_KEYS`, ``queue_entry_view`` projects ``id`` /
+#: ``content`` / ``meta`` -- so a raw path is never persisted and never crosses
+#: to a client; it exists only for the drain to hand ``_run_chat`` the paths the
+#: prompt builder must open. An entry restored from disk has none, and the
+#: drain falls back to the entry's redacted list for it: after a restart a
+#: picture whose filename redaction rewrote is reached through the text's own
+#: reference only, which is the persisted copy's rule, not a gap in it.
+PROMPT_IMAGES_ENTRY_KEY = "_prompt_images"
 
 _DURABLE_QUEUE_KEYS: tuple[str, ...] = (
     "id",
@@ -461,6 +476,79 @@ def _delivery_key(content: str) -> str:
 ATTACHMENT_META_KEYS: tuple[str, ...] = ("files", "dirs")
 _ATTACHMENT_MARKERS: dict[str, str] = {"files": "attached_file", "dirs": "attached_dir"}
 
+#: Meta key a send's IMAGE attachments ride under: the ordered list of local
+#: image paths the composer uploaded. Kept apart from ``ATTACHMENT_META_KEYS``
+#: because it indexes no ``[<marker> N]`` token -- the composer renders an image
+#: as a ``![image](path)`` line -- and because it is the STRUCTURED source the
+#: turn hands to the provider: the prompt builder emits image blocks from this
+#: list alone and never scans the message text for paths, so a send that puts
+#: the picture only in its text ships no picture. Validated and redacted with
+#: the marker lists (``chat_delivery.attachment_meta``), carried on the queue
+#: entry and the drained row the same way, and drained alone like them.
+IMAGE_ATTACHMENT_META_KEY = "images"
+
+#: Every attachment list a send's ``meta`` may carry.
+ALL_ATTACHMENT_META_KEYS: tuple[str, ...] = (*ATTACHMENT_META_KEYS, IMAGE_ATTACHMENT_META_KEY)
+
+# Upper bounds on a send's attachment lists (``meta.files`` / ``meta.dirs`` /
+# ``meta.images``) as RETAINED anywhere. Every retention site stores the
+# normalized result -- the queue entry, the pending-steer map, the persisted
+# row meta, the restart marker's opening-row copy, and the ``steer_push`` /
+# ``queue_pop`` frames -- after paths pass through ``_redact_meta``. Redaction
+# can rewrite credential content, but it does not limit input size. The
+# gateway caps request bodies at 60 MiB, still far above the roughly 1 MiB per
+# list these bounds admit, so these per-field bounds are the only size check
+# before every retained copy. One named constant per bound, applied through
+# :func:`bounded_attachment_list` at the send-path normalizer
+# (``chat_delivery.attachment_meta``) AND wherever a list is read back off a
+# persisted row or rebuilt from two accepted lists
+# (:func:`retained_image_meta`, :func:`with_added_images`): a row is a
+# writable file and a union of two accepted lists can exceed one, so a bound
+# applied only at the send path is a bound the system's own writers bypass.
+# Generous against the composer (20 files per upload batch; a path is a
+# filesystem path, PATH_MAX 4096 on Linux) so a legitimate send never trips
+# them.
+ATTACHMENT_LIST_MAX_ITEMS = 256
+ATTACHMENT_PATH_MAX_LEN = 4096
+
+
+def bounded_attachment_list(key: str, raw: Any) -> list[str] | None:
+    """*raw* as the attachment list *key* may carry, or ``None`` when refused.
+
+    Accepted: a non-empty list of non-empty strings, at most
+    ``ATTACHMENT_LIST_MAX_ITEMS`` long, no entry over ``ATTACHMENT_PATH_MAX_LEN``
+    chars. Anything else is refused WHOLE rather than sliced, and the two
+    bound refusals say so once in the log: the marker lists are indexed by
+    marker number, so a list cut at N leaves the markers past N resolving
+    through the renderer's whitespace-bounded fallback (a spaced path
+    truncated at its first space), and a path cut in place is a different
+    path -- so the refusal takes the same shape a malformed list already
+    gets. The image list indexes no marker but takes the same rule, so no two
+    stores can disagree about what was admitted. Returns a new list.
+    """
+    if not isinstance(raw, list) or not raw:
+        return None
+    if not all(isinstance(p, str) and p for p in raw):
+        return None
+    if len(raw) > ATTACHMENT_LIST_MAX_ITEMS:
+        logger.warning(
+            "attachment meta %r refused: %d entries over the %d-entry bound",
+            key,
+            len(raw),
+            ATTACHMENT_LIST_MAX_ITEMS,
+        )
+        return None
+    longest = max(len(p) for p in raw)
+    if longest > ATTACHMENT_PATH_MAX_LEN:
+        logger.warning(
+            "attachment meta %r refused: a %d-char path over the %d-char bound",
+            key,
+            longest,
+            ATTACHMENT_PATH_MAX_LEN,
+        )
+        return None
+    return list(raw)
+
 
 def _marker_spans(content: str, marker: str, index: int, path: str) -> list[tuple[int, int]]:
     """Every span of the exact ``[<marker> <index>] <path>`` token in *content*.
@@ -518,6 +606,7 @@ def prune_attachment_meta(meta: Any, content: str, previous: str) -> str:
     """
     if not isinstance(meta, dict):
         return content
+    _prune_image_meta(meta, content, previous)
     for key in ATTACHMENT_META_KEYS:
         raw = meta.get(key)
         if not isinstance(raw, list):
@@ -539,6 +628,85 @@ def prune_attachment_meta(meta: Any, content: str, previous: str) -> str:
         else:
             meta.pop(key, None)
     return content
+
+
+def _prune_image_meta(meta: dict, content: str, previous: str) -> None:
+    """Drop from the image list every picture an edit took out of the text.
+
+    The image list is the structured source of the turn's image blocks, so an
+    entry left in it after the user deleted its ``![image](path)`` line would
+    hand the model a picture the drained row does not show. "Removed by the
+    edit" is decided the way the marker lists decide it: the path was in
+    *previous* and is not in *content* -- in ANY spelling the composer writes
+    (``prompt_attachments.named_in_text``: the bare path, its forward-slash
+    form, and the escaped or ``<...>``-wrapped destination), so a picture whose
+    destination the composer had to escape is pruned like a plain one. A path
+    *previous* never spelled out at all is out of the edit's reach and kept,
+    and an image line is never renumbered because it carries no index.
+    """
+    raw = meta.get(IMAGE_ATTACHMENT_META_KEY)
+    if not isinstance(raw, list):
+        return
+    kept = [
+        p
+        for p in raw
+        if isinstance(p, str)
+        and p
+        and (named_in_text(p, content) or not named_in_text(p, previous))
+    ]
+    if len(kept) == len(raw):
+        return
+    if kept:
+        meta[IMAGE_ATTACHMENT_META_KEY] = kept
+    else:
+        meta.pop(IMAGE_ATTACHMENT_META_KEY, None)
+
+
+def retained_image_meta(row_meta: Any, content: str, previous: str) -> dict[str, list[str]]:
+    """The image list a re-run of a persisted user row still carries.
+
+    A regenerate, an edit-resend or a rewind re-runs a row's text through the
+    runner without the send's ``meta``, and the text alone puts no picture in
+    front of the model -- the builder emits image blocks from the structured
+    list only. So the re-run reads the list back off the row it re-runs and
+    keeps every picture the edit did not remove (the same presence rule
+    :func:`prune_attachment_meta` applies to a queued edit). Returns ``{}`` for
+    a row that carried no images, and only the image list otherwise: the
+    marker lists are the renderer's business and stay with the persisted row.
+
+    The list is re-bounded here (:func:`bounded_attachment_list`), not trusted
+    on a type check: the row is a writable file, and the send-path bound is
+    the send path's -- a persisted list over it would otherwise be retained
+    and forwarded to the provider whole.
+    """
+    if not isinstance(row_meta, dict):
+        return {}
+    raw = bounded_attachment_list(
+        IMAGE_ATTACHMENT_META_KEY, row_meta.get(IMAGE_ATTACHMENT_META_KEY)
+    )
+    if raw is None:
+        return {}
+    meta: dict[str, list[str]] = {IMAGE_ATTACHMENT_META_KEY: raw}
+    _prune_image_meta(meta, content, previous)
+    return meta
+
+
+def with_added_images(image_meta: dict[str, list[str]], added: list[str]) -> dict[str, list[str]]:
+    """*image_meta* with the pictures a client attached while editing appended.
+
+    An edit-resend can drop a picture (its line removed from the text, see
+    :func:`retained_image_meta`) and add one (a new upload named in the
+    request's own ``meta.images``); both are edits, and the turn's list must
+    hold the union. Retained pictures keep their order and come first; an
+    added path already retained is not repeated. The union is bounded like
+    every retained list (:func:`bounded_attachment_list`): two lists the
+    bound admitted separately can exceed it together, and an over-bound union
+    is refused whole, as the send path would refuse it. Returns a new mapping.
+    """
+    kept = list(image_meta.get(IMAGE_ATTACHMENT_META_KEY) or [])
+    merged = kept + [p for p in added if p not in kept]
+    bounded = bounded_attachment_list(IMAGE_ATTACHMENT_META_KEY, merged)
+    return {IMAGE_ATTACHMENT_META_KEY: bounded} if bounded else {}
 
 
 class SlotQueueRepository:
@@ -575,6 +743,7 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        prompt_images: list[str] | None = None,
     ) -> str:
         """Append an entry and return its process-local queue ID."""
         queue_id = self._id_provider()
@@ -587,6 +756,8 @@ class SlotQueueRepository:
         # sites can finish populating structured facts after constructing it.
         if meta:
             item["meta"] = meta
+        if prompt_images:
+            item[PROMPT_IMAGES_ENTRY_KEY] = list(prompt_images)
         if directive_user_origin:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
@@ -613,6 +784,7 @@ class SlotQueueRepository:
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        prompt_images: list[str] | None = None,
     ) -> str:
         """Insert one entry while preserving retry callbacks and provenance."""
         queue_id = self._id_provider()
@@ -626,6 +798,8 @@ class SlotQueueRepository:
         # snapshot, so later producer mutation must not rewrite queued facts.
         if meta:
             item["meta"] = dict(meta)
+        if prompt_images:
+            item[PROMPT_IMAGES_ENTRY_KEY] = list(prompt_images)
         if on_consumed is not None:
             item["_on_consumed"] = on_consumed
         if on_irreversibly_consumed is not None:

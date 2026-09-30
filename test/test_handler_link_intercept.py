@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import base64
+import os
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+
+#: Smallest valid 1x1 PNG.
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
 
 
 def _make_slack():
@@ -316,6 +323,88 @@ class TestLinkedThreadIntercept:
             assert len(slot._queue) == 1
             mock_run_chat.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_a_slack_image_reaches_the_linked_slots_turn(self, tmp_path, monkeypatch):
+        """The structured list is the ONLY thing that puts a picture in front
+        of the model (the builder never scans the appended path), so the
+        linked-thread route must hand it on like a dashboard send: the raw
+        paths as the provider copy, the redacted bounded list on the copy
+        every observer reads -- on the immediate arm AND the queued one."""
+        from kiro_crew.prompt_attachments import PromptAttachment
+        from kiro_crew.slack import handler
+
+        # Slack's temp file, as `process_slack_files` leaves it; the Slack
+        # handler unlinks it in its done-callback, so the linked slot must be
+        # handed a copy IT owns (an upload), never this path.
+        uploads = tmp_path / "uploads"
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", uploads)
+        temp = tmp_path / "kc-slack" / "tmpab12.png"
+        temp.parent.mkdir()
+        temp.write_bytes(_PNG)
+        shot = str(temp)
+        atts = (PromptAttachment(path=shot, name="Screenshot 2026.png", mime="image/png"),)
+
+        # Immediate arm: the slot is idle, `_run_chat` gets the lists.
+        slack = _make_slack()
+        slot = MagicMock()
+        type(slot).running = PropertyMock(return_value=False)
+        slot.key = "slot1"
+        slot._queue = []
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=slot)
+        ds._background_tasks = set()
+        ds.broadcast_ws = MagicMock()
+        ds.push_slots_update = MagicMock()
+        with (
+            patch.object(handler, "_dashboard_state", ds),
+            patch.object(handler, "is_allowed_user", return_value=True),
+            patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
+        ):
+            await handler.handle_message(
+                slack, MagicMock(), "C1", f"look\n{shot}", "t1", "msg1", "U1", attachments=atts
+            )
+            kwargs = mock_run_chat.call_args.kwargs
+            (adopted,) = kwargs.get("_prompt_images")
+            assert adopted != shot and adopted.startswith(str(uploads))
+            assert adopted.endswith("_Screenshot_2026.png")
+            assert kwargs.get("_attachment_meta") == {"images": [adopted]}
+            assert kwargs.get("_attachments") == [adopted]
+            # The Slack cleanup may run before the turn opens the file.
+            temp.unlink()
+            assert os.path.exists(adopted)
+            with open(adopted, "rb") as fh:
+                assert fh.read() == _PNG
+            temp.write_bytes(_PNG)
+
+        # Queued arm: the slot is busy, the entry carries both copies.
+        busy = MagicMock()
+        type(busy).running = PropertyMock(return_value=True)
+        busy.key = "slot1"
+        busy._queue = []
+        seen: dict = {}
+
+        def queue_append(
+            content, *, meta=None, directive_user_origin, directive_channel_origin, **kw
+        ):
+            seen.update(meta=meta, **kw)
+            busy._queue.append({"id": "q1", "content": content})
+            return "q1"
+
+        busy.queue_append = queue_append
+        ds.get_linked_slot = MagicMock(return_value=busy)
+        with (
+            patch.object(handler, "_dashboard_state", ds),
+            patch.object(handler, "is_allowed_user", return_value=True),
+            patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
+        ):
+            await handler.handle_message(
+                slack, MagicMock(), "C1", f"look\n{shot}", "t1", "msg1", "U1", attachments=atts
+            )
+            mock_run_chat.assert_not_called()
+            (queued,) = seen.get("prompt_images")
+            assert queued != shot and queued.startswith(str(uploads))
+            assert seen["meta"].get("images") == [queued]
+
 
 # ── Linked thread intercept on the messaging-transport path ──
 
@@ -362,6 +451,54 @@ class TestTransportLinkedThreadIntercept:
             mock_run_chat.assert_called_once()
             ds.push_slots_update.assert_called_once()
             sessions.get_or_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_transport_route_hands_the_image_list_to_the_linked_slot(
+        self, tmp_path, monkeypatch
+    ):
+        """Same route, other door: the transport path forwards the structured
+        list into ``maybe_route_linked_thread`` too, or a Slack picture posted
+        in a linked thread is dropped only when the gateway runs the newer
+        transport."""
+        from kiro_crew.prompt_attachments import image_attachments
+        from kiro_crew.slack import handler, transport_dispatch
+
+        uploads = tmp_path / "uploads"
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", uploads)
+        temp = tmp_path / "tmpab12.png"
+        temp.write_bytes(_PNG)
+        shot = str(temp)
+        slack = _make_slack()
+        slot = MagicMock()
+        type(slot).running = PropertyMock(return_value=False)
+        slot.key = "slot1"
+        slot._queue = []
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=slot)
+        ds._background_tasks = set()
+        ds.broadcast_ws = MagicMock()
+        ds.push_slots_update = MagicMock()
+        sessions = MagicMock()
+        sessions.get_or_create = AsyncMock(side_effect=AssertionError("session acquired"))
+
+        with (
+            patch.object(handler, "_dashboard_state", ds),
+            patch.object(handler, "is_allowed_user", return_value=True),
+            patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
+        ):
+            await transport_dispatch.handle_message_transport(
+                slack,
+                sessions,
+                "C1",
+                f"look\n{shot}",
+                "t1",
+                "msg1",
+                "U1",
+                attachments=image_attachments([shot]),
+            )
+            (adopted,) = mock_run_chat.call_args.kwargs.get("_prompt_images")
+            assert adopted != shot and adopted.startswith(str(uploads))
+            assert mock_run_chat.call_args.kwargs.get("_attachment_meta") == {"images": [adopted]}
 
     @pytest.mark.asyncio
     async def test_transport_unauthorized_denied(self):

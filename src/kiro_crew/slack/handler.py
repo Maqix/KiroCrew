@@ -27,7 +27,7 @@ import os
 import re
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -126,6 +126,7 @@ from kiro_crew.messaging.session_trust import clear_trusted_sessions, is_session
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -2961,6 +2962,49 @@ async def maybe_handle_keyword_command(
     return False
 
 
+async def _adopt_linked_images(attachments: Sequence[PromptAttachment]) -> list[str]:
+    """Copies of the message's images that the linked dashboard slot OWNS.
+
+    Slack's temp files belong to the Slack turn: ``events.py`` unlinks them in
+    the handler task's done-callback, and this route returns before the linked
+    slot's turn (a fire-and-forget task, or a queued entry drained later) opens
+    them -- so handing the temp paths on would leave the builder a path that is
+    gone by the time it reads it. The linked slot is a dashboard session, and a
+    dashboard session's pictures are uploads: each image is copied into the
+    upload directory under the writer's own ``<uuid>_<name>`` shape (server
+    key, sender name bounded and sanitised like ``api_upload_file`` does), so
+    the turn, a later regenerate or edit-resend, and the redacted-spelling
+    resolver all find it where every other dashboard picture lives. The copy
+    runs off the loop. An image that cannot be copied is dropped from the list
+    with a warning; the text still names the original path for the record.
+    """
+    paths = [a for a in attachments if a.path]
+    if not paths:
+        return []
+    # Lazy: ``handlers.files`` imports most of the dashboard at module level.
+    from kiro_crew.dashboard.handlers.files import _upload_dir
+
+    upload_dir = _upload_dir()
+
+    def _copy_all() -> list[str]:
+        import shutil
+
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        out: list[str] = []
+        for att in paths:
+            safe_name = re.sub(r"[^\w.\-]", "_", Path(att.display_name).name) or Path(att.path).name
+            dest = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
+            try:
+                shutil.copy2(att.path, dest)
+            except OSError:
+                logger.warning("linked thread: could not adopt image %s", Path(att.path).name)
+                continue
+            out.append(str(dest))
+        return out
+
+    return await asyncio.to_thread(_copy_all)
+
+
 async def maybe_route_linked_thread(
     text: str,
     session_key: str,
@@ -2970,12 +3014,22 @@ async def maybe_route_linked_thread(
     reply_ts: str,
     target_slot: Any | None = None,
     route_pinned: bool = False,
+    attachments: Sequence[PromptAttachment] = (),
 ) -> bool:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
     Shared by the native ``handle_message`` path and the messaging-transport
     ``handle_message_transport`` path so a thread linked via
     ``/kirocrew link-to-dashboard`` behaves identically on both.
+
+    *attachments* is the structured list of the images the message carried
+    (``process_slack_files``). It is the ONLY thing that puts a picture in
+    front of the model -- the prompt builder never scans the text for the
+    appended path -- so this route hands it to the linked slot's turn exactly
+    as the dashboard's own send does: the raw paths as the provider copy
+    (``_prompt_images`` on an immediate dispatch, the process-local entry key
+    on a queued one) and the redacted, bounded list as ``images`` on the copy
+    every observer reads.
 
     Returns ``True`` when the caller MUST return without further handling —
     either the message was routed into the linked dashboard slot, or an
@@ -3047,6 +3101,23 @@ async def maybe_route_linked_thread(
     append_and_surface(
         _dashboard_state, _linked_slot, "user", _safe_text, "msg msg-u", broadcast_user=True  # type: ignore[arg-type]
     )
+    # The linked slot's turn takes the picture the way a dashboard send does:
+    # the adopted copies (`_adopt_linked_images` -- files this slot owns, not
+    # Slack's temp paths, which the Slack handler unlinks when it returns) as
+    # the provider copy, and the redacted bounded list as the copy every
+    # observer reads (`chat_delivery.attachment_meta`).
+    _image_paths = await _adopt_linked_images(attachments)
+    _linked_kwargs: dict[str, Any] = {}
+    if _image_paths:
+        # circular import: chat_delivery pulls in dashboard modules at module level.
+        from kiro_crew.dashboard.chat_delivery import attachment_meta
+        from kiro_crew.dashboard.slot_queue_repository import IMAGE_ATTACHMENT_META_KEY
+
+        _linked_meta = attachment_meta({IMAGE_ATTACHMENT_META_KEY: _image_paths})
+        if _linked_meta:
+            _linked_kwargs["_attachments"] = [p for paths in _linked_meta.values() for p in paths]
+            _linked_kwargs["_attachment_meta"] = _linked_meta
+            _linked_kwargs["_prompt_images"] = list(_image_paths)
     if not _linked_slot.running:
         from kiro_crew.dashboard.chat import _run_chat
 
@@ -3057,6 +3128,7 @@ async def maybe_route_linked_thread(
                 text,
                 _directive_user_origin=True,
                 _directive_channel_origin=True,
+                **_linked_kwargs,
             )
         )
         _linked_slot.task = _chat_task
@@ -3069,11 +3141,22 @@ async def maybe_route_linked_thread(
         # Stamp the admission-time containment. A linked slot records
         # linked=True here, so its own channel's queued messages keep draining;
         # only a constraint that appears AFTER this enqueue drops the entry.
+        # The image list rides the entry like a dashboard send's: the redacted
+        # copy on its meta, the provider copy under the process-local key.
+        # Passed only when there IS one, so the call shape is unchanged for a
+        # text-only message (and for the test doubles of ``queue_append``).
+        _queue_kwargs: dict[str, Any] = {}
+        if _linked_kwargs.get("_prompt_images"):
+            _queue_kwargs["prompt_images"] = _linked_kwargs["_prompt_images"]
         _linked_slot.queue_append(
             text,
-            meta=containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
+            meta={
+                **containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
+                **_linked_kwargs.get("_attachment_meta", {}),
+            },
             directive_user_origin=True,
             directive_channel_origin=True,
+            **_queue_kwargs,
         )
     _dashboard_state.push_slots_update()  # type: ignore[attr-defined]
     sel().log_tool_invocation(
@@ -3115,8 +3198,14 @@ async def handle_message(
     channel_activation: str | None = None,
     had_voice_input: bool = False,
     _compaction_replay: _CompactionReplay | None = None,
+    attachments: Sequence[PromptAttachment] = (),
 ) -> None:
     """Route a Slack message through ACP with streaming and tool approval.
+
+    *attachments* is the structured list of the images the message carried
+    (``process_slack_files``). It is the ONLY way a picture reaches the model:
+    the prompt builder never scans ``text`` for the paths appended there, which
+    remain for agent file tools.
 
     NOTE: ``from_trusted_bot`` is consumed only in the error path (echo-loop
     suppression). Early-reply paths (hook auto-reply, !status, !sessions) still
@@ -3202,6 +3291,7 @@ async def handle_message(
         reply_ts,
         target_slot=_target_slot,
         route_pinned=route_pinned,
+        attachments=attachments,
     ):
         return
 
@@ -4129,7 +4219,12 @@ async def handle_message(
             await slack.set_thread_status(channel, reply_ts, "")
             return
 
-        async for event in client.stream(full_message):
+        _stream = (
+            client.stream(full_message, attachments=tuple(attachments))
+            if attachments
+            else client.stream(full_message)
+        )
+        async for event in _stream:
             if event.kind == EVENT_TEXT_CHUNK:
                 if _tool_gap and accumulated and accumulated[-1:] not in ("\n", " "):
                     first = event.text[:1]
@@ -4762,6 +4857,9 @@ async def handle_message(
                         from_trusted_bot=from_trusted_bot,
                         channel_activation=channel_activation,
                         had_voice_input=had_voice_input,
+                        # The replay is the SAME message: its pictures ride
+                        # along, or the re-run answers as if none were sent.
+                        attachments=attachments,
                         _compaction_replay=_CompactionReplay(
                             attempt=_attempt + 1, stop_gen_at_entry=_stop_gen_at_entry
                         ),
