@@ -203,7 +203,7 @@ from kiro_crew.history import (
     carry_provenance,
     is_incognito_transcript,
 )
-from kiro_crew.history_projection import TranscriptRevisionChanged
+from kiro_crew.history_projection import METADATA_LINE_CORRUPT, TranscriptRevisionChanged
 from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord
 from kiro_crew.llm_helpers import pick_epoch_host, slot_switch_session_lock
 from kiro_crew.memory_startup import MemoryStartupUnavailable, wait_for_memory_preparation
@@ -13059,6 +13059,62 @@ def _resume_refusal_response(refusal: ResumeRefusal) -> web.Response:
     return web.json_response({"error": refusal.error, "code": refusal.code}, status=refusal.status)
 
 
+# The resume's deferred ``clear_closed`` is a temp-file + atomic rename, and the
+# file it rewrites is this session's own metadata line. On a platform where a
+# just-renamed file is transiently unopenable for a few milliseconds — Windows,
+# notably — a read of that line reports ``readable=False`` for that window, and
+# an identity barrier that reads that TRANSIENT unreadable as a delete/recreate
+# turns a healthy revive into a spurious ``resume_conflict`` and drops the slot.
+# The reader has its own transient retry, but only OFF the event loop
+# (``_pause_for_transient_retry`` sleeps 0.02s between 3 attempts off-loop, and
+# no-ops on the loop so it never blocks it), and a slow Windows runner can leave
+# the file unopenable past that ~40 ms window. The verification read that runs
+# right after the clear absorbs the window with a wider budget: it runs OFF the
+# loop via ``asyncio.to_thread`` (so its blocking waits cost a worker thread, not
+# a loop stall) and BEFORE the last store-backed containment pass (so its wait
+# opens no window the store-free final check would miss). Settled there, the file
+# is readable by the time the final identity read runs, so that final read stays
+# a plain synchronous on-loop read with no suspension point between the last
+# store read and the publish — the property the containment boundary depends on.
+_RESUME_METADATA_RETRY_ATTEMPTS = 8
+_RESUME_METADATA_RETRY_SECS = 0.025
+
+
+def _metadata_status_settled_blocking(log: Any, history_key: str) -> tuple[dict, bool]:
+    """``get_metadata_status`` that waits a TRANSIENT rewrite race out, BLOCKING.
+
+    Returns the same ``(metadata, readable)`` tuple as ``get_metadata_status``.
+    An unreadable answer is retried unless the line is CORRUPT (which no wait
+    makes readable), matching the ``!= METADATA_LINE_CORRUPT`` retry polarity the
+    reader's other transient-aware consumers use: a readable-vs-transient
+    disagreement between the two reads is the rewrite still in flight, so it is
+    retried, not aborted. Every readable answer, and a corrupt line, returns at
+    once with no pause.
+
+    MUST run off the event loop -- it uses a blocking ``time.sleep`` and is
+    called only through ``asyncio.to_thread`` on the post-clear verification
+    read, which runs BEFORE the last store-backed containment pass. The budget
+    (``_RESUME_METADATA_RETRY_ATTEMPTS`` x ``_RESUME_METADATA_RETRY_SECS``) is
+    deliberately wider than the reader's own off-loop retry (3 x 0.02s), because
+    a slow Windows runner can leave a just-renamed file unopenable past that
+    window; a blocking wait here costs a worker thread, never a loop stall. The
+    file is settled by the time the final SYNCHRONOUS identity read runs, so that
+    read stays synchronous with no ``await`` between the last store read and the
+    publish.
+    """
+    meta, readable = log.get_metadata_status(history_key)
+    for _ in range(_RESUME_METADATA_RETRY_ATTEMPTS - 1):
+        if readable:
+            return meta, readable
+        # A corrupt or non-JSON first line never becomes readable by waiting;
+        # everything else unreadable is a rewrite in flight worth the brief wait.
+        if log.metadata_line_state(history_key) == METADATA_LINE_CORRUPT:
+            return meta, readable
+        time.sleep(_RESUME_METADATA_RETRY_SECS)
+        meta, readable = log.get_metadata_status(history_key)
+    return meta, readable
+
+
 async def resume_slot_from_history(
     state: "DashboardState",
     *,
@@ -13801,8 +13857,16 @@ async def resume_slot_from_history(
                     await asyncio.to_thread(
                         log.clear_closed, history_key, only_if_closed_before=resume_started_at
                     )
+                    # The clear is a temp-file + atomic rename, and the file it
+                    # rewrote is this session's own metadata line. A read taken in
+                    # the few milliseconds a just-renamed file stays unopenable on
+                    # Windows would report unreadable; settle that TRANSIENT window
+                    # out HERE, BEFORE the last containment pass and the final
+                    # synchronous identity read, so both of those see a settled
+                    # line. This runs before the store-backed hook, so its pause
+                    # opens no window the store-free final check would miss.
                     _after, _readable = await asyncio.to_thread(
-                        log.get_metadata_status, history_key
+                        _metadata_status_settled_blocking, log, history_key
                     )
                 except Exception:
                     logger.warning("Failed to clear closed flag for %s", history_key, exc_info=True)
@@ -13840,11 +13904,15 @@ async def resume_slot_from_history(
             # The second hook pass was itself an await, so the transcript identity is
             # read one final time SYNCHRONOUSLY here, where nothing can run between
             # the read and the publish. A plain file read, not a session-store getter
-            # (those share a lock with an off-loop writer and stay in the hook);
-            # ``get_metadata_status`` sleeps between retries only when off the loop,
-            # so on the loop it answers at once; an unreadable answer refuses
-            # (``resume_conflict``) rather than publishing on a read that could not
-            # be made, and the caller retries.
+            # (those share a lock with an off-loop writer and stay in the hook); and
+            # NOT awaited -- an ``await`` here would reopen the window the second
+            # hook just closed, letting a store-side channel binding land between
+            # the last store-backed read and a publish the store-free ``final_check``
+            # cannot catch. The TRANSIENT rewrite this read could otherwise race was
+            # already settled before the hook (see ``_metadata_status_settled_blocking``
+            # on the verification read above), so this read answers a settled line. An
+            # unreadable answer still refuses (``resume_conflict``) rather than
+            # publishing on a read that could not be made, and the caller retries.
             try:
                 _last, _last_readable = log.get_metadata_status(history_key)
             except Exception:

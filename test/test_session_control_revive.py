@@ -1418,6 +1418,110 @@ def test_a_clean_hook_publishes_once_and_the_history_click_passes_none(tmp_path)
     assert not state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
 
 
+def test_metadata_status_settled_retries_a_transient_until_readable(monkeypatch):
+    """``_metadata_status_settled_blocking`` reads the metadata line right after
+    this resume's own deferred ``clear_closed`` rewrote it (temp file + atomic
+    rename). On a platform where a just-renamed file is briefly unopenable --
+    Windows -- the read reports ``readable=False`` for a few milliseconds; without
+    a retry a barrier reads that TRANSIENT unreadable as a delete/recreate and
+    turns a healthy revive into a spurious ``resume_conflict``. The helper retries
+    an unreadable-but-not-CORRUPT read until it recovers. It runs OFF the event
+    loop (via ``asyncio.to_thread`` at its one call site), so its pause is a
+    blocking ``time.sleep`` -- which costs a worker thread, never a loop stall.
+    """
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.history_projection import METADATA_LINE_READABLE
+
+    reads = {"n": 0}
+
+    class _Log:
+        def get_metadata_status(self, key):
+            reads["n"] += 1
+            # Two transient unreadables, then the file settles.
+            if reads["n"] < 3:
+                return {}, False
+            return {"_type": "metadata", "created_at": 1.0}, True
+
+        def metadata_line_state(self, key):
+            # A readable-vs-unreadable disagreement between the two reads is the
+            # rewrite still in flight: NOT corrupt, so the helper must keep
+            # retrying (the CORRUPT-only polarity), not abort.
+            return METADATA_LINE_READABLE
+
+    slept = {"n": 0}
+    monkeypatch.setattr(
+        chat_handlers.time, "sleep", lambda _s: slept.__setitem__("n", slept["n"] + 1)
+    )
+
+    meta, readable = chat_handlers._metadata_status_settled_blocking(_Log(), "dashboard:x")
+    assert readable is True and meta.get("created_at") == 1.0
+    assert reads["n"] == 3, "should have retried past the two transient reads"
+    assert slept["n"] == 2, "should have paused between attempts"
+
+
+def test_metadata_status_settled_does_not_retry_a_corrupt_line(monkeypatch):
+    """A CORRUPT first line never becomes readable by waiting, so the helper
+    returns it at once with no pause -- the same non-retry the reader's other
+    transient-aware consumers give a corrupt line."""
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.history_projection import METADATA_LINE_CORRUPT
+
+    reads = {"n": 0}
+
+    class _Log:
+        def get_metadata_status(self, key):
+            reads["n"] += 1
+            return {}, False
+
+        def metadata_line_state(self, key):
+            return METADATA_LINE_CORRUPT
+
+    slept = {"n": 0}
+    monkeypatch.setattr(
+        chat_handlers.time, "sleep", lambda _s: slept.__setitem__("n", slept["n"] + 1)
+    )
+
+    meta, readable = chat_handlers._metadata_status_settled_blocking(_Log(), "dashboard:x")
+    assert readable is False and meta == {}
+    assert (
+        reads["n"] == 1 and slept["n"] == 0
+    ), "a corrupt line is returned at once, no retry, no pause"
+
+
+def test_a_persistently_unreadable_metadata_read_still_refuses(tmp_path, monkeypatch):
+    """The transient tolerance above must not blunt the barrier: a metadata line
+    that stays unreadable past the bounded retries is still a read that could not
+    be made, and the resume refuses (``resume_conflict``) rather than publishing
+    on it.
+    """
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.history_projection import METADATA_LINE_TRANSIENT
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    key = _archive(state, caller, _slot(state, "chat-2"))
+    log = state.conversation_log
+    hk = f"dashboard:{key}"
+    real_status = log.get_metadata_status
+
+    def _always_transient_status(k):
+        if k == hk:
+            return {}, False
+        return real_status(k)
+
+    monkeypatch.setattr(log, "get_metadata_status", _always_transient_status)
+    monkeypatch.setattr(log, "metadata_line_state", lambda k: METADATA_LINE_TRANSIENT)
+
+    async def _ok(_built):
+        return None
+
+    outcome = asyncio.run(
+        chat_handlers.resume_slot_from_history(state, name=key, history_key=hk, containment=_ok)
+    )
+    assert outcome.slot is None
+    assert outcome.refusal is not None and outcome.refusal.code == "resume_conflict"
+
+
 def test_a_refused_hook_restores_the_marker_before_releasing_the_reservation(tmp_path):
     """The reopen write is deferred past the async hook, so a hook refusal
     changes nothing on disk. The only refusal that can follow the clear is the
@@ -1782,8 +1886,10 @@ def test_an_already_live_unprotected_slot_answers_target_already_live(tmp_path, 
 def test_a_clear_that_lands_then_reads_unreadable_still_restores_the_marker(tmp_path):
     """A just-rewritten metadata line is transiently unopenable on Windows, so a
     successful ``clear_closed`` can be followed by an unreadable verification.
-    That refuses (``resume_conflict``), and because the clear DID land the marker
-    must be restored, or the refused session reopens at the next start."""
+    The verification read settles that transient window out and recovers, so the
+    revive publishes: the marker stays cleared and the session stays open. A
+    persistently unreadable verification, which no wait recovers, still refuses
+    and restores the marker -- the companion test below covers that."""
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
@@ -1801,9 +1907,8 @@ def test_a_clear_that_lands_then_reads_unreadable_still_restores_the_marker(tmp_
     real_status = log.get_metadata_status
 
     def _unreadable(k):
-        # Transient, as on Windows: the verification read right after the
-        # rewrite cannot open the file; the restore's own confirmation read
-        # that follows the rollback write can.
+        # One transient unreadable right after the rewrite, as on Windows; the
+        # verification read's retry then opens the settled file.
         if landed.pop("unreadable_next", False):
             return {}, False
         return real_status(k)
@@ -1813,6 +1918,53 @@ def test_a_clear_that_lands_then_reads_unreadable_still_restores_the_marker(tmp_
 
     # The two stubs live in their own context so leaving it restores only
     # them; no shared fixture instance is undone mid-test.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(log, "clear_closed", _clear)
+        mp.setattr(log, "get_metadata_status", _unreadable)
+        outcome = asyncio.run(
+            chat_handlers.resume_slot_from_history(
+                state, name=key, history_key=f"dashboard:{key}", containment=_ok
+            )
+        )
+    assert landed.get("cleared") is True, "fixture did not actually clear the marker"
+    # The transient verification is settled out and recovers: the slot publishes.
+    assert outcome.refusal is None
+    assert outcome.slot is not None and outcome.slot.key == key
+    assert key in state._slots and key not in state._slots_under_construction
+    # The clear stands (the session stays open); nothing rolled it back.
+    assert not log.get_metadata(f"dashboard:{key}").get("closed")
+
+
+def test_a_clear_that_lands_then_reads_persistently_unreadable_restores_the_marker(tmp_path):
+    """A verification read that stays unreadable past the settle retries refuses
+    (``resume_conflict``); because the clear DID land, the marker must be
+    restored, or the refused session reopens at the next start."""
+    from kiro_crew.dashboard import chat_handlers
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    key = _archive(state, caller, _slot(state, "chat-2"))
+    log = state.conversation_log
+    real_clear = log.clear_closed
+    landed: dict = {}
+
+    def _clear(k, **kw):
+        real_clear(k, **kw)  # actually drops the marker
+        landed["cleared"] = "closed" not in log.get_metadata(k)
+        landed["unreadable"] = True
+
+    real_status = log.get_metadata_status
+
+    def _unreadable(k):
+        # The verification read never opens the file; the restore's own
+        # confirmation read that follows the rollback write can.
+        if landed.get("unreadable") and "closed" not in log.get_metadata(k):
+            return {}, False
+        return real_status(k)
+
+    async def _ok(_built):
+        return None
+
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(log, "clear_closed", _clear)
         mp.setattr(log, "get_metadata_status", _unreadable)
@@ -2102,10 +2254,13 @@ def test_a_channel_link_written_to_the_line_during_the_read_is_seen_by_the_hook(
 
 
 def test_an_unreadable_final_identity_read_refuses_rather_than_publishing(tmp_path, monkeypatch):
-    """The synchronous identity read after the last await is the one place
-    nothing follows: an unreadable answer there is the delete-and-recreate's
-    own signature (the file being rewritten) and refuses ``resume_conflict``
-    instead of falling through, with the marker rolled back."""
+    """The final identity read after the last containment pass is SYNCHRONOUS and
+    not retried -- an ``await`` there would reopen the window the containment pass
+    just closed. An unreadable answer at that read refuses ``resume_conflict``
+    rather than publishing on a read that could not be made, with the marker
+    rolled back. The transient a just-rewritten line leaves behind is settled
+    earlier, on the verification read before the containment pass, so it does not
+    reach here."""
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
@@ -2125,7 +2280,7 @@ def test_an_unreadable_final_identity_read_refuses_rather_than_publishing(tmp_pa
 
     def _status(k):
         if flags.pop("unreadable_next", False):
-            return {}, False
+            return {}, False  # the final read cannot open the file
         return real_status(k)
 
     monkeypatch.setattr(log, "get_metadata_status", _status)
@@ -2136,6 +2291,50 @@ def test_an_unreadable_final_identity_read_refuses_rather_than_publishing(tmp_pa
     assert outcome.refusal is not None and outcome.refusal.code == "resume_conflict"
     assert key not in state._slots and key not in state._slots_under_construction
     assert log.get_metadata(hk).get("closed") is True
+
+
+def test_a_recreate_seen_at_the_final_identity_read_still_refuses(tmp_path, monkeypatch):
+    """The transient tolerance must not let a genuine delete-and-recreate publish
+    over the replacement. A recovered read that shows a DIFFERENT ``created_at``
+    is that recreate, and the identity check refuses it -- the transient recovery
+    and the recreate refusal are told apart by ``created_at``, not by readability
+    alone."""
+    from kiro_crew.dashboard import chat_handlers
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    key = _archive(state, caller, _slot(state, "chat-2"))
+    log = state.conversation_log
+    hk = f"dashboard:{key}"
+    real_status = log.get_metadata_status
+    passes: list[int] = []
+    flags: dict = {}
+
+    async def _count(_built):
+        passes.append(1)
+        if len(passes) == 2:
+            flags["recreate_next"] = True
+        return None
+
+    def _status(k):
+        if k == hk and flags.pop("recreate_next", False):
+            meta, _ = real_status(k)
+            # A delete-and-recreate: readable again, but a different identity.
+            recreated = dict(meta)
+            recreated["created_at"] = float(meta.get("created_at") or 0.0) + 1000.0
+            return recreated, True
+        return real_status(k)
+
+    monkeypatch.setattr(log, "get_metadata_status", _status)
+    outcome = asyncio.run(
+        chat_handlers.resume_slot_from_history(state, name=key, history_key=hk, containment=_count)
+    )
+    assert len(passes) == 2
+    # The recreate is refused, never published over -- whether the identity
+    # check names it a deleted-recreate or the barrier catches the change first.
+    assert outcome.slot is None and outcome.refusal is not None
+    assert outcome.refusal.code in {"resume_session_deleted", "resume_conflict"}
+    assert key not in state._slots and key not in state._slots_under_construction
 
 
 def test_the_archived_link_probe_reads_getters_the_session_manager_actually_has():
