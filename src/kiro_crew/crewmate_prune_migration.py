@@ -1,68 +1,76 @@
-"""One-time startup migration: prune the crewmates an older agent sync generated.
+"""One-time startup migration: prune the crewmates the retired agent sync left.
 
 An enrol-on-mount build of the dashboard called ``POST /api/agents/sync`` on
-every chat mount, and that sync enrolled discovered user and package specs as
-crewmates: a ``config.agents`` row with no ``member_id``, on the shared
-``default`` memory store, bound to the spec by name and stamped with the spec's
-discovery source. An existing install therefore carries one crewmate per synced
-user or package agent, most of them never opened.
-This module runs once at gateway startup and:
+every chat mount, and that sync enrolled discovered specs as crewmates: a
+``config.agents`` row with no ``member_id``, on the shared ``default`` memory
+store, bound to the spec by name and stamped with the spec's discovery source
+-- ``builtin``, ``package``, or ``aim`` (the package source's older name). An
+existing install therefore carries one crewmate per synced agent -- user
+specs, package specs, the runtime's own helper specs, skill-view alias files --
+most of them never opened, and later edits (a model, a star, an avatar) have
+been made to some of them without anyone choosing the crewmate itself.
 
-* **removes** each such crewmate the owner never chatted with on the Crewmates
-  page -- its DM thread holds no turn -- by deleting its ``config.agents`` row
-  (:func:`remove_never_chatted`). The agent stays installed: a session that ran
-  it as a subagent, a cron job, an app's own slot or a plain chat used the
-  AGENT, not the crewmate, and does not keep the row;
-* **leaves the chatted ones exactly as they are**: on the shared ``default``
-  store, with no ``member_id``. A memory binding is identity and is chosen only
-  at creation; an existing member keeps its exact V1 binding (see
-  ``memory-skills-hooks.md``, "Member memory experience and lifecycle"), and no
-  startup pass rewrites it.
+This module runs once at gateway startup and settles those rows by one rule.
+A non-default ``config.agents`` row is **removal-eligible** only when its
+``source`` is exactly one of the retired sync's stamps (:data:`SYNC_ROW_SOURCES`:
+``builtin``, ``package``, ``aim``), or is ``kirocrew`` with a ``kiro_agent``
+that is one of the three core runtime specs discovery stamps ``kirocrew``
+(:data:`CORE_RUNTIME_AGENT_NAMES`). Every other row is KEPT without further
+judgement: a ``kirocrew`` row bound to anything else (a crewmate the dashboard
+created before ``member_id`` existed), and a row carrying any other ``source``
+at all -- an app's own stamp (apps create crewmates themselves, and the roster
+hides those rows rather than this pass deleting them), any other string, or a
+value that is not a string. A row with no ``source`` key reads as the loader
+reads it, ``kirocrew`` (the record's default), so it is eligible only when
+bound to a core runtime spec.
 
-Design:
+A removal-eligible row is still KEPT when ANY of these holds:
 
-* **Precise identification.** A row is a candidate only when it is EXACTLY
-  what the sync wrote: its name is its ``kiro_agent``; its string ``source``
-  stamp matches an installed spec's discovery source (``package`` and its
-  legacy alias ``aim`` are equivalent); and every field it did not copy from
-  the spec sits at its default -- no ``member_id``, the shared ``default``
-  store, no model, effort, triggers, colour, star, avatar or workspace, and no
-  key the record does not declare (:func:`_is_fresh_sync_shape`, tested on the
-  RAW row as ``config.json`` holds it, a missing key reading as its default).
-  Description is copied from the spec and is not part of that default-field
-  comparison, so editing it does not protect a never-chatted generated row.
-  The row and spec source must each be ``builtin``, ``package`` or ``aim``;
-  ``kirocrew`` (the stamp every non-sync writer leaves), crew private copies,
-  and rows without an installed spec are excluded. The one exception to the
-  installed-spec test is a row bound to a skill-view alias
-  (``kirocrew-skill-view-*``): the runtime writes those files to project a
-  spec's skills and discovery never lists them, so the sync's row for one is
-  judged on its own stamp and shape. So is every row bound to
-  one of the runtime's own agents: a spec discovery marks ``kirocrew_owned``
-  (the conductor, worker, knowledge, research and heartbeat specs, which read
-  as ``builtin`` because that flag is deliberately kept apart from ``source``
-  in ``agent_discovery``) is never a candidate, and a delete is refused when
-  the spec re-read under the lock has become one. Both
-  config layers are consulted: a name that ``config.local.json`` touches in
-  its own ``agents`` section -- ``kirocrew config set --local
-  agents.<name>.model``, the capability writer's overlay binding -- is the
-  owner's and is never a candidate, because deleting the base row would leave
-  the overlay leaf as a crewmate bound to nothing. So is a crewmate that any
-  team lists (``crew_teams.read_teams``): placing it on a team is the owner's
-  own act, so the row is the owner's whatever its shape. A team document that
-  is there but cannot be read keeps every candidate (listed under ``doubted``),
-  since none of them can be shown to be off a team. A hand-made crewmate has
-  a ``member_id``.
+* it has a non-empty ``member_id`` -- a crewmate the owner created;
+* its Crewmates-page DM thread holds a turn -- the owner chatted with it
+  (:func:`_chatted`: the live transcript or an archived segment has a row past
+  the metadata line);
+* ``config.local.json`` names it, or a team lists it (below);
+* it is the default row (``default`` or ``cfg.default_agent``).
+
+EVERY OTHER ELIGIBLE ROW IS REMOVED (:func:`remove_never_chatted`), whatever
+its shape or binding: rows bound to the runtime's own helper specs (conductor,
+worker, heartbeat and the rest), crew private copies, rows whose spec is not
+installed, rows bound to a skill-view alias, rows whose name is not their
+``kiro_agent``, ``kirocrew`` rows bound to a core runtime spec, and rows whose
+other fields were edited -- a model, effort, avatar, colour, triggers, star,
+workspace or store is not a claim on the crewmate; only ``member_id``, the
+overlay, a team and a chat are. Only the ``config.json`` row goes: the agent
+stays installed, its spec under ``~/.kiro/agents`` is never touched, and any
+transcript stays.
+
+The rails that stay are about doubt and concurrency, not category:
+
+* **The row is judged as ``config.json`` holds it.** ``member_id``,
+  ``source`` and ``kiro_agent`` are read off the RAW row (a key the row lacks
+  reads as the loader's default, ``kirocrew`` for ``source``), so the same
+  test runs at the scan and again inside the delete's lock
+  (:func:`_is_owners_row`). Both config layers are consulted: a name that
+  ``config.local.json`` touches in its own ``agents`` section --
+  ``kirocrew config set --local agents.<name>.model``, the capability
+  writer's overlay binding -- is the owner's and is kept, because deleting the
+  base row would leave the overlay leaf as a crewmate bound to nothing. So is
+  a crewmate that any team lists (``crew_teams.read_teams``): placing it on a
+  team is the owner's own act. A team document that is there but cannot be
+  read keeps every candidate (listed under ``doubted``), since none of them
+  can be shown to be off a team.
 * **Chatted means the DM thread holds a turn.** The one piece of evidence is
   the crewmate's own Crewmates-page thread: its transcript, live or an
-  archived segment, has a row past the metadata line (:func:`_chatted`).
-  Opening the thread writes a DM binding and at most a metadata line, so a
-  crewmate that was only clicked in the roster is not chatted. The binding
-  and the transcript are read STRICTLY: one that is there but cannot be read
-  or judged keeps that crewmate (listed under ``doubted``), and no
-  conversation log at all keeps every candidate. The pass always completes
-  and writes the marker; it never loops boot after boot on one bad file, and
-  a row it keeps loses nothing by staying.
+  archived segment, has a row past the metadata line (:func:`_chatted`). A
+  session elsewhere that ran the same agent -- a subagent, a cron job, an
+  app's own slot, a plain chat -- used the AGENT, not the crewmate, and does
+  not keep the row. Opening the thread writes a DM binding and at most a
+  metadata line, so a crewmate that was only clicked in the roster is not
+  chatted. The binding and the transcript are read STRICTLY: one that is
+  there but cannot be read or judged keeps that crewmate (listed under
+  ``doubted``), and no conversation log at all keeps every candidate. The
+  pass always completes and writes the marker; it never loops boot after boot
+  on one bad file, and a row it keeps loses nothing by staying.
 * **Agent-writable paths are opened defensively.** The DM transcripts are
   opened with ``open_file_no_reparse`` (``O_NOFOLLOW`` / reparse-point refusal
   settled in the same operation as the open, ``O_NONBLOCK`` so a FIFO cannot
@@ -94,16 +102,16 @@ Design:
   held no turn, and a session that ran its agent elsewhere resolves the same
   name onto the installed agent on the default crew's workspace and memory --
   the binding the removed row carried -- so no restore depends on the row.
-  That
-  function's middleware holds every mutating request on it -- the chat send,
-  slot create, slot agent switch, member thread, channel and import routes
-  under ``/api/`` and the OpenAI-compatible ``POST /v1/chat/completions`` are
-  all such requests -- so no session can bind an agent, and no DM binding can
-  appear, between a candidate's check and its delete. It also holds every
-  request under ``/api/members`` whatever its method, so the roster is read
-  after the pass has settled rather than beside a delete. The writers that do
-  not come through HTTP -- the subagent pump, channel agent resume, cron
-  dispatch -- start only after ``await_crewmate_prune_settled`` returns (in
+  That function's middleware holds every mutating request on it -- the chat
+  send, slot create, slot agent switch, member thread, channel and import
+  routes under ``/api/`` and the OpenAI-compatible ``POST
+  /v1/chat/completions`` are all such requests -- so no session can bind an
+  agent, no DM binding can appear and no ``member_id`` can be stamped between
+  a candidate's check and its delete. It also holds every request under
+  ``/api/members`` whatever its method, so the roster is read after the pass
+  has settled rather than beside a delete. The writers that do not come
+  through HTTP -- the subagent pump, channel agent resume, cron dispatch --
+  start only after ``await_crewmate_prune_settled`` returns (in
   ``GatewayOrchestrator.run`` after the memory barrier, past
   ``KIROCREW_READY``; in the standalone dashboard before its inline channel
   resume), and that helper returns only once the pass has RETURNED: when the
@@ -113,26 +121,28 @@ Design:
   writes its marker and returns; no writer ever runs beside a pass that can
   still delete. Each candidate's check runs immediately before its own
   removal, never once for the whole list.
-* **A refused delete is not a commit.** The delete re-tests the row inside
-  the base config lock: the base row must still carry the same ``kiro_agent``,
-  source identity and fresh-sync shape; for a row bound to an installed spec,
-  that spec is re-read from disk
-  under ``agents_spec_lock`` (nested inside the config lock, the order every
-  other spec writer keeps) and must still declare the bound name, remain
-  non-private and not ``kirocrew_owned``, and have the same canonical
-  discovery source; and the overlay must
-  still not name it,
-  read under its own sidecar lock, taken inside the base lock and held until
-  the base write has committed, so no overlay leaf can land for the name
-  between that check and the delete; and no team may list it, the team
-  document re-read under ``crew_teams.document_lock`` -- taken last, inside
-  the spec lock, and held the same way, so no team write can place the name
-  between that check and the delete. A row that changed meanwhile in any of
-  these ways is refused, the pass writes no marker and logs which rows, and
-  the next boot re-judges them.
+* **A refused delete is not a commit.** The delete re-tests the KEEP
+  conditions inside the base config lock, on the row as the file holds it
+  then: ``member_id`` must still be empty, the row must still be
+  removal-eligible by its ``source`` and ``kiro_agent`` (:func:`_is_owners_row`),
+  the name must still not be the
+  default row, the overlay must still not name it -- read under its own
+  sidecar lock, taken inside the base lock and held until the base write has
+  committed, so no overlay leaf can land for the name between that check and
+  the delete -- and no team may list it, the team document re-read under
+  ``crew_teams.document_lock``, taken innermost and held the same way, so no
+  team write can place the name between that check and the delete. No spec is
+  read: nothing about the bound spec decides the rule, so ``agents_spec_lock``
+  is not taken -- the team lock's own contract is the registry's lock first,
+  then it, and a lock this pass never holds cannot invert any order. A row
+  that changed meanwhile in any of these ways -- a member-aware write stamped
+  ``member_id``, an app restamped it with its own ``source``, a rebinding made
+  it a kept ``kirocrew`` row, an overlay leaf appeared, a team lists it -- is
+  refused, the pass writes no marker and logs which rows, and the next boot
+  re-judges them.
 * **Agent files are never touched.** Only ``config.json`` rows move. The specs
-  under ``~/.kiro/agents`` are only read, and any transcript on disk stays
-  exactly as it is.
+  under ``~/.kiro/agents`` are never read or written by this pass, and any
+  transcript on disk stays exactly as it is.
 * **Idempotent, marker-gated.** A completed pass (even a no-op) writes
   :data:`PRUNE_MARKER` under the config directory with what it did -- the same
   marker-file seam the config loader's own one-shot migrations use
@@ -141,7 +151,8 @@ Design:
   loader because the decision needs chat history, which only the running
   gateway has. Removed rows do not come back: nothing in the dashboard calls
   ``POST /api/agents/sync`` (``useAgents`` reads the catalog), so the rows this
-  pass removes come only from installs that ran an enrol-on-mount build.
+  pass removes come only from installs that ran an enrol-on-mount build, and
+  from the edits made to those rows since.
 """
 
 from __future__ import annotations
@@ -152,13 +163,12 @@ import errno
 import json
 import logging
 import os
-import re
 import stat
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+from kiro_crew.agent_files import AGENT_FILENAME, GUEST_AGENT_FILENAME, LITE_AGENT_FILENAME
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewAgentConfig,
@@ -177,25 +187,14 @@ from kiro_crew.platform_compat import file_lock, open_file_no_reparse, open_lock
 
 logger = logging.getLogger(__name__)
 
-#: The exact name the skill projection writes for an alias: the reserved
-#: prefix plus the first 24 hex digits of its digest. A row is judged as an
-#: alias row only on a full match, so a crewmate someone named with the prefix
-#: but any other tail is judged as an ordinary row and needs an installed spec.
-_SKILL_VIEW_ALIAS_NAME_RE = re.compile(re.escape(NATIVE_SKILL_ALIAS_PREFIX) + r"[0-9a-f]{24}")
-
-
-def _is_skill_view_alias_row(name: str) -> bool:
-    """Whether *name* is exactly a projection-written skill-view alias name."""
-    return _SKILL_VIEW_ALIAS_NAME_RE.fullmatch(name) is not None
-
-
 #: Written under the config directory once a pass completes. Its body is the
 #: record of what the pass did, so an operator can see which crewmates left
 #: and which were kept because their history could not be read. Earlier
-#: markers (``crewmate_prune_migrated.json``, ``crewmate_prune_v2_migrated.json``)
-#: are left in place: the passes that wrote them judged a narrower set of rows,
-#: so a new marker name lets the current pass run once on those installs too.
-PRUNE_MARKER = "crewmate_prune_v3_migrated.json"
+#: markers (``crewmate_prune_migrated.json``, ``crewmate_prune_v2_migrated.json``,
+#: ``crewmate_prune_v3_migrated.json``) are left in place: the passes that wrote
+#: them judged a narrower set of rows, so a new marker name lets the current
+#: pass run once on those installs too.
+PRUNE_MARKER = "crewmate_prune_v4_migrated.json"
 
 #: The cross-process lock the whole pass runs under, beside the marker. Two
 #: gateway processes on one data home take turns here; the second finds the
@@ -210,11 +209,30 @@ PRUNE_LOCK = "crewmate_prune.lock"
 #: slow.
 PRUNE_LOCK_WAIT_S = 120.0
 
-#: The ``source`` stamps a sync-written row can carry. The sync copied the
-#: bound spec's discovery source onto the row: ``builtin`` for a spec the user
-#: wrote and ``package`` for one a package installed (``aim`` is that source's
-#: older name).
+#: The ``source`` the loader gives a ``config.agents`` row that carries no
+#: ``source`` key (the record's default), and the stamp the dashboard's own
+#: crewmate writers leave. A row stamped this way is removal-eligible only when
+#: bound to a core runtime spec; bound to anything else it is a crewmate the
+#: dashboard created, and is kept.
+OWNER_ROW_SOURCE = KiroCrewAgentConfig().source
+
+#: The ``source`` stamps the retired agent sync wrote: it copied the bound
+#: spec's discovery source onto the row -- ``builtin`` for a spec the user wrote
+#: and ``package`` for one a package installed (``aim`` is that source's older
+#: name). Matched exactly: any other value, an app's own stamp included, is not
+#: the sync's row and is kept.
 SYNC_ROW_SOURCES = frozenset({"builtin", "package", "aim"})
+
+#: The agent names of the three core runtime specs discovery stamps
+#: ``kirocrew``: ``agent_discovery._global_agent_info`` derives a global spec's
+#: name from its ``name`` field, falling back to the filename stem, and the
+#: writers in ``agent.py`` give these three files exactly their stems as names
+#: (``kirocrew``, ``kirocrew-lite``, ``kirocrew-guest``). A ``kirocrew``-stamped
+#: row bound to one of them is not a crewmate anyone created -- the default row
+#: is the crewmate on the main spec -- and is removed like any other leftover.
+CORE_RUNTIME_AGENT_NAMES = frozenset(
+    Path(filename).stem for filename in (AGENT_FILENAME, LITE_AGENT_FILENAME, GUEST_AGENT_FILENAME)
+)
 
 
 class HistoryUnreadable(RuntimeError):
@@ -238,24 +256,6 @@ class PruneReport:
     lock_waits: int = 0
 
 
-@dataclasses.dataclass(frozen=True)
-class SyncedCandidate:
-    """What the discovery snapshot recorded about one candidate's spec.
-
-    ``filename`` is the spec file under the agents directory, so the delete can
-    re-read that same file under the spec lock and confirm it remains readable.
-    ``source`` is the canonical discovery source the row matched, so a source
-    change between discovery and deletion refuses the delete. ``skill_view`` marks
-    a row bound to a skill-view alias (``kirocrew-skill-view-*``): discovery
-    never lists an alias, so such a row has no spec to match and ``filename`` is
-    empty; its ``source`` is the row's own stamp.
-    """
-
-    filename: str
-    source: str
-    skill_view: bool = False
-
-
 def marker_path() -> Path:
     return config_dir() / PRUNE_MARKER
 
@@ -277,33 +277,33 @@ def _raw_agents_section(path: Path | None = None) -> dict:
     return agents if isinstance(agents, dict) else {}
 
 
-#: Sync copies these fields from the spec rather than using record defaults.
-_SPEC_COPIED_FIELDS = frozenset({"description", "source"})
+def _is_owners_row(raw: dict) -> bool:
+    """Whether a RAW ``config.agents`` row is kept by its own fields alone.
 
+    A row is removal-eligible only when its ``source`` is exactly one of
+    :data:`SYNC_ROW_SOURCES`, or is :data:`OWNER_ROW_SOURCE` with a
+    ``kiro_agent`` in :data:`CORE_RUNTIME_AGENT_NAMES`; every other ``source``
+    -- ``kirocrew`` bound to any other agent, an app's own stamp, any other
+    string, a value that is not a string -- keeps the row. An eligible row is
+    still kept when it has a non-empty ``member_id`` (a created crewmate); any
+    truthy value keeps, since a ``member_id`` that is not even a string is
+    doubt about a created crewmate, and doubt keeps.
 
-def _canonical_sync_source(source: str) -> str:
-    """Return the canonical source identity for sync row and spec comparison."""
-    return "package" if source in {"package", "aim"} else source
-
-
-def _is_fresh_sync_shape(raw: dict, *, kiro_agent: str) -> bool:
-    """Whether a RAW ``config.agents`` row is exactly a sync-written row.
-
-    Compared field by field against a default record bound to ``kiro_agent``.
-    ``description`` and ``source`` are copied from the spec and handled
-    separately; every other declared field must equal its default. The row may
-    carry no key the record does not declare. A declared key the row lacks
-    reads as its default, so a row written by a build whose record had fewer
-    fields is still the sync's row.
+    Read on the row as ``config.json`` holds it: a key the row lacks reads as
+    the loader reads it, so a row with no ``source`` key is a ``kirocrew`` row
+    and a row with no ``member_id`` key has none. The chat, overlay and team
+    tests are the caller's; this is the part of the rule that the row alone
+    answers, at the scan and again under the lock.
     """
-    expected = dataclasses.asdict(KiroCrewAgentConfig(kiro_agent=kiro_agent))
-    if set(raw) - set(expected):
+    if raw.get("member_id"):
+        return True
+    source = raw.get("source", OWNER_ROW_SOURCE)
+    if not isinstance(source, str):
+        return True
+    if source in SYNC_ROW_SOURCES:
         return False
-    for key, default in expected.items():
-        if key in _SPEC_COPIED_FIELDS:
-            continue
-        if raw.get(key, default) != default:
-            return False
+    if source == OWNER_ROW_SOURCE:
+        return raw.get("kiro_agent") not in CORE_RUNTIME_AGENT_NAMES
     return True
 
 
@@ -319,100 +319,32 @@ def _teamed_names() -> frozenset[str]:
     return frozenset(member for team in read_teams() for member in team.members)
 
 
-def _synced_candidates(
+def _removal_candidates(
     cfg: KiroCrewConfig, raw_agents: dict, overlay_agents: dict, teamed: frozenset[str]
-) -> dict[str, SyncedCandidate]:
-    """The crewmates an older sync generated, in config order, each with what
-    discovery recorded about the spec it is bound to (see :class:`SyncedCandidate`).
+) -> list[str]:
+    """The rows the rule does not keep on their own fields, in config order.
 
-    A row's string source must match the installed spec's discovery source;
-    ``package`` and ``aim`` compare as one source identity. Specs and rows use
-    only ``builtin``, ``package`` or ``aim``. Rows without an installed spec,
-    crew-private specs and the runtime's own specs (``kirocrew_owned``, which
-    discovery keeps apart from ``source``: the conductor, worker, knowledge,
-    research and heartbeat specs read as ``builtin``) are excluded -- a row
-    bound to one of the runtime's own agents is never pruned. ``raw_agents`` is
-    the ``agents`` section as ``config.json`` holds it (not the default-filled
-    dataclasses): the shape test must see the row the file holds, and the same
-    test is re-run inside the delete's lock. ``overlay_agents`` is the same
-    section from ``config.local.json``; any name it mentions is excluded,
-    whatever it says about it. ``teamed`` is every name some team lists
-    (:func:`_teamed_names`); a teamed crewmate is the owner's and is excluded.
-
-    A row bound to a skill-view alias -- exactly the name the projection
-    writes, the prefix plus 24 lowercase hex digits -- is judged on the row
-    alone; a prefixed name with any other tail is an ordinary row. The alias is a file the runtime writes to project one spec's
-    skills, never an agent a person installs or names, and discovery leaves it
-    out of the roster -- so an older sync that walked the agents directory
-    before that exclusion enrolled one crewmate per alias, and no installed spec
-    will ever match one. Its string stamp must still be a sync source and its
-    shape a fresh sync row.
+    Every non-default row is a candidate unless :func:`_is_owners_row` keeps it,
+    ``overlay_agents`` (the ``agents`` section of ``config.local.json``)
+    mentions its name -- whatever the leaf says -- or ``teamed`` (every name
+    some team lists, :func:`_teamed_names`) holds it. ``raw_agents`` is the
+    ``agents`` section as ``config.json`` holds it, not the default-filled
+    dataclasses: the row test must see the row the file holds, and the same
+    test is re-run inside the delete's lock. A name whose raw row is not a
+    record is left alone; the loader owns what to make of it. Whether a
+    candidate is kept or removed is then the chat test's to decide.
     """
-    from kiro_crew.agent import kiro_agents_dir_path
-    from kiro_crew.agent_discovery import list_agents
-
-    specs = {info.name: info for info in list_agents(agents_dir=kiro_agents_dir_path())}
-    out: dict[str, SyncedCandidate] = {}
-    for name, agent in cfg.agents.items():
+    out: list[str] = []
+    for name in cfg.agents:
         if name in ("default", cfg.default_agent):
             continue
         if name in overlay_agents or name in teamed:
             continue
         raw = raw_agents.get(name)
-        if not isinstance(raw, dict) or name != agent.kiro_agent:
+        if not isinstance(raw, dict) or _is_owners_row(raw):
             continue
-        if _is_skill_view_alias_row(agent.kiro_agent):
-            alias_source = raw.get("source")
-            if (
-                isinstance(alias_source, str)
-                and alias_source in SYNC_ROW_SOURCES
-                and _is_fresh_sync_shape(raw, kiro_agent=agent.kiro_agent)
-            ):
-                out[name] = SyncedCandidate(
-                    filename="", source=_canonical_sync_source(alias_source), skill_view=True
-                )
-            continue
-        spec = specs.get(agent.kiro_agent)
-        if spec is None or spec.private_to or spec.kirocrew_owned or not spec.filename:
-            continue
-        raw_source = raw.get("source")
-        spec_source = spec.source
-        if not isinstance(raw_source, str) or spec_source not in SYNC_ROW_SOURCES:
-            continue
-        if not _is_fresh_sync_shape(raw, kiro_agent=agent.kiro_agent):
-            continue
-        source = _canonical_sync_source(spec_source)
-        if _canonical_sync_source(raw_source) != source:
-            continue
-        out[name] = SyncedCandidate(filename=spec.filename, source=source)
+        out.append(name)
     return out
-
-
-def _read_discovered_spec_identity(filename: str) -> tuple[str, str, str, bool] | None:
-    """Return the spec's current ``(name, source, private_to, kirocrew_owned)``.
-
-    The file goes through :func:`read_agent_spec_strict`, then the same
-    :func:`_global_agent_info` derivation and fork-lineage lookup as global
-    discovery -- ``kirocrew_owned`` included, which that derivation reads off
-    the filename (``OWNED_KIRO_AGENT_FILES``) and never off ``source``. A
-    missing, unreadable, refused, non-record or unclassifiable spec fails
-    closed. The file and lineage are only read, never written.
-    """
-    from kiro_crew import agent_state
-    from kiro_crew.agent import kiro_agents_dir_path
-    from kiro_crew.agent_discovery import _global_agent_info, read_agent_spec_strict
-
-    path = Path(kiro_agents_dir_path()) / filename
-    try:
-        data = read_agent_spec_strict(path, operation="crewmate_prune", source="dashboard")
-        if not isinstance(data, dict):
-            return None
-        info = _global_agent_info(path, data)
-        fork_info = agent_state.get_fork_info(info.name, strict=True)
-    except (OSError, ValueError):
-        return None
-    private_to = fork_info["private_to"] if fork_info else ""
-    return info.name, info.source, private_to, info.kirocrew_owned
 
 
 #: Longest first line the DM transcript read accepts. The first line is the
@@ -600,41 +532,35 @@ def _never_abandoned() -> bool:
 
 def remove_never_chatted(
     cfg: KiroCrewConfig,
-    candidates: dict[str, SyncedCandidate],
+    names: Iterable[str],
     *,
     abandoned: Callable[[], bool] = _never_abandoned,
 ) -> tuple[list[str], list[str], list[str]]:
     """Delete the ``config.agents`` rows named; returns ``(removed, refused, abandoned)``.
 
-    ``candidates`` maps each name to the spec filename and canonical source
-    identity :func:`_synced_candidates` recorded. Each delete re-runs the
-    candidate test on the rows and spec as the files hold them, inside the base
-    config lock: the base row must carry the same ``kiro_agent``, source
-    identity and fresh-sync shape (:func:`_is_fresh_sync_shape`);
-    ``config.local.json`` must still not name it, read under the overlay's own
-    sidecar lock; for a row bound to an installed spec, that spec, re-read from
-    disk under ``agents_spec_lock``, must still declare ``kiro_agent``, remain
-    non-private, not be one of the runtime's own (``kirocrew_owned``) and have
-    the same canonical discovery source (a skill-view alias row has no spec, so
-    its exact alias name and row shape are the whole test); and no team may list it, the team document
-    re-read under ``crew_teams.document_lock``. The three inner locks are
-    taken inside the base lock, overlay then spec then team document -- the
-    first two in the order every binding writer keeps, the team lock last
-    because its own contract is "the registry's lock first, then this one" and
-    nothing takes a registry, overlay or spec lock while holding it -- and held
-    until the base write has committed, so neither an overlay writer landing a
-    leaf for the name, a spec writer replacing the file nor a team write placing
-    the name can slip between the check and the delete. A row or spec that
-    changed meanwhile
-    -- the row's identity or shape changed, a member-aware write stamped it, the
-    spec vanished, stopped reading as a spec, changed identity, became private
-    or became one of the runtime's own, an overlay leaf appeared, or a team
-    lists the name -- is newer
-    evidence and is refused, not deleted.
-    The test is on identity and shape, never on equality with a default-filled
-    snapshot: a row written by a build whose record had fewer keys must still be
-    recognised as the sync's. Nothing but the base row moves: the overlay, the
-    spec under ``~/.kiro/agents`` (only read) and any transcript stay.
+    Each delete re-runs the KEEP conditions inside the base config lock, on the
+    row as the file holds it then: the name must still not be the default row
+    (``default`` or the document's ``default_agent``); :func:`_is_owners_row`
+    must still not keep it -- ``member_id`` still empty, ``source`` still one
+    of the sync's stamps or ``kirocrew`` on a core spec; ``config.local.json``
+    must still
+    not name it, read under the overlay's own sidecar lock; and no team may
+    list it, the team document re-read under ``crew_teams.document_lock``. The
+    two inner locks are taken inside the base lock, overlay first (the order
+    every binding writer keeps) and the team document innermost (its own
+    contract is the registry's lock first, then it, and nothing takes a
+    registry or overlay lock while holding it), and both are held until the
+    base write has committed, so neither an overlay writer landing a leaf for
+    the name nor a team write placing the name can slip between the check and
+    the delete. No spec is read and ``agents_spec_lock`` is not taken: nothing
+    about the bound spec is a keep condition, and a lock this pass never holds
+    cannot invert any writer's order. A row that changed meanwhile in any of
+    these ways -- a member-aware write stamped ``member_id``, an app restamped
+    it with its own ``source``, a rebinding made it a kept ``kirocrew`` row,
+    the document made it the default, an overlay
+    leaf appeared, or a team lists the name -- is newer evidence and is
+    refused, not deleted. Nothing but the base row moves: the overlay, the
+    spec under ``~/.kiro/agents`` and any transcript stay.
 
     ``abandoned`` is read inside the config lock, after every re-check and
     right before the delete: once it answers true the row is left in place and
@@ -646,95 +572,62 @@ def remove_never_chatted(
     Callers hold :data:`PRUNE_LOCK` (:func:`prune_synced_crewmates` does); the
     config lock taken here serializes the row write itself, not the pass.
     """
-    from kiro_crew.agent import agents_spec_lock, kiro_agents_dir_path
-
     removed: list[str] = []
     refused: list[str] = []
     left: list[str] = []
     overlay_path = _lock_target(config_local_path())
-    for name, candidate in candidates.items():
+    for name in names:
         if abandoned():
             left.append(name)
             continue
-        kiro_agent = cfg.agents[name].kiro_agent
         deleted = False
         gave_up = False
 
-        # The overlay's sidecar lock and the spec lock are entered on this
-        # stack from inside ``_mutate`` and so outlive the callback: both are
-        # released only after ``update_config_locked`` has renamed the base
+        # The overlay's sidecar lock and the team document lock are entered on
+        # this stack from inside ``_mutate`` and so outlive the callback: both
+        # are released only after ``update_config_locked`` has renamed the base
         # file into place. A lock released when its check returned would leave
         # the window the check exists to close -- an overlay writer landing a
-        # leaf for the name, or a spec writer replacing the file, after the
-        # check and before the base row is gone.
+        # leaf for the name, or a team write placing it, after the check and
+        # before the base row is gone.
         with contextlib.ExitStack() as locks:
 
             def _mutate(
                 doc: dict,
                 _name: str = name,
-                _bound: str = kiro_agent,
-                _file: str = candidate.filename,
-                _source: str = candidate.source,
-                _skill_view: bool = candidate.skill_view,
                 _locks: contextlib.ExitStack = locks,
             ) -> dict | None:
                 nonlocal deleted, gave_up
+                if _name == "default" or _name == doc.get("default_agent"):
+                    return None
                 agents = coerce_dict_section(doc, "agents")
                 raw = agents.get(_name)
-                if not isinstance(raw, dict) or raw.get("kiro_agent") != _bound:
+                if not isinstance(raw, dict) or _is_owners_row(raw):
                     return None
-                if not _is_fresh_sync_shape(raw, kiro_agent=_bound):
-                    return None
-                raw_source = raw.get("source")
-                if not isinstance(raw_source, str):
-                    return None
-                if _canonical_sync_source(raw_source) != _source:
-                    return None
-                # Base lock first, overlay lock second, spec lock third -- the
-                # order every binding writer keeps (``_write_bindings``, the
-                # template create) -- and the team document lock fourth: its
-                # own contract is registry lock first, then it, and nothing
-                # takes a registry, overlay or spec lock while holding it, so
-                # entering it innermost cannot invert any order. All three
-                # inner locks are entered on the stack that outlives this
-                # callback, so they are released only after
-                # ``update_config_locked`` has renamed the base file into
-                # place: neither an overlay leaf for the name, a replacement
-                # of the spec nor a team write placing the name can land
-                # between the checks below and the delete. The overlay and the
-                # team document are read directly under their locks and the
-                # spec is re-read under its lock; nothing is written to any of
-                # them. A lock that cannot be taken, an unreadable overlay or
-                # team document, or a spec whose discovery identity differs
-                # from the candidate is doubt, and doubt refuses.
+                # Base lock first, overlay lock second -- the order every
+                # binding writer keeps (``_write_bindings``, the template
+                # create) -- and the team document lock innermost: its own
+                # contract is registry lock first, then it, and nothing takes
+                # a registry or overlay lock while holding it, so entering it
+                # last cannot invert any order. Both inner locks are entered
+                # on the stack that outlives this callback, so they are
+                # released only after ``update_config_locked`` has renamed the
+                # base file into place: neither an overlay leaf for the name
+                # nor a team write placing the name can land between the
+                # checks below and the delete. The overlay and the team
+                # document are read directly under their locks; nothing is
+                # written to either. A lock that cannot be taken or an
+                # unreadable overlay or team document is doubt, and doubt
+                # refuses.
                 try:
                     _locks.enter_context(_config_write_lock(overlay_path))
                     overlay = read_config_for_update(overlay_path)
-                    _locks.enter_context(agents_spec_lock(Path(kiro_agents_dir_path())))
                     _locks.enter_context(document_lock())
                     teamed = _teamed_names()
                 except (OSError, ConfigReadError, TeamsUnreadable):
                     return None
                 if _name in teamed:
                     return None
-                if _skill_view:
-                    # No spec to re-read: discovery never lists an alias. The
-                    # row's own identity and shape, checked above, are the
-                    # whole test.
-                    if not _is_skill_view_alias_row(_bound):
-                        return None
-                else:
-                    spec_identity = _read_discovered_spec_identity(_file)
-                    if spec_identity is None:
-                        return None
-                    spec_name, spec_source, private_to, kirocrew_owned = spec_identity
-                    if (
-                        spec_name != _bound
-                        or private_to
-                        or kirocrew_owned
-                        or _canonical_sync_source(spec_source) != _source
-                    ):
-                        return None
                 overlay_agents = overlay.get("agents")
                 if isinstance(overlay_agents, dict) and _name in overlay_agents:
                     return None
@@ -862,7 +755,7 @@ def prune_synced_crewmates(
 
 def _judge_each(
     cfg: KiroCrewConfig,
-    candidates: dict[str, SyncedCandidate],
+    candidates: list[str],
     sessions_dir: Path,
     report: PruneReport,
     *,
@@ -875,7 +768,7 @@ def _judge_each(
     # back while the pass runs (``DashboardState.crewmate_prune_settled``,
     # armed before the listener bound), so no session can bind an agent and
     # no thread can be opened between a candidate's check and its delete.
-    for name, candidate in candidates.items():
+    for name in candidates:
         if abandoned():
             report.doubted[name] = ABANDONED_REASON
             continue
@@ -887,9 +780,7 @@ def _judge_each(
         if chatted:
             report.kept.append(name)
         else:
-            removed, refused, left = remove_never_chatted(
-                cfg, {name: candidate}, abandoned=abandoned
-            )
+            removed, refused, left = remove_never_chatted(cfg, [name], abandoned=abandoned)
             report.removed.extend(removed)
             report.refused.extend(refused)
             for gone in left:
@@ -917,7 +808,7 @@ def _prune_locked(
     except TeamsUnreadable as exc:
         teams_doubt = f"{TEAMS_UNREADABLE_REASON} ({exc})"
         teamed = frozenset()
-    candidates = _synced_candidates(cfg, raw_agents, overlay_agents, teamed)
+    candidates = _removal_candidates(cfg, raw_agents, overlay_agents, teamed)
     if candidates:
         sessions_dir = getattr(conversation_log, "_dir", None)
         if teams_doubt:
