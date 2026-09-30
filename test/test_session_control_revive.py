@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from chat_test_helpers import _make_state
 
+from kiro_crew import history_projection as _history_projection
 from kiro_crew.dashboard import create_rate_limit
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import stop_retry
@@ -36,6 +37,73 @@ def _fresh_windows():
     yield
     stop_retry.reset_for_tests()
     create_rate_limit.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _settle_metadata_rewrite_before_read(monkeypatch):
+    """Await each metadata rewrite's file transition before the test reads it.
+
+    These tests drive a REAL on-disk ``ConversationLog`` through metadata
+    rewrites (close, ``clear_closed``, ``update_metadata_if``) and then read the
+    line straight back, all synchronously on the event loop via ``asyncio.run``.
+    Every such rewrite lands atomically through ``replace_with_retry`` (a temp
+    file renamed over the target). On Windows the freshly-renamed file is briefly
+    unopenable while an indexer or AV scanner holds it (ERROR_SHARING_VIOLATION →
+    PermissionError). Production tolerates this off the loop, where the metadata
+    read retry sleeps; on the loop that pause is a deliberate no-op (a live server
+    must not block the loop inside a read), so a synchronous on-loop test read
+    races the hold and reports it as ``resume_conflict`` — a failure decided by
+    OS file-sharing timing, not by what the test set up.
+
+    The production READ path is left EXACTLY as it is — no attempt count,
+    timeout, or poll budget is raised and the retry pause is not patched, because
+    doing so would hide the race rather than resolve it. Instead the filesystem
+    transition is synchronized on the WRITE side: after each metadata-line rename
+    lands, the test confirms the destination is openable again before the writer
+    returns. Because every metadata rewrite funnels through ``replace_with_retry``
+    and every real caller reads only after its write returns, the file the
+    subsequent read opens is always settled — the test awaits the rewrite before
+    reading, deterministically. It reads the TRUE current line every time, so a
+    line another writer changes concurrently (a link written during the read) is
+    still seen; nothing is served from a stale snapshot.
+
+    The wait is bounded and, on POSIX where no hold occurs, the first probe
+    succeeds (a no-op), so it changes nothing on the platform these tests already
+    pass on. It wraps only the shared rename primitive, so every injected
+    condition the tests rely on is preserved: facade-level stubs replace whole
+    methods above it, and a write-path ``OSError`` injection raises before the
+    rename is reached.
+    """
+    import time
+
+    from kiro_crew import atomic_write as _aw
+
+    real_replace = _aw.replace_with_retry
+
+    def replace_with_retry(src, dst):
+        real_replace(src, dst)
+        dst_path = str(dst)
+        if not dst_path.endswith(".jsonl"):
+            return
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                with open(dst_path, encoding="utf-8"):
+                    return
+            except FileNotFoundError:
+                return
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return
+                time.sleep(0.005)
+
+    # Both metadata writers reach the rename through this module-level name:
+    # ``clear_closed``/close via ``atomic_write`` (which calls it) and
+    # ``_update_metadata_locked`` directly. Patch it where each looks it up.
+    monkeypatch.setattr(_aw, "replace_with_retry", replace_with_retry)
+    monkeypatch.setattr(
+        _history_projection, "replace_with_retry", replace_with_retry, raising=False
+    )
 
 
 def _slot(state, name: str, **kwargs):
