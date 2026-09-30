@@ -1,0 +1,121 @@
+<!-- The crew main dashboard. INERT: no script, no controls, no links, no remote bytes.
+     Every value arrives through data-dashboard-field, which the host binds as
+     textContent. The eighteen counts come from crew-log folds through
+     build_crew_main; published_view is the host's; only lede, you and notes are
+     written by a model.
+     Labels are real text nodes, never CSS generated content: the host strips
+     content/list-style/quotes/text-emphasis/text-overflow in card mode, so a label
+     declared in CSS would vanish from the page and from the backend's text scan of it.
+     There is no progress bar and no percentage anywhere: a bar states a ratio while
+     hiding both of its terms, so each count carries its denominator in words. -->
+<style>
+  .cm { display: flex; flex-direction: column; gap: 14px; max-width: 100%; }
+  .cm-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 10px; }
+  .cm-state {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--accent); border: 1px solid var(--accent); border-radius: 999px;
+    padding: 2px 9px; white-space: nowrap;
+  }
+  .cm-phase { font-size: 13px; color: var(--muted); }
+  .cm-lede { font-size: 15px; line-height: 1.5; }
+  .cm-say { display: flex; flex-direction: column; gap: 4px; }
+  .cm-label {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted);
+  }
+  .cm-you {
+    font-size: 14px; line-height: 1.5; border-left: 2px solid var(--accent); padding-left: 10px;
+  }
+  .cm-note { font-size: 12px; line-height: 1.5; color: var(--muted); }
+  /* A sentence the model left empty collapses its whole block rather than leaving a
+     heading with nothing under it. Where :has is unsupported the block simply stays,
+     showing a label and a blank line -- visibly empty, never a zero standing in for
+     something unsaid. */
+  .cm-say:has(.cm-v:empty) { display: none; }
+  .cm-sec {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); border-top: 1px solid var(--muted); padding-top: 8px;
+  }
+  .cm-grid {
+    display: grid; gap: 10px 16px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+  .cm-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .cm-k { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+  .cm-v { font-size: 13px; line-height: 1.4; overflow-wrap: break-word; }
+  .cm-foot { font-size: 11px; line-height: 1.5; color: var(--muted); }
+</style>
+<div class="cm">
+  <div class="cm-head">
+    <span class="cm-state" data-dashboard-field="state"></span>
+    <span class="cm-phase" data-dashboard-field="phase"></span>
+  </div>
+
+  <div class="cm-lede" data-dashboard-field="lede"></div>
+
+  <div class="cm-say">
+    <span class="cm-label">Your move</span>
+    <div class="cm-you cm-v" data-dashboard-field="you"></div>
+  </div>
+
+  <div class="cm-sec">Crew work</div>
+  <div class="cm-grid">
+    <div class="cm-cell"><span class="cm-k">Open</span>
+      <span class="cm-v" data-dashboard-field="items_open"></span></div>
+    <div class="cm-cell"><span class="cm-k">Running</span>
+      <span class="cm-v" data-dashboard-field="items_progress"></span></div>
+    <div class="cm-cell"><span class="cm-k">Blocked</span>
+      <span class="cm-v" data-dashboard-field="items_blocked"></span></div>
+    <div class="cm-cell"><span class="cm-k">Accepted</span>
+      <span class="cm-v" data-dashboard-field="items_done"></span></div>
+    <div class="cm-cell"><span class="cm-k">Awaiting a decision</span>
+      <span class="cm-v" data-dashboard-field="items_question"></span></div>
+    <div class="cm-cell"><span class="cm-k">Dropped from the log</span>
+      <span class="cm-v" data-dashboard-field="board_omitted"></span></div>
+  </div>
+
+  <div class="cm-sec">Tool approvals</div>
+  <div class="cm-grid">
+    <div class="cm-cell"><span class="cm-k">Still open</span>
+      <span class="cm-v" data-dashboard-field="approvals_open"></span></div>
+    <div class="cm-cell"><span class="cm-k">Decided</span>
+      <span class="cm-v" data-dashboard-field="approvals_decided"></span></div>
+  </div>
+
+  <div class="cm-sec">This session</div>
+  <div class="cm-grid">
+    <div class="cm-cell"><span class="cm-k">Turns</span>
+      <span class="cm-v" data-dashboard-field="turns"></span></div>
+    <div class="cm-cell"><span class="cm-k">Last recorded</span>
+      <span class="cm-v" data-dashboard-field="last_activity"></span></div>
+    <div class="cm-cell"><span class="cm-k">Log</span>
+      <span class="cm-v" data-dashboard-field="entries"></span></div>
+    <div class="cm-cell"><span class="cm-k">Agent</span>
+      <span class="cm-v" data-dashboard-field="agent"></span></div>
+    <div class="cm-cell"><span class="cm-k">Model</span>
+      <span class="cm-v" data-dashboard-field="model"></span></div>
+    <div class="cm-cell"><span class="cm-k">Published view</span>
+      <span class="cm-v" data-dashboard-field="published_view"></span></div>
+  </div>
+
+  <div class="cm-sec">Spend</div>
+  <div class="cm-grid">
+    <div class="cm-cell"><span class="cm-k">Credits</span>
+      <span class="cm-v" data-dashboard-field="credits"></span></div>
+    <div class="cm-cell"><span class="cm-k">Sub-agents</span>
+      <span class="cm-v" data-dashboard-field="credits_subagents"></span></div>
+    <div class="cm-cell"><span class="cm-k">Tokens</span>
+      <span class="cm-v" data-dashboard-field="tokens"></span></div>
+  </div>
+
+  <div class="cm-say">
+    <span class="cm-label">Caveat</span>
+    <div class="cm-note cm-v" data-dashboard-field="notes"></div>
+  </div>
+
+  <div class="cm-foot">Every count above was folded from this crew's own log. The three
+    sentences were written by a background model. This panel is about the crew: a worker
+    it dispatched has no row here, and its detail is read by opening that worker. Nothing
+    in this document is a link or a control, so no text here can be clicked, and a count
+    that reads like one is still only text. The panel's own controls sit outside it.</div>
+</div>

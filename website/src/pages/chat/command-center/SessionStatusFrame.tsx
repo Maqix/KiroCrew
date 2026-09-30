@@ -21,8 +21,16 @@ const STATUS_KEYS: Record<Exclude<DynamicDashboardCard['status'], 'published'>, 
   unavailable: 'commandCenter.card_unavailable',
 }
 
-/** The host owns freshness and controls. The isolated document owns presentation. */
-export default function SessionStatusFrame({ slot, title, active }: { slot: string; title: string; active: boolean }) {
+/** The host owns freshness and controls. The isolated document owns presentation.
+ *
+ * `panel` sizes the frame for a crew main session, where the document is not a card
+ * beside the panel's own numbers but the WHOLE dashboard body: every count in it is
+ * derived from that crew's crew-log folds by `build_crew_main`, and the shell draws no
+ * number of its own. Same fetch, same sandbox, same host chrome -- only the box is
+ * taller, because a card's `min-h-64` would scroll a full panel inside an iframe that
+ * is itself inside a scroll container.
+ */
+export default function SessionStatusFrame({ slot, title, active, panel = false }: { slot: string; title: string; active: boolean; panel?: boolean }) {
   const { t } = useTranslation()
   const { theme, colorTheme, themeVersion } = useTheme()
   const owner = useAppSelector(s => s.dashboard.slots.find(item => item.key === slot))
@@ -45,6 +53,6 @@ export default function SessionStatusFrame({ slot, title, active }: { slot: stri
     <ErrorNotice message={query.isError || document.failed ? t('commandCenter.dashboard_error') : status === 'failed' ? t('commandCenter.card_failed') : undefined} />
     {(query.isError || document.failed) && <Btn onClick={() => { void query.refetch(); document.retry() }} disabled={query.isFetching || document.pending}>{t('commandCenter.refresh')}</Btn>}
     {active && document.url && <iframe title={title} src={document.url} sandbox={TASK_DASHBOARD_SANDBOX} referrerPolicy="no-referrer"
-      className="w-full min-h-64 border border-border rounded-lg bg-bg" />}
+      className={`w-full border border-border rounded-lg bg-bg ${panel ? 'min-h-[34rem]' : 'min-h-64'}`} />}
   </section>
 }
