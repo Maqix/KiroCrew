@@ -1022,7 +1022,9 @@ def _provider_payload() -> dict:
         "presets": [local_models.as_payload(m) for m in local_models.LOCAL_MODELS],
         "active": local_models.active_id(endpoint, model),
         "configured_endpoint": endpoint,
-        "configured_timeout_ms": getattr(provider, "timeout_ms", None),
+        # The card needs to say when a hand-written address gets no key; the one
+        # predicate the oracle uses decides it, so the two surfaces cannot disagree.
+        "loopback": local_models.is_loopback_endpoint(endpoint),
     }
 
 
@@ -1084,6 +1086,20 @@ def _write_provider(endpoint: str, model: str, timeout_ms: int) -> None:
     update_config_locked(config_path(), mutate=_mutate)
 
 
+#: Serialises provider switches, one lock per event loop: an ``asyncio.Lock`` binds
+#: to the loop it is first awaited on, and the gateway runs one loop.
+_PROVIDER_SWITCH_LOCKS: "dict[asyncio.AbstractEventLoop, asyncio.Lock]" = {}
+
+
+def _provider_switch_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _PROVIDER_SWITCH_LOCKS.get(loop)
+    if lock is None:
+        _PROVIDER_SWITCH_LOCKS.clear()  # a dead loop's lock is never needed again
+        lock = _PROVIDER_SWITCH_LOCKS[loop] = asyncio.Lock()
+    return lock
+
+
 def _carry_consent(endpoint: str) -> bool:
     """Re-bind a standing consent to local *endpoint*; whether it did. Filesystem IO."""
     from kiro_crew.decisions import consent
@@ -1092,19 +1108,8 @@ def _carry_consent(endpoint: str) -> bool:
 
     if not is_loopback_endpoint(endpoint) or is_decisions_denied():
         return False
-    state = consent.load_state()
-    if not consent.is_enabled(state):
-        return False
-    consent.save_enabled(
-        True,
-        endpoint=endpoint,
-        history_budget_chars=consent.KEEP_HISTORY_BUDGET,
-        tool_args=consent.KEEP_TOOL_ARGS,
-        compaction=consent.KEEP_COMPACTION,
-        memory_text=consent.KEEP_MEMORY_TEXT,
-        nudge_evidence=consent.KEEP_NUDGE_EVIDENCE,
-    )
-    return True
+    # One locked check-and-write: a consent revoked while this PUT ran stays revoked.
+    return consent.rebind_if_enabled(endpoint)
 
 
 async def api_decisions_provider_put(request: web.Request) -> web.Response:
@@ -1141,45 +1146,47 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers.agents import _get_config_lock
     from kiro_crew.dashboard.handlers.core import _hot_apply_after_write
 
-    try:
-        async with _get_config_lock():
-            await asyncio.to_thread(_write_provider, endpoint, model, timeout_ms)
-        await _hot_apply_after_write()
-    except Exception as exc:
-        # Class only: a config error can carry a path, and the row names what was
-        # being written rather than why the disk refused it.
-        await _audit(
-            request,
-            operation=OP_PROVIDER_PUT,
-            outcome="error",
-            error=type(exc).__name__,
-            resources=f"decisions.provider endpoint={endpoint}",
-        )
-        return web.json_response(
-            {"error": "the provider could not be saved", "code": _CODE_PROVIDER_WRITE_FAILED},
-            status=500,
-        )
-    # The provider is written and applied from here on, so a failure to carry
-    # consent must not read as "nothing changed": it is reported as not carried,
-    # which is also the state the keystone is in -- nothing is sent until the
-    # owner turns the switch off and on again.
-    try:
-        carried = await asyncio.to_thread(_carry_consent, endpoint)
-    except Exception as exc:
-        carried = False
-        await _audit(
-            request,
-            operation=OP_PROVIDER_PUT,
-            outcome="error",
-            error=f"consent_carry:{type(exc).__name__}",
-            resources=f"decisions_consent.json endpoint={endpoint}",
-        )
+    # One switch at a time, end to end: the config write and the consent carry that
+    # follows it are one change, and two PUTs interleaving them would leave the
+    # config naming one address and the keystone the other.
+    async with _provider_switch_lock():
+        try:
+            async with _get_config_lock():
+                await asyncio.to_thread(_write_provider, endpoint, model, timeout_ms)
+            await _hot_apply_after_write()
+        except Exception as exc:
+            # Class only: a config error can carry a path, and the row names what was
+            # being written rather than why the disk refused it.
+            await _audit(
+                request,
+                operation=OP_PROVIDER_PUT,
+                outcome="error",
+                error=type(exc).__name__,
+                resources=f"decisions.provider endpoint={endpoint}",
+            )
+            return web.json_response(
+                {"error": "the provider could not be saved", "code": _CODE_PROVIDER_WRITE_FAILED},
+                status=500,
+            )
+        # The provider is written and applied from here on, so a failure to carry
+        # consent must not read as "nothing changed": it is reported as not carried,
+        # which is also the state the keystone is in -- nothing is sent until the
+        # owner turns the switch off and on again.
+        try:
+            carried = await asyncio.to_thread(_carry_consent, endpoint)
+        except Exception as exc:
+            carried = False
+            await _audit(
+                request,
+                operation=OP_PROVIDER_PUT,
+                outcome="error",
+                error=f"consent_carry:{type(exc).__name__}",
+                resources=f"decisions_consent.json endpoint={endpoint}",
+            )
     await _audit(
         request,
         operation=OP_PROVIDER_PUT,
         outcome="allowed",
         resources=f"decisions.provider endpoint={endpoint} model={model} consent_carried={carried}",
     )
-    payload = await asyncio.to_thread(_provider_payload)
-    payload["consent_carried"] = carried
-    return web.json_response(payload)
+    return web.json_response(await asyncio.to_thread(_provider_payload))

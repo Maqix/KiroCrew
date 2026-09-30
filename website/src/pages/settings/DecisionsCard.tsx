@@ -543,7 +543,15 @@ export function DecisionsCard() {
           {i18nT('pages.developer.featurePreviewsTab.decisions_endpoint_pointer')}
         </p>
       )}
-      {view.supported && <DecisionsProviderPicker frozen={frozen} />}
+      {/* A hand-written loopback address is sent no Jev key; a tunnel to hosted Jev
+          would then fail with 401 and decisions would quietly stop, so say it here,
+          where the owner is looking, not only in the gateway log. */}
+      {view.supported && providerQ.data?.active === 'custom' && providerQ.data.loopback === true && (
+        <p className="text-[12px] text-warn">
+          {i18nT('pages.developer.featurePreviewsTab.decisions_custom_loopback_no_key')}
+        </p>
+      )}
+      {view.supported && <DecisionsProviderPicker frozen={frozen} cardReadFailed={readFailed} />}
       {/* The redirected-config state: consent stands for one address, config.json now
           names another, so nothing is sent. A WARNING, not a paragraph: it is the one
           state where the switch reads "on" and the truth is "off". */}

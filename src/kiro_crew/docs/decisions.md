@@ -87,7 +87,7 @@ Instead of Jev, decisions can be answered by an open-weight model running on you
 
 "Accuracy vs Jev" is how many of Jev's correct answers the model also got right on the 231 public items of [JevBench](https://github.com/fstandhartinger/jevbench), measured on a 10-core CPU with no GPU. A machine below 12 GB is better served by hosted Jev, and the card recommends it there.
 
-A local model is slower than Jev, and each decision point waits only a few seconds for an answer. A slower answer is skipped and the point does what it does without Jev, so a slow model makes fewer decisions, not worse ones. Plumb-4B is the better choice for the background points (risky tool calls, recalled memories, compaction scoring); Laya is fast enough for everything but misses more of the hard judgements.
+A local model is slower than Jev, and each decision point waits only a few seconds for an answer. A slower answer is skipped and the point does what it does without Jev, so a slow model makes fewer decisions, not worse ones. The accuracy figures on the card were measured with no time limit, and the answers that take longest are mostly the hard ones, so treat them as an upper bound: with its 5-second limit, Plumb-4B skips many of the long, hard decisions its "hard" figure counts. Plumb-4B is the better choice for the background points (risky tool calls, recalled memories, compaction scoring); Laya is fast enough for everything but misses more of the hard judgements.
 
 You install and start the model's server yourself; Kiro Crew only sends it requests. Use a separate Python 3.12 virtual environment for each.
 

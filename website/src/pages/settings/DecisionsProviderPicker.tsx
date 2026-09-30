@@ -55,7 +55,14 @@ function portFrom(draft: string): number | null {
  * memory suits. Choosing one writes a preset id and a port -- never an address --
  * through the owner-only provider route, which builds the loopback URL itself.
  */
-export function DecisionsProviderPicker({ frozen }: { frozen: boolean }) {
+export function DecisionsProviderPicker({
+  frozen,
+  cardReadFailed = false,
+}: {
+  frozen: boolean
+  /** The card already shows its own read-failure notice: one failure, one notice. */
+  cardReadFailed?: boolean
+}) {
   const qc = useQueryClient()
   const headingId = useId()
   const providerQ = useQuery<DecisionsProviderData>({
@@ -95,7 +102,7 @@ export function DecisionsProviderPicker({ frozen }: { frozen: boolean }) {
   // is drawn. Any other failed read says so, with the hand-off -- there is no draft
   // to lose before the list has loaded.
   if (providerQ.isError) {
-    return isNotFoundError(providerQ.error) ? null : (
+    return isNotFoundError(providerQ.error) || cardReadFailed ? null : (
       <ErrorNotice
         variant="inline"
         askAgent
@@ -143,6 +150,7 @@ export function DecisionsProviderPicker({ frozen }: { frozen: boolean }) {
       <input
         type="radio"
         name={headingId}
+        aria-label={name}
         className="mt-1"
         checked={chosen === id}
         disabled={frozen || saveMut.isPending}
@@ -168,6 +176,15 @@ export function DecisionsProviderPicker({ frozen }: { frozen: boolean }) {
         {i18nT('pages.developer.featurePreviewsTab.decisions_provider_label')}
       </p>
       <p className="text-[12px] text-muted m-0">{i18nT('pages.developer.featurePreviewsTab.decisions_provider_desc')}</p>
+      {/* Without the memory figure no preset can be marked recommended; say so
+          rather than let the badge silently vanish. The picker itself still works. */}
+      {memQ.isError && !cardReadFailed && (
+        <ErrorNotice
+          variant="inline"
+          askAgent
+          message={i18nT('pages.developer.featurePreviewsTab.decisions_provider_memory_unavailable')}
+        />
+      )}
       {option(
         PRESET_JEV,
         i18nT('pages.developer.featurePreviewsTab.decisions_provider_jev'),
@@ -208,6 +225,7 @@ export function DecisionsProviderPicker({ frozen }: { frozen: boolean }) {
             <input
               type="text"
               inputMode="numeric"
+              aria-label={i18nT('pages.developer.featurePreviewsTab.decisions_provider_port')}
               className="w-24 rounded border border-border bg-bg px-2 py-0.5 text-[12px] text-text font-mono"
               value={shownPort}
               disabled={frozen || saveMut.isPending}
@@ -223,12 +241,16 @@ export function DecisionsProviderPicker({ frozen }: { frozen: boolean }) {
               })}
             </p>
           )}
-          <p className="text-[12px] text-muted m-0">{i18nT('pages.developer.featurePreviewsTab.decisions_provider_start')}</p>
-          <CodeBlock
-            code={chosenPreset.serve_command.replace(/\{port\}/g, port === null ? String(chosenPreset.default_port) : String(port))}
-            lang="bash"
-            complete
-          />
+          {/* No command while the port is invalid: a command naming a different port
+              from the one in the field is one the reader would copy by mistake. */}
+          {port !== null && (
+            <>
+              <p className="text-[12px] text-muted m-0">
+                {i18nT('pages.developer.featurePreviewsTab.decisions_provider_start')}
+              </p>
+              <CodeBlock code={chosenPreset.serve_command.replace(/\{port\}/g, String(port))} lang="bash" complete />
+            </>
+          )}
           <a
             href={chosenPreset.setup_doc}
             target="_blank"
@@ -242,15 +264,22 @@ export function DecisionsProviderPicker({ frozen }: { frozen: boolean }) {
       )}
       <p className="text-[11px] text-muted m-0">{i18nT('pages.developer.featurePreviewsTab.decisions_provider_measured')}</p>
       {needsSave && (
-        <div>
-          <Btn
-            disabled={!canSave}
-            onClick={() =>
-              saveMut.mutate(chosenPreset ? { preset: chosen, port: port ?? undefined } : { preset: chosen })
-            }
-          >
-            {i18nT('pages.developer.featurePreviewsTab.decisions_provider_use')}
-          </Btn>
+        <div className="flex flex-col gap-1">
+          {/* The picked option is not live yet; say what keeps answering meanwhile,
+              and that switching before the server runs costs nothing. */}
+          <p className="text-[12px] text-muted m-0">
+            {i18nT('pages.developer.featurePreviewsTab.decisions_provider_pending')}
+          </p>
+          <div>
+            <Btn
+              disabled={!canSave}
+              onClick={() =>
+                saveMut.mutate(chosenPreset ? { preset: chosen, port: port ?? undefined } : { preset: chosen })
+              }
+            >
+              {i18nT('pages.developer.featurePreviewsTab.decisions_provider_use')}
+            </Btn>
+          </div>
         </div>
       )}
       {/* No hand-off: a failed save is when the port field may hold a draft the
