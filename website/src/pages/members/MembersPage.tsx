@@ -77,12 +77,14 @@ import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
 import { useAppDispatch, useAppSelector } from '../../store'
+import { selectSlotMessages, selectSlotStreamState, selectSlotToolLog } from '../../store/chatSlice'
 import { markSlotRead } from '../../store/dashboardSlice'
 import { emitSlotRead, flushSlotRead } from '../../lib/slotReadRelay'
 import { setViewedThreadSlot, clearViewedThreadSlot } from '../../lib/viewedThread'
 import CrewAvatar from '../../components/CrewAvatar'
 import CrewStateAvatar from '../../components/CrewStateAvatar'
 import Glass from '../../components/Glass'
+import { resolvePillActivity, type PillActivityKind } from './pillActivity'
 import ChatPane from '../../components/ChatPane'
 import type { ThreadHooks } from '../../app-sdk/messageRenderers'
 import { threadsApi, threadsQueryKey } from '../../api/threads'
@@ -380,6 +382,20 @@ const PATROL_STOPPED_REASON: Record<string, string> = {
   runtime_budget: 'pages.membersPage.patrol_stopped_runtime_budget',
   approval_stalled: 'pages.membersPage.patrol_stopped_approval_stalled',
   interrupted: 'pages.membersPage.patrol_stopped_interrupted',
+}
+/** The identity pill's second line, per activity kind (`pillActivity.ts`).
+ *  `tool` is absent on purpose: that line is the tool call's own purpose text,
+ *  not a catalog string. `idle` has two spellings — with the time since the
+ *  thread last moved when one is known, bare when it is not. File-scope and
+ *  indexed in place so the key checker resolves every entry. */
+const PILL_ACTIVITY_KEY: Record<Exclude<PillActivityKind, 'tool'>, string> = {
+  thinking: 'pages.membersPage.pill_thinking',
+  writing: 'pages.membersPage.pill_writing',
+  compacting: 'pages.membersPage.pill_compacting',
+  stopping: 'pages.membersPage.pill_stopping',
+  working: 'pages.membersPage.drawer_working',
+  delegated: 'pages.membersPage.drawer_delegated_working',
+  idle: 'pages.membersPage.pill_idle',
 }
 /** How often the "next wake in …" countdown in the drawer re-reads the clock.
  *  Coarser than the popover's per-second tick on purpose: the drawer line is
@@ -1814,6 +1830,26 @@ export default function MembersPage() {
   const activeSlotLastTs = useAppSelector(
     (s) => (activeSlot ? s.dashboard.slots.find(sl => sl.key === activeSlot)?.last_ts : undefined),
   )
+  // The identity pill's second line — what the crewmate is doing now. Four
+  // primitive reads, each memo-safe on its own (a string or a stable entry
+  // ref), so the header does not re-render on every WS frame the slot
+  // receives; `resolvePillActivity` folds them into one line at render time.
+  // The key falls back to the roster's slot_key the same way the avatar does,
+  // so a thread whose confirmed slot has not resolved yet still reads live.
+  const pillSlotKey = activeSlot || active?.slot_key || ''
+  const pillStreamState = useAppSelector((s) => (pillSlotKey ? selectSlotStreamState(s, pillSlotKey) : 'idle'))
+  const pillLastRole = useAppSelector((s) => {
+    if (!pillSlotKey) return ''
+    const msgs = selectSlotMessages(s, pillSlotKey)
+    return msgs.length ? msgs[msgs.length - 1].role : ''
+  })
+  const pillLastTool = useAppSelector((s) => {
+    // The log also carries approval and activity rows; only a tool row has
+    // a purpose to show.
+    const log = selectSlotToolLog(s, pillSlotKey || null)
+    return log.findLast((e) => e.type === 'tool')
+  })
+  const pillLiveSlot = useAppSelector((s) => (pillSlotKey ? s.dashboard.slots.find((sl) => sl.key === pillSlotKey) : undefined))
   // Reactive document visibility AND focus, so the read effect below re-runs
   // when the user returns to a hidden tab or focuses the window — a plain
   // document.hidden read would leave the effect settled and the reveal
@@ -3046,14 +3082,52 @@ export default function MembersPage() {
                   size={30}
                   working="full"
                 />
-                {/* Title row = name (+ the ID when a label covers it). */}
-                <div className="min-w-0 flex items-center gap-1.5" data-testid="member-title-row">
-                  <div className="text-[13.5px] font-semibold truncate max-w-[24rem]">{crewDisplayName(active)}</div>
-                  {/* The ID stays visible when a label covers it — routes, crons
-                      and spawn params address the ID, never the label. */}
-                  {crewDisplayName(active) !== active.name && (
-                    <div className="text-[11px] font-mono text-muted truncate max-w-[11rem]" title={t('components.agentSelector.agent_id_tooltip', { name: active.name })}>{active.name}</div>
-                  )}
+                <div className="min-w-0 leading-tight">
+                  {/* Title row = name (+ the ID when a label covers it). */}
+                  <div className="min-w-0 flex items-center gap-1.5" data-testid="member-title-row">
+                    <div className="text-[13.5px] font-semibold truncate max-w-[24rem]">{crewDisplayName(active)}</div>
+                    {/* The ID stays visible when a label covers it — routes, crons
+                        and spawn params address the ID, never the label. */}
+                    {crewDisplayName(active) !== active.name && (
+                      <div className="text-[11px] font-mono text-muted truncate max-w-[11rem]" title={t('components.agentSelector.agent_id_tooltip', { name: active.name })}>{active.name}</div>
+                    )}
+                  </div>
+                  {/* Activity line — what the crewmate is doing right now, text
+                      only (the face above already carries presence, so no dot
+                      here). Always rendered, so the pill keeps one height
+                      whether the crewmate is busy or resting: a resting line
+                      says how long ago the thread last moved. The tool line is
+                      the call's own purpose, clamped in `pillActivity.ts`;
+                      `truncate` is the belt to that cap's braces. */}
+                  {(() => {
+                    const act = resolvePillActivity({
+                      streamState: pillStreamState,
+                      lastRole: pillLastRole,
+                      lastToolPurpose: pillLastTool?.purpose ?? '',
+                      lastToolName: pillLastTool?.text ?? '',
+                      lastToolDone: !!pillLastTool?.output,
+                      running: !!isRunning(active),
+                      delegatedOnly: !!pillLiveSlot?.subagents_running && !pillLiveSlot?.running,
+                    })
+                    const lastActive = (activeView ?? active).last_active_ts
+                    const label = act.kind === 'tool'
+                      ? act.text!
+                      : act.kind === 'idle' && lastActive
+                        ? t('pages.membersPage.pill_idle_since', { when: timeAgo(lastActive) })
+                        : t(PILL_ACTIVITY_KEY[act.kind])
+                    // Out of the button's accessible name: the name is WHO the
+                    // thread is with, and this line changes several times a
+                    // turn. The panel's identity row carries the same state
+                    // for assistive tech.
+                    return (
+                      <div
+                        className="text-[11px] text-muted truncate max-w-[24rem]"
+                        data-testid="member-pill-activity"
+                        data-activity={act.kind}
+                        aria-hidden="true"
+                      >{label}</div>
+                    )
+                  })()}
                 </div>
               </Glass>
               {/* The panel's opener. Same icon and hit-target as the chat
