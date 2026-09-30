@@ -10414,16 +10414,19 @@ class GatewayOrchestrator:
                     # dedicated synthesis turn (see chat_runner drain/idle branch).
                     # Ordering guarantees running_agents_for == [] here on the last
                     # agent (info.done set + _running_count decremented first).
+                    # A sibling the spawn gate is still holding is NOT in that
+                    # set, yet it will start and report on its own, so it keeps
+                    # the synthesis disarmed; its own completion arms it.
                     if not _is_orchestrator:
                         try:
-                            _still_running = (
-                                self.subagent_mgr.running_agents_for(parent_key)
-                                if self.subagent_mgr
-                                else None
+                            _arm_synthesis = (
+                                self.subagent_mgr is not None
+                                and self.subagent_mgr.running_agents_for(parent_key) == []
+                                and await _subagent_queued_count(self.subagent_mgr, parent_key) == 0
                             )
                         except Exception:
-                            _still_running = None  # error → don't arm (fail safe)
-                        if _still_running == []:
+                            _arm_synthesis = False  # error → don't arm (fail safe)
+                        if _arm_synthesis:
                             _injection_slot._pending_synthesis = True
 
                     # ── Skip injection for blocking-tool-collected results ──

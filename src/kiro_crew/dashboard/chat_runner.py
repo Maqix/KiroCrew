@@ -9425,10 +9425,12 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
             state.push_slots_update()
             if await _start_next_queued_turn(state, slot):
                 return
-        if (
-            state.subagents is None
-            or state.subagents.running_agents_for(f"dashboard:{slot.key}")
-            or slot._subagent_deliveries_inflight != 0
+        # The same attached-children predicate the teardown guards use: running
+        # children, results still being delivered, AND children the gate is
+        # still holding, which are absent from the running set but will start
+        # and report on their own. A synthesis before them says "all done" early.
+        if state.subagents is None or await subagents_attached_async(
+            state, slot, f"dashboard:{slot.key}", "pending_synthesis"
         ):
             await _finish_queue_cycle(state, slot)
             return
@@ -9503,8 +9505,10 @@ async def _finish_queue_cycle(
         # user turn to owe a held note to -- withholding there would lose it.
         and state._slots.get(slot.key) is slot
         and state.subagents is not None
-        and not state.subagents.running_agents_for(f"dashboard:{slot.key}")
-        and slot._subagent_deliveries_inflight == 0
+        # Queued children count, as in `_run_pending_synthesis`.
+        and not await subagents_attached_async(
+            state, slot, f"dashboard:{slot.key}", "finish_queue_cycle"
+        )
     )
 
     # Before any successor is dispatched. A held note's CONTEXT half drains into

@@ -8,7 +8,13 @@ import time as _time
 from typing import TYPE_CHECKING, Any, Mapping
 
 from .._component import ManagerComponent
-from .types import DeferPoint, FairnessSettings, tombstone_terminal_state
+from .types import (
+    DeferPoint,
+    FairnessSettings,
+    QueuedRun,
+    QueuedRunListing,
+    tombstone_terminal_state,
+)
 
 _glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
 
@@ -28,6 +34,67 @@ _STATE_READ_BACKOFF_SECS = 0.2
 #: a number rather than a predicate, and one advisory unit during an outage the
 #: log already names is the whole price.
 UNKNOWN_PENDING = 1
+
+#: Most store rows one queued listing returns. A listing is a page for a reader,
+#: not an inventory a caller acts on, so the oldest this many are enough; the
+#: Stop-all cascade has its own unbounded read (``taskq_pending_ids_for``). A
+#: listing that stopped here says so (``QueuedRunListing.truncated``), since a
+#: cut-off tail otherwise reads as spawns that were never accepted.
+QUEUED_LISTING_CAP = 100
+
+#: How many of a row's latest events are scanned for its last ``deferred`` one.
+#: A parked row writes one per admit wait, so its newest event is normally that.
+_DEFER_EVENT_SCAN = 8
+
+
+def _read_queued_rows(
+    store: "_taskq.TaskStore",
+    *,
+    agent_id: str | None,
+    session_key: str | None,
+    exclude_ids: list[str],
+) -> "tuple[list[tuple[_taskq.TaskRecord, str]], bool]":
+    """Store read for :meth:`_TaskqBridgeMixin.taskq_queued_runs_async`.
+
+    Runs on the writer thread. Returns the rows and whether the listing stopped
+    at :data:`QUEUED_LISTING_CAP` with more rows left: one row past the cap is
+    read to tell the two apart. Each row comes back with its deferral sentence,
+    which is filled only while the row is still parked (``next_run_at`` in the
+    future). A row past its admit wait that now waits for a slot still carries
+    its last ``deferred`` event, and that sentence does not describe its wait.
+    """
+    from kiro_crew import taskq as _taskq
+
+    truncated = False
+    if agent_id is not None:
+        rec = store.get(agent_id)
+        unstarted = _taskq.CLAIMABLE | {_taskq.ADMITTED}
+        recs = (
+            [rec]
+            if rec is not None and rec.kind == _taskq.KIND_SUBAGENT and rec.state in unstarted
+            else []
+        )
+    else:
+        recs = store.list_pending(
+            _taskq.KIND_SUBAGENT,
+            session_key=session_key,
+            exclude_ids=exclude_ids,
+            limit=QUEUED_LISTING_CAP + 1,
+        )
+        truncated = len(recs) > QUEUED_LISTING_CAP
+        recs = recs[:QUEUED_LISTING_CAP]
+    now = store.now()
+    out: list[tuple[_taskq.TaskRecord, str]] = []
+    for rec in recs:
+        detail = ""
+        if rec.next_run_at is not None and rec.next_run_at > now:
+            for event in reversed(store.events(rec.id, limit=_DEFER_EVENT_SCAN)):
+                if event.kind == "deferred":
+                    detail = str(event.data.get("reason") or "")
+                    break
+        out.append((rec, detail))
+    return out, truncated
+
 
 if TYPE_CHECKING:
     from kiro_crew import taskq as _taskq
@@ -992,6 +1059,97 @@ class _TaskqBridgeMixin(ManagerComponent):
         except _taskq.TaskStoreUnavailable:
             return []
         return [r.id for r in rows]
+
+    async def taskq_queued_runs_async(
+        self, parent_session_key: str | None = None, *, agent_id: str | None = None
+    ) -> QueuedRunListing:
+        """Accepted spawns with no registered run, oldest first.
+
+        Both halves of the queue are read: the dispatch window (``_queue``) and
+        the store's rows, which include every gate-deferred row and every row
+        waiting outside the window. *parent_session_key* ``None`` means every
+        parent. *agent_id* narrows the read to that one id, and there the store
+        row may also be ``admitted``: a claim the pump is awaiting has left
+        ``queued`` but is not registered yet, and answering "not found" for it
+        would be the gap this method closes.
+
+        A registered id is never answered here. The registry answers it, and a
+        live run's row can be claimable for a moment while its wake lands.
+
+        An unreadable store leaves the window half. This is a listing, so an
+        outage cannot be answered with an invented row. A listing past
+        :data:`QUEUED_LISTING_CAP` store rows returns the oldest that many and
+        ``truncated=True``.
+        """
+        from kiro_crew import taskq as _taskq
+
+        manager = self._manager
+        if agent_id is not None and agent_id in manager._agents:
+            return QueuedRunListing(())
+        rows: list[tuple[_taskq.TaskRecord, str]] = []
+        truncated = False
+        store = self.taskq_store()
+        if store is not None:
+            live = [aid for aid, info in manager._agents.items() if not info.done]
+            try:
+                rows, truncated = await store.run(
+                    _read_queued_rows,
+                    store,
+                    agent_id=agent_id,
+                    session_key=parent_session_key,
+                    exclude_ids=live,
+                )
+            except _taskq.TaskStoreUnavailable:
+                _glue_logger.warning(
+                    "taskq: queued rows for %s unreadable; listing the window only",
+                    agent_id or parent_session_key or "<any parent>",
+                    exc_info=True,
+                )
+        out: list[QueuedRun] = []
+        seen: set[str] = set()
+        for rec, detail in rows:
+            if rec.id in manager._agents:
+                continue
+            params = dict(rec.params)
+            parent = rec.session_key or str(params.get("parent_session_key") or "")
+            out.append(self._queued_run(rec.id, params, parent, rec.created_at, detail))
+            seen.add(rec.id)
+        # Window entries the store did not return: legacy in-memory and
+        # restricted work, which has no row. A ``_resume_id`` entry belongs to a
+        # resident run, not to an unstarted one. Past the cap the store did not
+        # return every row, so an entry missing from it may just be a later row;
+        # the listing already says it is partial.
+        for params in [] if truncated else list(manager._queue):
+            aid = str(params.get("_preassigned_id") or "")
+            if not aid or params.get("_resume_id") or aid in seen or aid in manager._agents:
+                continue
+            if agent_id is not None and aid != agent_id:
+                continue
+            parent = str(params.get("parent_session_key") or "")
+            if parent_session_key is not None and parent != parent_session_key:
+                continue
+            out.append(self._queued_run(aid, params, parent, 0.0, ""))
+        return QueuedRunListing(tuple(out), truncated)
+
+    def _queued_run(
+        self,
+        agent_id: str,
+        params: Mapping[str, Any],
+        parent: str,
+        accepted_at: float,
+        detail: str,
+    ) -> QueuedRun:
+        label = self._manager._queue_wait.get(parent) or {}
+        return QueuedRun(
+            id=agent_id,
+            task=str(params.get("task") or ""),
+            parent_session_key=parent,
+            agent=str(params.get("agent") or params.get("crew") or ""),
+            app=str(params.get("app") or ""),
+            accepted_at=float(accepted_at or 0.0),
+            reason=str(label.get("reason") or ""),
+            reason_detail=detail,
+        )
 
     def taskq_cancel_boundary_store(
         self,

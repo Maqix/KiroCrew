@@ -46,6 +46,12 @@ from kiro_crew.subagent import (
     visible_agent_names,
 )
 from kiro_crew.subagent_persistence import agent_dir_for_display
+from kiro_crew.subagent_wait_reasons import (
+    QUEUED_REASON_ADAPTIVE_CAP_ZERO,
+    QUEUED_REASON_CONCURRENCY_LIMIT,
+    QUEUED_REASON_LOW_MEMORY,
+    QUEUED_REASON_POSTURE_CRITICAL,
+)
 from kiro_crew.validation import (
     MAX_MEDIUM_STRING,
     MAX_SHORT_STRING,
@@ -76,6 +82,11 @@ _MAX_ROSTER_NAMES = 8
 # covers both producers. Deliberately NOT trustworthy attribution -- the prefix
 # says it is not, so a reader cannot mistake a pid for a session identity.
 _OWNER_UNRESOLVED_PREFIX = "unresolved:"
+
+#: The ``error`` a gateway answers ``GET /api/spawn/{id}`` with when it holds no
+#: run under that id (a 404). Matched exactly, so a transport failure, whose
+#: message says something else, is never mistaken for it.
+_NOT_FOUND = "not found"
 
 
 def _audit_owner(parent_session: str) -> str:
@@ -1056,15 +1067,53 @@ def spawn_release(name: str, args: dict[str, Any]) -> str:
     return f"Released conversation {conv} — it can no longer be continued."
 
 
+#: What a queued record's wait kind means, for one the gateway sent without the
+#: gate's own sentence: a capacity wait, or a deferral already past its admit
+#: wait and not yet re-checked.
+_QUEUED_KIND_TEXT: dict[str, str] = {
+    QUEUED_REASON_LOW_MEMORY: "not enough free memory to start it",
+    QUEUED_REASON_POSTURE_CRITICAL: "host memory is critically low",
+    QUEUED_REASON_ADAPTIVE_CAP_ZERO: (
+        "starts are paused while the host is low on memory or overloaded"
+    ),
+    QUEUED_REASON_CONCURRENCY_LIMIT: "waiting for a free slot behind the concurrency limit",
+}
+
+
+def _queued_why(record: Mapping[str, Any]) -> str:
+    """Why a queued spawn waits: the gate's sentence, else its kind in words."""
+    detail = str(record.get("reason_detail") or "").strip()
+    if detail:
+        return redact(detail)
+    return _QUEUED_KIND_TEXT.get(str(record.get("reason") or ""), "waiting to start")
+
+
 def spawn_list(name: str, args: dict[str, Any]) -> str:
     d = mcp_core._get("/api/spawn")
     agents = d.get("agents", [])
+    # Accepted spawns with no run yet (gate-deferred, or waiting for a slot);
+    # the gateway lists them apart from the runs.
+    queued = d.get("queued") or []
+    if not isinstance(queued, list):
+        queued = []
 
     def _redact(text: str) -> str:
         return redact(text)
 
     lines: list[str] = []
-    if not agents:
+    for q in queued:
+        if isinstance(q, Mapping) and q.get("id"):
+            lines.append(
+                f"{q['id']}  [queued] (not started: {_queued_why(q)})  "
+                f"{_redact(str(q.get('task') or ''))[:60]}"
+            )
+    if d.get("queued_truncated") is True:
+        # The gateway lists only the oldest queued spawns; the rest exist too.
+        lines.append(
+            "(more spawns are queued than listed here; they are accepted and start "
+            "on their own -- do not spawn them again)"
+        )
+    if not agents and not lines:
         lines.append("No subagents running.")
     else:
         for a in agents:
@@ -1160,8 +1209,16 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
     # "approve it ... to start this run", so this tool must not report work
     # under way for it either.
     awaiting = running and d.get("awaiting_approval") is True
+    # Accepted but not started (the gate deferred it, or it waits for a slot).
+    # It is real accepted work: re-spawning it would run it twice.
+    queued = running and d.get("queued") is True
     result = d.get("result") or ""
-    if running and not result:
+    if queued:
+        result = (
+            f"(not started — queued: {_queued_why(d)}. It starts on its own once that "
+            "clears and its completion event arrives as usual; do not spawn it again)"
+        )
+    elif running and not result:
         turns = d.get("turns", 0)
         if awaiting:
             result = (
@@ -1200,7 +1257,7 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         result = f"[{' | '.join(hdr)}]\n{result}"
 
     if running:
-        status = ["AWAITING-APPROVAL" if awaiting else "RUNNING"]
+        status = ["QUEUED" if queued else "AWAITING-APPROVAL" if awaiting else "RUNNING"]
         if "elapsed" in d:
             status.append(f"{d['elapsed']}s")
         if "turns" in d:
@@ -1417,10 +1474,30 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     # events still arrive, so the caller is told how to keep following them
     # rather than told they failed.
     _unsettled: dict[str, str] = {}
+    # Members the gate DEFERRED at accept time (memory floor, critical posture,
+    # adaptive cap at 0) that still had not started when the wait ended, with
+    # the reason they wait. Each is reported ONCE, in the ``queued`` record
+    # below, and never as an error: a caller that sees an error for accepted
+    # work dispatches it again, and then it runs twice.
+    never_started: dict[str, str] = {}
     for aid in sa_ids:
         sa_st = mcp_core._get(f"/api/spawn/{aid}")
         sa_name = _redact_sa(sa_st.get("agent", ""))
         label = sa_name if sa_name else aid
+        if (
+            aid in sa_deferred
+            and not sa_st.get("done")
+            # A gateway that lists queued rows says so; an older one answers
+            # 404 for a row it holds but has not registered as a run.
+            and (sa_st.get("queued") is True or sa_st.get("error") == _NOT_FOUND)
+        ):
+            still_running += 1
+            never_started[aid] = (
+                _redact_sa(str(sa_st["reason_detail"]))
+                if sa_st.get("reason_detail")
+                else sa_deferred[aid]
+            )
+            continue
         if sa_st.get("error"):
             errored += 1
             # Only mark as settled if done is also true (confirmed terminal
@@ -1488,13 +1565,9 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
                 }
             )
         )
-    # Members the gate DEFERRED at accept time (memory floor, critical posture,
-    # adaptive cap at 0) that never reached a settled state within the wait. A
-    # deferred row is not registered as a run, so the per-id poll above cannot
-    # see it; without this line the caller's only trace of it is a bare error
-    # entry, and the reason -- the one fact that says what to change -- stays
-    # in the gateway log.
-    never_started = {aid: why for aid, why in sa_deferred.items() if aid not in _settled_ids}
+    # Members the gate deferred that still had not started (collected above). A
+    # deferred row has no run yet, so without this record the reason -- the one
+    # fact that says what to change -- would stay in the gateway log.
     if never_started:
         sa_results.append(
             json.dumps(
