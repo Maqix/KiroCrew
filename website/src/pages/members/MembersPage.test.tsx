@@ -73,6 +73,9 @@ vi.mock('../../api/client', () => ({
     // workspace — so the dialog renders without its own options-failed notice
     // in every case that does not open it.
     agentCatalog: vi.fn(() => Promise.resolve({ agents: [], default_agent: 'kirocrew' })),
+    // The crew editor's roster read (KiroCrewAgent list), fired when the
+    // thread-header pencil opens the in-place editor (CREW-18688).
+    kirocrewAgents: vi.fn(() => Promise.resolve({ agents: [], default_agent: 'kirocrew' })),
     workspaces: vi.fn(() => Promise.resolve({ workspaces: [{ name: 'default' }] })),
     createWorkspace: vi.fn(() => Promise.resolve({ name: 'staging' })),
     createKirocrewAgent: vi.fn(() => Promise.resolve({ ok: true })),
@@ -105,6 +108,20 @@ vi.mock('../../api/threads', async (importOriginal) => {
  * so the + menu case below can assert the per-chat Terminal row is offered on
  * a member DM. */
 vi.mock('../chat/ActivityViewer', () => ({ default: () => null }))
+// The crew editor is exercised by its own suite. Here we only need to prove the
+// thread-header pencil OPENS it in place (CREW-18688) — a route change no more —
+// so a probe renders the crew it was pointed at.
+vi.mock('../../components/crew/CrewEditorDialog', () => ({
+  default: ({ ctl }: { ctl: { editing: string } }) =>
+    ctl.editing ? <div data-testid="crew-editor-dialog-open">{ctl.editing}</div> : null,
+}))
+// The editor hook runs inside MembersPage even when closed; its option/roster
+// reads are gated on an open editor, but stub the module so the hook needs no
+// live query wiring in this suite. Returns a minimal controller the probe reads.
+vi.mock('../../components/crew/useCrewEditor', () => ({
+  useCrewEditor: ({ editingName }: { editingName: string }) => ({ open: !!editingName, editing: editingName }),
+  INHERIT_MODEL: 'auto',
+}))
 vi.mock('../chat/FilesHomePanel', () => ({ default: () => null }))
 vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
 vi.mock('../../components/DiffPanel', () => ({ default: () => null }))
@@ -3051,8 +3068,6 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
 })
 
 describe('MembersPage member edit entry (issue #9425)', () => {
-  const EDIT_LINK = '/capabilities?tab=crews&crew=oncall'
-
   beforeEach(() => { localStorage.clear() })
 
   it('the DM header carries a pencil right of the name, named "Edit crewmate", that opens this crewmate\'s editor', async () => {
@@ -3074,11 +3089,11 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     expect(nameEl.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.queryByTestId('member-panel-toggle')).toBeNull()
     fireEvent.click(btn)
-    // Mutation check on the DESTINATION: this page never writes — the crew
-    // manager opens THIS crew's editor. No `&avatar=1`: the builder is one
-    // row inside that editor, not where an "edit this member" click lands.
-    expect(navigateSpy).toHaveBeenCalledWith(EDIT_LINK)
-    expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('avatar=1'))
+    // CREW-18688: the pencil opens the crew editor as a MODAL on this page,
+    // pointed at THIS crewmate — no route change. The probe reports the crew
+    // the shared editor controller was opened for.
+    expect(await screen.findByTestId('crew-editor-dialog-open')).toHaveTextContent('oncall')
+    expect(navigateSpy).not.toHaveBeenCalled()
   })
 
   it('the pencil is invisible at rest, revealed by hovering the title row or by focus, and low-contrast-persistent on touch', async () => {
@@ -3127,11 +3142,14 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     expect(header.className).toMatch(/\bpy-2\b/)
   })
 
-  it('encodes the crew name in the deep link', async () => {
+  it('opens the editor for the exact crew name, special characters and all', async () => {
     await renderPage([row({ name: 'on call/2', slug: 'on-call-2', bound: true, slot_key: 'member-on-call-2' })])
     fireEvent.click(await rosterRow('on call/2'))
     fireEvent.click(await screen.findByTestId('member-edit-name-button'))
-    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=on%20call%2F2')
+    // In-place editor, pointed at the crew's exact NAME (identity), no route
+    // change and no URL-encoding round trip to get wrong.
+    expect(await screen.findByTestId('crew-editor-dialog-open')).toHaveTextContent('on call/2')
+    expect(navigateSpy).not.toHaveBeenCalled()
   })
 })
 

@@ -18,9 +18,11 @@
  * DM slot, because a member thread IS a chat slot. Settings — the template it
  * is built from, wake sources, memory, cloud — live on the crewmate's detail
  * page (the crew editor), never in the panel.
- * Configuration WRITES are deliberately absent — the header pencil
- * navigates to the existing crew manager (/capabilities?tab=crews), so this
- * page never becomes a second editor.
+ * Configuration WRITES do not live in the PANEL, but the header pencil now
+ * opens the crew editor as an in-page MODAL (CrewEditorDialog, driven by the
+ * shared useCrewEditor) — the SAME editor the crew manager mounts, so editing
+ * a bot happens here without a route change (CREW-18688). One write path,
+ * reached from two surfaces; this page is not a second, divergent editor.
  *
  * Identity is the exact CREW NAME, never the slug: slugification is lossy
  * (`Oncall` and `oncall` share a slug and therefore one thread directory),
@@ -54,7 +56,7 @@ import NewCrewmateDialog, { type CreatedCrewmate } from './NewCrewmateDialog'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
 import { useTranslation } from 'react-i18next'
 import { api, type CrewTeam, type MemberActivityEntry, type MemberRosterRow } from '../../api/client'
-import { crewDisplayName } from '../../components/AgentSelector'
+import { crewDisplayName, type KiroCrewAgent } from '../../components/AgentSelector'
 import {
   MEMBERS_ROSTER_QUERY_KEY,
   memberActivityQueryKey,
@@ -64,6 +66,8 @@ import {
   type MemberThreadOutcome,
 } from '../../api/membersQuery'
 import { teamsQuery } from '../../api/teamsQuery'
+import CrewEditorDialog from '../../components/crew/CrewEditorDialog'
+import { useCrewEditor } from '../../components/crew/useCrewEditor'
 import {
   AUTONUDGE_LOOPS_QUERY_KEY,
   type AutoNudgeLoop,
@@ -136,16 +140,18 @@ const CREW_MANAGER_PATH = '/capabilities?tab=crews'
 /** Creating a crewmate happens IN this page: the header "+" and the empty-state
  *  hero open `NewCrewmateDialog`, which performs the same `POST /api/agents`
  *  write as the crew manager's create form (one write path, two front doors).
- *  The crew manager stays the editor for an EXISTING crewmate (`crewEditPath`
- *  below), so this page still never becomes a second editor. */
+ *  Editing an existing crewmate also happens IN this page now (CREW-18688): the
+ *  thread header's pencil opens `CrewEditorDialog` as a modal, driven by the
+ *  shared `useCrewEditor` state machine — the SAME editor the crew manager
+ *  mounts, so there is still one write path, reached from two surfaces. */
 
-/** One member's editor, reached THROUGH the crew manager: the deep link opens
- *  that crew's full editor — name, template, model, workspace, triggers, and
- *  the avatar row that leads on to the builder (see KiroCrewAgentsPage's
- *  `?crew=` latch). This page stays read-only — the face is clickable here,
- *  but every write still happens in the one editor. It deliberately does NOT
- *  add `&avatar=1`: from a chat surface the user asked for "edit this member",
- *  and landing straight in the builder answered a narrower question. */
+/** Deep link to the crew manager's full editor for one crew. No longer the
+ *  edit-a-member entry (that is the in-page pencil above); kept for the crew
+ *  dashboard's "Set up" hand-off, where landing on the standalone editor page
+ *  is the intended, roomier surface. Opens name, template, model, workspace,
+ *  triggers and the avatar row (see KiroCrewAgentsPage's `?crew=` latch). It
+ *  deliberately does NOT add `&avatar=1`: the user asked to set the member up,
+ *  not to jump straight into the avatar builder. */
 const crewEditPath = (name: string) =>
   `${CREW_MANAGER_PATH}&crew=${encodeURIComponent(name)}`
 /** The open member rides the URL (`?member=<name>`) so a reload keeps it
@@ -804,6 +810,48 @@ export default function MembersPage() {
   // path as a click.
   const [searchParams, setSearchParams] = useSearchParams()
   const urlMember = searchParams.get(MEMBER_PARAM) ?? ''
+
+  // CREW-18688: editing a bot opens the crew editor as a MODAL on this page,
+  // instead of navigating to /capabilities?tab=crews. The editor's whole
+  // state machine lives in useCrewEditor; CrewEditorDialog renders it. The
+  // pencil in the thread header sets `editingCrew`, which drives the hook.
+  const [editingCrew, setEditingCrew] = useState('')
+  // The crew editor needs the KiroCrewAgent roster (not the member roster):
+  // same query key KiroCrewAgentsPage uses, so the cache is shared and a write
+  // here reaches both. Only fetched while the editor is open.
+  const crewAgentsQuery = useQuery({
+    queryKey: ['kirocrew-agents'],
+    queryFn: () => api.kirocrewAgents(),
+    enabled: !!editingCrew,
+  })
+  const crewAgents = useMemo<KiroCrewAgent[]>(() => crewAgentsQuery.data?.agents || [], [crewAgentsQuery.data])
+  const crewDefaultAgent = crewAgentsQuery.data?.default_agent || ''
+  // The same prefix invalidation KiroCrewAgentsPage uses: it refreshes the
+  // member roster (a projection under the same prefix) AND the config the
+  // memory row reads, so an edit here updates the open thread's row without a
+  // manual refetch.
+  const refetchCrewAgents = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+    void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  }, [queryClient])
+  const closeCrewEditor = useCallback(() => setEditingCrew(''), [])
+  // A delete of the OPEN member's crew retires the thread: the record is gone,
+  // so clear `?member=` back to the roster rather than leave a thread mounted
+  // on a crew that no longer exists. (The editor cannot rename the identity —
+  // only display_name — so a save never needs a URL repoint.)
+  const onCrewDeleted = useCallback((name: string) => {
+    if (name === urlMember) setSearchParams({}, { replace: true })
+  }, [urlMember, setSearchParams])
+  const crewEditor = useCrewEditor({
+    editingName: editingCrew,
+    agents: crewAgents,
+    agentsLoaded: crewAgentsQuery.data !== undefined,
+    defaultAgent: crewDefaultAgent,
+    refetchAgents: refetchCrewAgents,
+    onClose: closeCrewEditor,
+    onDeleted: onCrewDeleted,
+  })
+
   // Teams: the roster's grouping and the main pane's OTHER occupant. The open
   // team rides the URL like the open member (`?team=<id>`); the two parameters
   // are exclusive -- opening one writes the URL without the other. The list is
@@ -2997,7 +3045,7 @@ export default function MembersPage() {
                 )}
                 <button
                   type="button"
-                  onClick={() => navigate(crewEditPath(active.name))}
+                  onClick={() => setEditingCrew(active.name)}
                   className="inline-flex shrink-0 items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover cursor-pointer focus-ring opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover/title:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-60"
                   aria-label={t('pages.membersPage.edit_member')}
                   title={t('pages.membersPage.edit_member')}
@@ -3900,6 +3948,11 @@ export default function MembersPage() {
         />
       )}
       <NewCrewmateDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreated={handleCreated} existingNames={existingNames} />
+      {/* CREW-18688: the bot-edit modal, opened in place by the thread header's
+          pencil (member-edit-name-button). Renders nothing until editingCrew is
+          set; the hook returns open=false until its roster read resolves the
+          record. */}
+      <CrewEditorDialog ctl={crewEditor} />
     </div>
   )
 }
