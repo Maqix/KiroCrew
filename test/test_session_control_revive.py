@@ -51,7 +51,8 @@ def _archive(state, caller, peer, *, messages=2, title="") -> str:
 
     The transcript is written first so the revive has something to bring back;
     the close is the production one, so the metadata line carries exactly what a
-    ✕ leaves behind (``closed``, ``closed_at``, title, workspace, creator).
+    ✕ leaves behind (``closed``, ``closed_at``, title, workspace, creator), with
+    ``closed_at`` then moved a minute earlier (see below).
     """
     for i in range(messages):
         peer.messages.append({"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"})
@@ -62,7 +63,22 @@ def _archive(state, caller, peer, *, messages=2, title="") -> str:
     key = peer.key
     asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=key))
     assert key not in state._slots
-    assert state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
+    meta = state.conversation_log.get_metadata(f"dashboard:{key}")
+    assert meta.get("closed")
+    # Backdate the close so it is strictly BEFORE any resume this test then runs.
+    #
+    # The resume's compare-and-clear (`clear_closed(only_if_closed_before=...)`) keeps
+    # the marker when `closed_at >= resume_started_at`, deliberately conservative so a
+    # close landing at the resume's own boundary is never erased. Both stamps come from
+    # `time.time()`, which on Windows through Python 3.12 advances once per ~15.6 ms
+    # clock tick: a close and the resume that follows it microseconds later can read the
+    # IDENTICAL float, the guard reads equal, the marker stays, and the revive answers
+    # `resume_conflict`. The precondition these tests mean is "this session was closed
+    # BEFORE the resume began", so state it instead of relying on the clock's
+    # granularity to imply it.
+    state.conversation_log.update_metadata(
+        f"dashboard:{key}", {"closed_at": float(meta["closed_at"]) - 60.0}
+    )
     return key
 
 
