@@ -116,12 +116,35 @@ def _url_payload_command(n: int) -> str:
 #: are independent additions to the same ratchet, so the number below is re-MEASURED
 #: off the tree rather than being the arithmetic sum of the deltas.
 #:
+#: Raised again for modelling ``${...}`` parameter expansion and ``#`` comments in the
+#: shell-char walk: a literal ``)`` inside either construct must not close a ``$(...)``
+#: substitution span, so ``_iter_shell_chars`` gains two syntax branches and their
+#: regression pins. The expansion interior also reports its own single/double-quote
+#: state and nests only on ``${`` (a bare ``{`` is an ordinary character), so the
+#: program-anchor walk reads a quoted ``$(`` as data and does not run the span past the
+#: ``}`` bash closes at -- control logic that keeps a nested publish from hiding below a
+#: truncated span, not machinery.
+#:
+#: Raised again for the ``${...}`` interior scanners. The interior is read by three
+#: small self-contained functions rather than an inline loop: ``_expansion_span`` finds
+#: the closing ``}`` (quote-aware, nesting only on ``${``), ``_skip_nested_substitution``
+#: skips a nested ``$(...)`` / backtick whole so a ``}`` inside one is inert to the
+#: expansion's brace depth, and ``_yield_expansion`` emits the span. They handle nesting
+#: BY CONSTRUCTION, and count an unclosed nested ``$(``'s ``(`` so a token-cut expansion
+#: does not zero the paren delta. They do not call the boundary walker
+#: ``_matching_close_paren`` -- it is a consumer of this generator, so calling it here
+#: recurses. ``_skip_nested_substitution`` counts nesting with a ``depth`` counter and a
+#: backtick-context flag in one loop, so a deeply nested ``$(`` costs an integer bump,
+#: not a Python stack frame or a re-scan -- ``is_denied`` returns a decision instead of
+#: raising ``RecursionError`` on attacker-chosen depth. The added lines are that control
+#: logic plus its regression pins and docstrings, not machinery.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 27_863
+_PACKAGE_LINE_BUDGET = 28_234
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
@@ -268,3 +291,49 @@ def test_url_payload_12kb_is_fast() -> None:
     assert 10_000 < len(cmd) <= MAX_SCANNABLE_COMMAND_CHARS
     assert is_sensitive_bash_command(cmd) is None
     assert _gate_seconds(cmd) < 2.0
+
+
+def _expansion_opener_flood(total: int) -> str:
+    """A command that is nothing but ``${`` openers with no closing ``}`` --
+    the shape that made the ``${`` branch rescan to end-of-text at every one of
+    the ``total // 2`` openers (Σ ≈ O(n²)) before the fix bounded the failed
+    scan. Sized to exactly ``MAX_SCANNABLE_COMMAND_CHARS`` so it is SCANNED, not
+    refused by the size ceiling."""
+    return "${" * (total // 2)
+
+
+def _self_kill_expansion_flood(total: int) -> str:
+    """The self-protection-kill floor path Opus timed: a ``kill $(pgrep -f
+    kirocrew)`` clause arms ``_self_floor_can_fire`` so the payload descent runs
+    (``_bare_kill_raw_bodies`` -> ``_iter_shell_chars``), preceded by a flood of
+    unclosed ``${`` openers. Both a zero-``}`` body and a body carrying a single
+    stray ``}`` are exercised by the callers below."""
+    suffix = " ; kill $(pgrep -f " + "kiro" + "crew)"
+    openers = (total - len(suffix)) // 2
+    return "${" * openers + suffix
+
+
+def test_expansion_opener_flood_is_fast() -> None:
+    """A ``"${" * k`` command (all openers, no closer) must not turn the gate's
+    synchronous walk quadratic. Before the fix a single walk took ~40 s; the
+    gate runs it twice, past the 2.0 s liveness bar and into the loop-stall
+    hard-exit range."""
+    cmd = _expansion_opener_flood(MAX_SCANNABLE_COMMAND_CHARS)
+    assert len(cmd) == MAX_SCANNABLE_COMMAND_CHARS
+    assert is_sensitive_bash_command(cmd) is None
+    assert _gate_seconds(cmd) < 2.0
+
+
+def test_self_kill_expansion_flood_is_fast() -> None:
+    """Same flood on the self-protection-kill floor path, which arms the
+    payload descent through ``_iter_shell_chars``. A stray ``}`` in the body
+    must not defeat the bound."""
+    cmd = _self_kill_expansion_flood(MAX_SCANNABLE_COMMAND_CHARS)
+    assert len(cmd) <= MAX_SCANNABLE_COMMAND_CHARS
+    assert _gate_seconds(cmd) < 2.0
+    # A stray ``}`` in the body must not defeat the bound either.
+    body_brace = ("${" * 8) + "}" + ("${" * 8) + " ; kill $(pgrep -f " + "kiro" + "crew)"
+    filler = "${" * ((MAX_SCANNABLE_COMMAND_CHARS - len(body_brace)) // 2)
+    cmd_brace = filler + body_brace
+    assert len(cmd_brace) <= MAX_SCANNABLE_COMMAND_CHARS
+    assert _gate_seconds(cmd_brace) < 2.0
