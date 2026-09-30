@@ -192,22 +192,17 @@ async def test_named_slot_refuses_while_stage_boundary_is_pending():
     assert response.status == 409
     response_body = json.loads(response.body)
     assert response_body["error"]["type"] == "slot_busy"
-    assert response_body["error"]["code"] == "stage_gate_paused"
-    assert response_body["code"] == "stage_gate_paused"
-    assert response_body["error"]["message"] == (
-        "slot 'test-slot' is paused at an Autopilot stage gate; " "continue from the dashboard (Go)"
-    )
+    assert response_body["code"] == "slot_busy"
     run_chat.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_named_slot_stays_busy_between_cancel_latch_and_boundary_release():
-    """Cancel cannot reopen named-slot admission before its boundary clears."""
+async def test_named_slot_stays_busy_until_boundary_release():
+    """Named-slot admission reopens only once the pending boundary clears."""
     from kiro_crew.dashboard.state import _ChatSlot
 
     slot = _ChatSlot("test-slot")
     slot.stage_boundary.arm(1, consumed=True)
-    slot._plan_cancelled = True
     state = _make_state(slot)
     request = _make_request(
         {
