@@ -896,7 +896,7 @@ fi
 # EVERY run, before any early exit: step 3b re-stages it when asked. This sits
 # ahead of the SKIP_ELECTRON return so a backend-only build cannot leave a
 # stale declaration behind for a hand-run electron-builder to pack.
-rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED"
+rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/GATEWAY-MODULES"
 
 if [ "${SKIP_ELECTRON:-0}" = "1" ]; then
   log "SKIP_ELECTRON=1 — backend(s) ready under $ELECTRON_DIR/backend-dist/"
@@ -959,6 +959,37 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
   trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED"' EXIT
   cp "$MARKER_SRC" "$ELECTRON_DIR/EXTERNALLY-MANAGED"
   log "Baking EXTERNALLY-MANAGED marker into the app from $MARKER_SRC"
+fi
+
+# --- 3b2. Baked edition gateway modules (optional) ----------------------------
+# An edition whose CLI launcher enters the gateway through its own `-m` module
+# (a composition root that wraps kiro_crew) names that module here, space- or
+# comma-separated. The desktop app only reuses a gateway already on its port
+# when the listener is its own, and it recognises a Python gateway by the `-m`
+# module it runs; without this, the edition's own CLI-started gateway reads as
+# foreign and every desktop launch refuses it. The names are written as a JSON
+# array to $ELECTRON_DIR/GATEWAY-MODULES, packed into app.asar next to main.js
+# and read by readEditionGatewayModules (website/electron/gateway-stop.js).
+# Each name must be a dotted Python module name; anything else fails the build,
+# because the reader ignores a malformed file and the edition would ship with
+# the refusal it meant to remove.
+if [ -n "${KIROCREW_GATEWAY_MODULES:-}" ]; then
+  # Armed before the write, and it also removes a marker step 3b staged:
+  # a second EXIT trap replaces the first rather than adding to it.
+  trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/GATEWAY-MODULES"' EXIT
+  node -e '
+    const fs = require("fs");
+    const [raw, out] = process.argv.slice(1);
+    const names = raw.split(/[\s,]+/).filter(Boolean);
+    const re = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+    if (!names.length) { console.error("no module names"); process.exit(1); }
+    if (names.length > 16) { console.error(`${names.length} names; the reader caps at 16`); process.exit(1); }
+    const bad = names.filter((n) => !re.test(n));
+    if (bad.length) { console.error(`not a Python module name: ${bad.join(", ")}`); process.exit(1); }
+    fs.writeFileSync(out, JSON.stringify([...new Set(names)]) + "\n");
+  ' "$KIROCREW_GATEWAY_MODULES" "$ELECTRON_DIR/GATEWAY-MODULES" \
+    || { echo "❌ KIROCREW_GATEWAY_MODULES rejected: $KIROCREW_GATEWAY_MODULES" >&2; exit 1; }
+  log "Baking edition gateway modules into the app: $KIROCREW_GATEWAY_MODULES"
 fi
 
 # --- 3c. Bundle kiro-cli into the app resources -------------------------------

@@ -11,6 +11,8 @@ const {
   forceStopPort,
   classifyPortOwner,
   isKirocrewCommand,
+  readEditionGatewayModules,
+  EDITION_GATEWAY_MODULES_FILE,
 } = require("../gateway-stop");
 
 // Helper: temp KIROCREW_HOME containing a .local_secret file.
@@ -788,4 +790,72 @@ test("classifyPortOwner and forceStopPort share one KiroCrew matcher", async () 
   assert.ok(!isKirocrewCommand("C:\\Temp\\kirocrew.exe gateway", {
     trustedExecutablePaths: [trustedCli],
   }));
+});
+
+test("an edition's baked gateway module identifies its CLI-started gateway", () => {
+  const launcher = "/opt/edition/farm/bin/python3.12 -P -m acme_edition gateway --port 5476";
+  assert.ok(!isKirocrewCommand(launcher), "without the declaration the edition gateway is foreign");
+  assert.ok(isKirocrewCommand(launcher, { gatewayModules: ["acme_edition"] }));
+  assert.ok(isKirocrewCommand("python -m kiro_crew gateway", { gatewayModules: ["acme_edition"] }));
+  // The declaration widens only the `-m` selector: a later argument, another
+  // module, a tunnel and a `-c` program stay foreign exactly as before.
+  const gatewayModules = ["acme_edition"];
+  assert.ok(!isKirocrewCommand("python -m http.server 5476", { gatewayModules }));
+  assert.ok(!isKirocrewCommand("python app.py -m acme_edition", { gatewayModules }));
+  assert.ok(!isKirocrewCommand("python -c 'import acme_edition' -m acme_edition", { gatewayModules }));
+  assert.ok(!isKirocrewCommand("ssh -NL 5476:localhost:5476 acme_edition", { gatewayModules }));
+  assert.ok(!isKirocrewCommand("python -m acme_edition_other gateway", { gatewayModules }));
+});
+
+test("classifyPortOwner reports an edition gateway as ours through the injected matcher", async () => {
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [4321],
+    getCommand: async () => "/opt/edition/farm/bin/python3.12 -P -m acme_edition gateway",
+    getPpid: async () => 999,
+    isKirocrew: (command) => isKirocrewCommand(command, { gatewayModules: ["acme_edition"] }),
+  });
+  assert.strictEqual(owner, "kirocrew");
+});
+
+test("readEditionGatewayModules accepts only a JSON array of module names", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gw-modules-"));
+  const file = path.join(dir, EDITION_GATEWAY_MODULES_FILE);
+  const logs = [];
+  const read = () => readEditionGatewayModules({ fs, filePath: file, log: (m) => logs.push(m) });
+  try {
+    assert.deepStrictEqual(read(), [], "a default build has no declaration");
+    assert.deepStrictEqual(logs, [], "an absent file is not worth a log line");
+
+    fs.writeFileSync(file, JSON.stringify(["acme_edition", "acme.gateway"]));
+    assert.deepStrictEqual(read(), ["acme_edition", "acme.gateway"]);
+
+    for (const [label, body] of [
+      ["not JSON", "acme_edition"],
+      ["an object", JSON.stringify({ modules: ["acme_edition"] })],
+      ["a non-string entry", JSON.stringify(["acme_edition", 1])],
+      ["a path", JSON.stringify(["../acme_edition"])],
+      ["an argument", JSON.stringify(["acme_edition gateway"])],
+      ["an empty name", JSON.stringify([""])],
+      ["too many entries", JSON.stringify(Array.from({ length: 17 }, (_, i) => `m${i}`))],
+      ["over the byte cap", JSON.stringify(["a".repeat(5000)])],
+    ]) {
+      fs.writeFileSync(file, body);
+      logs.length = 0;
+      assert.deepStrictEqual(read(), [], label);
+      assert.ok(logs.some((m) => m.includes("ignored")), `${label} is logged`);
+    }
+
+    fs.rmSync(file);
+    fs.mkdirSync(file);
+    assert.deepStrictEqual(read(), [], "a directory is not a declaration");
+    fs.rmdirSync(file);
+    if (process.platform !== "win32") {
+      const real = path.join(dir, "real.json");
+      fs.writeFileSync(real, JSON.stringify(["acme_edition"]));
+      fs.symlinkSync(real, file);
+      assert.deepStrictEqual(read(), [], "a symlink is not a declaration");
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

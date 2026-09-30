@@ -2913,3 +2913,72 @@ test("a service-owned stale bundle adds conditional service recovery guidance", 
   assert.match(state.dialogs[0].detail, /If the gateway starts again automatically/);
   assert.match(state.dialogs[0].detail, /stop or update the service that restarts it/);
 });
+
+function editionGatewayHarness({ baked }) {
+  const bakedPath = "/virtual/electron/GATEWAY-MODULES";
+  const notFound = () => {
+    const error = new Error("not found");
+    error.code = "ENOENT";
+    return error;
+  };
+  return harness({
+    app: { isPackaged: true, getVersion: () => "0.7.0" },
+    processRef: {
+      platform: "darwin", arch: "arm64", env: {}, resourcesPath: "/virtual/resources",
+      kill() { throw new Error("an adopted gateway must not be signalled"); },
+    },
+    fsMod: {
+      constants: { X_OK: 1 },
+      mkdirSync() {},
+      accessSync() { throw notFound(); },
+      existsSync() { return false; },
+      openSync() { return 41; },
+      closeSync() {},
+      lstatSync(file) {
+        if (baked && file === bakedPath) return { isFile: () => true, size: baked.length };
+        throw notFound();
+      },
+      readFileSync(file) {
+        if (baked && file === bakedPath) return baked;
+        throw new Error("unexpected filesystem read");
+      },
+    },
+    httpMod: {
+      get(url, _options, callback) {
+        const req = new EventEmitter();
+        req.destroy = () => {};
+        queueMicrotask(() => {
+          const res = new EventEmitter();
+          res.statusCode = 200;
+          res.resume = () => {};
+          callback(res);
+          res.emit("data", JSON.stringify(url.endsWith("/api/ready")
+            ? { ready: true }
+            : { app: "kirocrew", version: "0.7.0" }));
+          res.emit("end");
+        });
+        return req;
+      },
+    },
+    execFileFn(file, args, _options, callback) {
+      if (file.endsWith("lsof")) callback(null, "123", "");
+      else if (args.includes("ppid=")) callback(null, "99", "");
+      else callback(null, "/opt/edition/farm/bin/python3.12 -P -m acme_edition gateway", "");
+    },
+  });
+}
+
+test("a gateway started by the edition's own CLI module is reused when the build bakes that module", async () => {
+  const { supervisor, spawnCalls, logs } = editionGatewayHarness({ baked: '["acme_edition"]\n' });
+  assert.strictEqual(await supervisor.start(), true);
+  assert.strictEqual(spawnCalls.length, 0);
+  assert.ok(logs.some((line) => line.includes("reusing existing gateway on :5476")));
+  assert.ok(!logs.some((line) => line.includes("no remote crew is configured")));
+});
+
+test("without the baked module the same gateway is still refused as foreign", async () => {
+  const { supervisor, spawnCalls, logs } = editionGatewayHarness({ baked: null });
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(spawnCalls.length, 0);
+  assert.ok(logs.some((line) => line.includes("this app did not start and no remote crew is configured")));
+});

@@ -197,6 +197,16 @@ describe("electron-builder files list", () => {
     assert.match(script, /KIROCREW_MANAGED_INSTALL_MARKER/);
     assert.match(script, /\$ELECTRON_DIR\/EXTERNALLY-MANAGED/);
   });
+
+  it("lists the baked GATEWAY-MODULES declaration so an edition build packs it into app.asar", () => {
+    // build-desktop.sh writes KIROCREW_GATEWAY_MODULES here; without this entry
+    // the supervisor finds no declaration beside main.js and the edition's own
+    // CLI-started gateway stays foreign.
+    assert.ok(bundledFiles.includes("GATEWAY-MODULES"));
+    const script = fs.readFileSync(path.join(ROOT, "..", "..", "packaging", "build-desktop.sh"), "utf8");
+    assert.match(script, /KIROCREW_GATEWAY_MODULES/);
+    assert.match(script, /\$ELECTRON_DIR\/GATEWAY-MODULES/);
+  });
 });
 
 

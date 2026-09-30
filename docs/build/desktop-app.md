@@ -1285,6 +1285,32 @@ for certain means exec'ing the candidate, which is either running an arbitrary
 binary or booting a second gateway. The supported recovery is to repair the
 install and let the retry finish, or to relaunch by hand.
 
+### Baking the edition's gateway modules
+
+Before reusing a gateway already on its port, the app identifies the listener
+by its command line. A Python gateway counts as the app's own only when its
+`-m` module is `kiro_crew`. An edition whose CLI launcher enters the gateway
+through its own composition-root module (`python -m <edition_module> gateway`)
+declares that module at build time, space- or comma-separated:
+
+```bash
+KIROCREW_GATEWAY_MODULES=<edition_module> bash packaging/build-desktop.sh
+```
+
+Without it, a gateway the edition's own CLI or service started reads as
+foreign, and with no remote crew configured on the port the desktop launch
+refuses to reuse it. `build-desktop.sh` fails the build on any name that is not
+a dotted Python module name, writes the list as a JSON array to
+`website/electron/GATEWAY-MODULES`, and electron-builder packs it into
+`app.asar` next to `main.js`. `gateway-supervisor.js` reads it once at startup
+through `readEditionGatewayModules` (`gateway-stop.js`) and passes it to every
+identity check: port-owner classification and force-stop on POSIX, and the
+path-bound Windows check. A missing, unparsable or malformed file yields no
+extra modules, so a bad declaration never widens what counts as the app's own.
+The declaration widens only the `-m` selector: an SSH tunnel, a `-c` program
+or a module name in a later argument stays foreign. Like the marker, the file
+is gitignored and removed at the start of every build.
+
 ## Remote tunnel mode
 
 The desktop app can also connect to a gateway running on a **remote** host (e.g.

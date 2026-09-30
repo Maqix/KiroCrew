@@ -17,6 +17,56 @@ const path = require("path");
 const KIROCREW_EXE_NAMES = new Set(["kirocrew", "kirocrew-backend"]);
 const PYTHON_EXE_RE = /^(?:python(?:\d+(?:\.\d+)*)?w?|py)$/i;
 
+// The baked edition declaration of extra gateway `-m` modules. build-desktop.sh
+// writes it from KIROCREW_GATEWAY_MODULES next to main.js, so it is packed into
+// app.asar and read as the application's own code.
+const EDITION_GATEWAY_MODULES_FILE = "GATEWAY-MODULES";
+const GATEWAY_MODULES_MAX_BYTES = 4096;
+const GATEWAY_MODULES_MAX_ENTRIES = 16;
+const PYTHON_MODULE_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+
+/**
+ * Read the baked `GATEWAY-MODULES` declaration: a JSON array of dotted Python
+ * module names. A missing file is the default build and yields `[]`. Anything
+ * else that is not exactly that shape (a non-regular file, over the byte or
+ * entry cap, unparsable, a non-string or non-module entry) also yields `[]`
+ * and is logged, so a bad declaration narrows identity back to `kiro_crew`
+ * and never widens it.
+ *
+ * @param {object} o
+ * @param {object} o.fs
+ * @param {string} o.filePath
+ * @param {(msg:string)=>void} [o.log]
+ * @returns {string[]}
+ */
+function readEditionGatewayModules({ fs: fsMod = fs, filePath, log = () => {} }) {
+  let stat;
+  try {
+    stat = fsMod.lstatSync(filePath);
+  } catch (error) {
+    if (error && error.code !== "ENOENT") log(`${EDITION_GATEWAY_MODULES_FILE} unreadable: ${error.message}`);
+    return [];
+  }
+  const reject = (why) => {
+    log(`${EDITION_GATEWAY_MODULES_FILE} ignored: ${why}`);
+    return [];
+  };
+  if (!stat.isFile()) return reject("not a regular file");
+  if (stat.size > GATEWAY_MODULES_MAX_BYTES) return reject(`over ${GATEWAY_MODULES_MAX_BYTES} bytes`);
+  let parsed;
+  try {
+    parsed = JSON.parse(fsMod.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    return reject(`not JSON (${error.message})`);
+  }
+  if (!Array.isArray(parsed)) return reject("not a JSON array");
+  if (parsed.length > GATEWAY_MODULES_MAX_ENTRIES) return reject(`over ${GATEWAY_MODULES_MAX_ENTRIES} entries`);
+  if (!parsed.every((name) => typeof name === "string" && PYTHON_MODULE_RE.test(name))) {
+    return reject("an entry is not a Python module name");
+  }
+  return parsed;
+}
+
 function commandLineTokens(commandLine) {
   const tokens = [];
   const input = String(commandLine || "").replace(/^\s*CommandLine=/i, "").trim();
@@ -83,10 +133,16 @@ function executableSelector(tokens) {
  * `current` junction while Windows reports the running process by the
  * directory the junction resolved to. A path the resolver did not select stays
  * foreign, so a matching basename elsewhere can still never authorize a kill.
+ *
+ * `gatewayModules` names further `-m` modules that are this build's own
+ * gateway: an edition whose CLI launcher enters the gateway through its own
+ * composition-root module bakes that name in at build time (see
+ * readEditionGatewayModules). Without it such a gateway classifies as foreign
+ * and a desktop launch refuses to reuse it.
  */
 function isKirocrewCommand(
   commandLine,
-  { trustedExecutablePaths = [], canonicalizePath = () => "" } = {}
+  { trustedExecutablePaths = [], canonicalizePath = () => "", gatewayModules = [] } = {}
 ) {
   const tokens = commandLineTokens(commandLine);
   if (!tokens.length) return false;
@@ -127,7 +183,10 @@ function isKirocrewCommand(
 
   while (index < tokens.length) {
     const token = tokens[index];
-    if (token === "-m") return tokens[index + 1] === "kiro_crew";
+    if (token === "-m") {
+      const moduleName = tokens[index + 1];
+      return moduleName === "kiro_crew" || gatewayModules.includes(moduleName);
+    }
     if (token === "-c" || token === "-") return false;
     if (token === "--") {
       index += 1;
@@ -622,5 +681,7 @@ module.exports = {
   probePortBinding,
   isServiceManaged,
   isKirocrewCommand,
+  readEditionGatewayModules,
+  EDITION_GATEWAY_MODULES_FILE,
   INIT_PPID,
 };

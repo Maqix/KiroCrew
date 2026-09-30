@@ -251,7 +251,8 @@
       "icon-nightly.png",
       "trayTemplate.png",
       "trayTemplate@2x.png",
-      "EXTERNALLY-MANAGED"
+      "EXTERNALLY-MANAGED",
+      "GATEWAY-MODULES"
     ],
     "extraResources": [
       {

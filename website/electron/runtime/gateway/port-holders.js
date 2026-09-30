@@ -35,6 +35,8 @@ const LSOF_CANDIDATES = ["/usr/sbin/lsof", "/usr/bin/lsof"];
  * @param {object} deps
  * @param {() => string[]} deps.getSpawnedExecutablePaths  executables the
  *        CURRENT child was spawned from, read at call time.
+ * @param {string[]} [deps.gatewayModules]  the edition's extra gateway `-m`
+ *        modules, read by the facade from the baked declaration.
  */
 function createPortHolders({
   fs,
@@ -46,6 +48,7 @@ function createPortHolders({
   isWindows: IS_WIN,
   log: glog,
   getSpawnedExecutablePaths,
+  gatewayModules = [],
 }) {
   const windowsRealpath = (candidate) => fs.realpathSync.native(candidate);
 
@@ -63,6 +66,7 @@ function createPortHolders({
         ...getSpawnedExecutablePaths(),
       ],
       canonicalizePath: (candidate) => canonicalWindowsPath(candidate, windowsRealpath),
+      gatewayModules,
     });
   }
 
@@ -181,6 +185,7 @@ function createPortHolders({
       getPpid: psPpid,
       kill: (pid, signal) => processObj.kill(pid, signal),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      isKirocrew: (command) => isKirocrewCommand(command, { gatewayModules }),
       log: glog,
     });
   }

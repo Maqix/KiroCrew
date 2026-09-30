@@ -35,6 +35,9 @@ const {
   stopGatewayGracefully: stopGatewayProcessGracefully,
   classifyPortOwner,
   probePortBinding,
+  isKirocrewCommand,
+  readEditionGatewayModules,
+  EDITION_GATEWAY_MODULES_FILE,
 } = require("./gateway-stop");
 const {
   windowsGatewayExecutablePaths,
@@ -268,6 +271,14 @@ function createGatewaySupervisor({
     log: glog,
     warn: userWarn,
   });
+  // The edition's own gateway modules, baked beside main.js at build time. Read
+  // once: the file is part of this binary and cannot change while it runs.
+  const gatewayModules = readEditionGatewayModules({
+    fs,
+    filePath: path.join(dirname, EDITION_GATEWAY_MODULES_FILE),
+    log: glog,
+  });
+  if (gatewayModules.length) glog(`edition gateway modules: ${gatewayModules.join(", ")}`);
   const {
     windowsRealpath,
     isTrustedWindowsGatewayCommand,
@@ -289,6 +300,7 @@ function createGatewaySupervisor({
     isWindows: IS_WIN,
     log: glog,
     getSpawnedExecutablePaths: () => spawnedExecutablePaths,
+    gatewayModules,
   });
   const { resolveFamilyConflict } = createFamilyTakeover({
     dialog,
@@ -677,6 +689,7 @@ function createGatewaySupervisor({
       getListenPids: lsofListenPids,
       getCommand: psCommand,
       getPpid: psPpid,
+      isKirocrew: (command) => isKirocrewCommand(command, { gatewayModules }),
       log: glog,
     });
   }
