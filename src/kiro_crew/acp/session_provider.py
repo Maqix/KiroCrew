@@ -20,7 +20,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
@@ -86,6 +86,8 @@ class AcpSessionProvider(LLMProvider):
         runtime: AcpRuntime,
         *,
         owns_runtime: bool = False,
+        runtime_lease: str | None = None,
+        shared_runtime: bool = False,
         session_key: str = "",
         channel_id: str | None = None,
     ) -> None:
@@ -103,12 +105,38 @@ class AcpSessionProvider(LLMProvider):
         # non-owning killer -- the dashboard's reset-all fallback, a pid sweep --
         # be refused instead of taking a co-tenant's runtime with it.
         #
-        # Only an OWNING provider takes one. A session-sharing subagent is handed
-        # a runtime it did not spawn and must not kill, and at ``cap=1`` no entry
-        # holding a lease has room for a second, so having subagents acquire
-        # would either refuse them or change which process they land on. Their
-        # co-tenancy becomes a lease in the change that raises the cap.
-        self._runtime_lease: str | None = None
+        # A session-sharing SUBAGENT never takes one. It is handed a runtime it
+        # did not spawn and must not kill, and its co-tenancy is a TENANCY rather
+        # than a lease: scoped to the turn, so it neither consumes the cap nor
+        # changes which process a chat session lands on (see
+        # ``_claim_shared_turn``).
+        #
+        # A CHAT session's lease may arrive here already taken. The chat start
+        # decides whether to join an existing process before it spawns one, and
+        # that decision IS the acquisition -- so it holds a lease before this
+        # provider exists and hands it over, rather than this object taking a
+        # second one for a process already leased to this session. With sharing
+        # off nothing is handed in and ``acquire_runtime_lease`` takes the lease
+        # at the registration point, exactly as it did before a cap existed.
+        self._runtime_lease: str | None = runtime_lease
+        # Whether this session's runtime may be serving OTHER chat sessions, which
+        # is the case neither value of ``_owns_runtime`` can express.
+        #
+        # Both of that flag's arms are wrong for a shared chat session, in opposite
+        # directions. The owning arm kills without destroying the handle for a
+        # persistent session -- correct while one session is one process, but a
+        # session that leaves a process its co-tenants keep using has to destroy
+        # its handle or its context stays allocated there for that process's whole
+        # life. The subagent arm destroys and never kills, which leaks the process
+        # when the session leaving happens to be the last holder. Which of those
+        # two a given shutdown is cannot be read off this object at all: it is the
+        # lease table's answer, given by whether the release hands the runtime
+        # back.
+        #
+        # True for the FOUNDER as well as a joiner. Which one this is cannot be
+        # told apart at teardown time -- by then a joiner may have arrived, or may
+        # not have -- so both take the same arm and the table decides.
+        self._shared_runtime = shared_runtime
         self._resumed_flag: bool = False
         self._resume_session_id: str = ""
         # The session this provider serves. ``rekey()`` sets it on a warm-pool
@@ -148,11 +176,21 @@ class AcpSessionProvider(LLMProvider):
         -- a failed ``start``, a failed identity stamp, a discarded pool provider
         -- authorized without exception, because none of them has a tenant yet.
 
+        This is the UNSHARED acquisition, and it stays at ``CHAT_RUNTIME_CAP``
+        keyed by the runtime OBJECT rather than reading the configured cap. A
+        session that may share takes its lease where the join decision is made --
+        before the spawn, because deciding afterwards could only register a
+        process that already exists -- and hands it in through ``runtime_lease``,
+        so this method finds one held and returns. What reaches here is therefore
+        a start that is not sharing, and for it identity is the right key: no two
+        entries can ever compare equal, so no cap above 1 would place anything
+        differently and a larger number would only misdescribe the table.
+
         The runtime is passed in already spawned, so the ``spawn`` callback hands
         the existing one back rather than making a second. At ``cap=1`` no entry
         that holds a lease has room, so this always founds its own entry with
         exactly one lease -- one process per owning session, which is what the
-        unpooled path already did.
+        unshared path already did.
         """
         if not self._owns_runtime or self._runtime_lease is not None:
             return
@@ -433,13 +471,120 @@ class AcpSessionProvider(LLMProvider):
         self._runtime_lease = None
         await RUNTIME_OWNERSHIP.release(lease)
 
+    async def _shutdown_shared(self) -> None:
+        """Leave a process that may still be serving other chat sessions.
+
+        This session drops its lease and kills the process only when the table
+        hands the runtime back, which it does for the LAST holder alone. The handle
+        is destroyed either way, and that is the half the sole-owner arm does not
+        need: a session leaving a process its co-tenants keep using has to be
+        evicted from it, or its context stays allocated on that process for the
+        rest of the process's life. It is also the only RSS this path reclaims on a
+        runtime it may not kill.
+
+        The in-flight turn is cancelled FIRST, for the reason the subagent arm
+        gives: ``destroy`` unregisters this session's queue without telling the
+        host to stop a running prompt, so an abandoned prompt keeps running on a
+        process nothing here may kill, its frames are dropped as unknown-session,
+        and it can wedge the next prompt on that sessionId. Bounded, so an
+        unresponsive runtime cannot turn a shutdown into a hang.
+
+        Everything after the cancel is in a ``finally``, for the reason the
+        subagent arm states and pays for: the cancel can be left through a door
+        ``except Exception`` does not cover, because ``asyncio.CancelledError`` is
+        a ``BaseException``. Here that exit is delivered by the restart path's own
+        ``asyncio.wait_for(p.shutdown(), timeout=...)``, whose budget is larger
+        than the cancel budget below -- so a slow cancel is exactly where the
+        cancellation lands. Sequentially that skipped the release, and a lease that
+        is never returned keeps its entry alive: the runtime is reclaimed by
+        neither the dead-entry drop nor the reconciler's own accounting, the
+        session stays resident on it, and nothing retries, because every caller
+        drops the provider afterwards.
+
+        The release is read for its RETURN VALUE rather than done through
+        ``release_runtime_lease``, which discards it. That value is the whole
+        decision this arm exists to make, and asking the table twice -- once to
+        release, once to count -- would straddle another session's arrival.
+        """
+        cancel_hooks = getattr(self._handle, "_cancel_hook_tasks", None)
+        if callable(cancel_hooks):
+            cancel_hooks()
+        last: AcpRuntime | None = None
+        try:
+            try:
+                if self._handle.is_turn_active:
+                    try:
+                        await asyncio.wait_for(self._handle.cancel(), timeout=5.0)
+                    except Exception:
+                        logger.debug(
+                            "AcpSessionProvider.shutdown: shared session cancel failed",
+                            exc_info=True,
+                        )
+            except Exception:
+                logger.debug(
+                    "AcpSessionProvider.shutdown: shared turn-active probe failed",
+                    exc_info=True,
+                )
+        finally:
+            lease = self._runtime_lease
+            if lease is not None:
+                try:
+                    # SHIELDED: the release is an await, and a cancellation
+                    # delivered into it would otherwise leave the lease
+                    # outstanding forever -- the gate then refuses every kill of
+                    # that pid for the gateway's life, which is the leak this arm
+                    # exists to prevent made permanent by the bookkeeping. The
+                    # shield lets the release run to completion even though this
+                    # coroutine stops waiting for it.
+                    #
+                    # The slot is cleared in a ``finally`` rather than after the
+                    # await, because a shield re-raises the cancellation in the
+                    # WAITER: the inner release completes, but the next statement
+                    # never runs, so a plain assignment would leave the slot naming
+                    # a lease the registry has already forgotten.
+                    last = cast(
+                        "AcpRuntime | None",
+                        await asyncio.shield(RUNTIME_OWNERSHIP.release(lease)),
+                    )
+                except Exception:
+                    logger.debug(
+                        "AcpSessionProvider.shutdown: shared release failed", exc_info=True
+                    )
+                finally:
+                    self._runtime_lease = None
+            # The transcript is this session's resume material, and ``destroy``
+            # unlinks it unless told otherwise. The sole-owner arm keeps it by
+            # never reaching ``destroy`` for a persistent session; this arm MUST
+            # ask, because it has to destroy the handle to leave the shared
+            # process. The setter already refuses for a non-persistent mode, which
+            # is the one case whose files are meant to go.
+            self.set_keep_transcript(True)
+            try:
+                await self._handle.destroy()
+            except Exception:
+                logger.debug(
+                    "AcpSessionProvider.shutdown: shared handle destroy failed", exc_info=True
+                )
+            if last is not None:
+                try:
+                    await last.kill(expected=True, reason="provider shutdown (last shared session)")
+                except Exception:
+                    logger.debug(
+                        "AcpSessionProvider.shutdown: shared runtime kill failed", exc_info=True
+                    )
+
     async def shutdown(self) -> None:
         """Destroy the session and optionally kill the runtime.
 
-        - Parent sessions (owns_runtime=True): kill the entire runtime.
+        - Shared chat sessions (shared_runtime=True): destroy the handle, and kill
+          the runtime only when the lease table says this was its last holder.
+        - Sole-owner sessions (owns_runtime=True): kill the entire runtime.
         - Subagent sessions (owns_runtime=False): cancel any in-flight turn,
           then destroy the handle only.
         """
+        if self._shared_runtime:
+            await self._shutdown_shared()
+            return
         if self._owns_runtime:
             # A runtime kill cancels only its reader tasks, so the handle's own
             # in-flight hook executions are stopped here first.

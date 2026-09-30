@@ -59,27 +59,58 @@ Room means fewer than `cap` leases. A runtime lives while at least one lease is
 outstanding; the **last** release hands it back for teardown and every earlier
 release only drops a reference.
 
-`cap` is `runtime_ownership.CHAT_RUNTIME_CAP`, and it is **1** today. At that cap
+`cap` defaults to `runtime_ownership.CHAT_RUNTIME_CAP`, which is **1**. At that cap
 no entry holding a lease has room, so every acquisition spawns and every release
-is a last release — byte-for-byte the unpooled behaviour, with the claim recorded.
-Raising it is a behaviour change that needs the eligibility rules deciding which
-sessions may share a process, and those do not live here.
+is a last release — byte-for-byte the unshared behaviour, with the claim recorded.
 
-On the **chat** registration path a lease means the same thing as registry
-membership, which is why it is taken there rather than at provider start:
+A chat start may pass a larger cap, and that is the one path that does.
+`acp.chat_runtime_sharing` supplies what this module deliberately does not decide:
+`eligible_for_chat_sharing` says WHICH sessions may share (a dashboard chat slot,
+persistent memory mode, non-member, on a backend in `ACP_BACKENDS_SESSION_SHARING`),
+`ChatRuntimeKey` is the compatibility key they share ON, and `chat_runtime_cap`
+reads `agent.chat_runtime_sharing_max_sessions` — forced back to
+`CHAT_RUNTIME_CAP` whenever `agent.chat_runtime_sharing` is off, which it is by
+default, so the paragraph above is the shipped behaviour. That start takes its
+lease BEFORE the spawn rather than at registration, because the placement decision
+and the spawn are one act: see the chat placement note below.
+
+On the **unshared chat** path a lease means the same thing as registry membership,
+which is why it is taken there rather than at provider start:
 `session_allocation.SessionAllocationService._get_or_create_impl` calls
 `acquire_session_lease` immediately after the session enters `self._sessions`.
 Before that line no tenant exists, which is why every earlier cleanup path in that
-file may kill unconditionally.
+file may kill unconditionally. The key it passes is the runtime OBJECT, so no two
+entries can compare equal and the cap it passes is `CHAT_RUNTIME_CAP`: identity as
+a key means no larger cap would place anything differently.
 
-That equivalence holds for chat and nowhere else, and the difference matters to
-anyone reading a lease count as a tenancy count. `acquire_session_lease` is reached
-from the chat registration path alone: `open_task_session` registers a session
-without one, the task-run path forces `_owns_runtime = False` on the provider it
-hands the runtime to, and a companion runtime is spawned bare. So **no shared
-runtime holds a lease**, `outstanding_leases` reads 0 for a perfectly healthy one,
-and what defends it is a tenancy. A mechanism keyed on lease absence would end a
-task run's runtime at the close of its first step.
+An **eligible sharing** chat start takes its lease earlier, in
+`providers.acp.AcpProvider.start`, because there the placement decision and the
+spawn are one act — a decision taken after the spawn could only register a process
+that already exists. It passes `ChatRuntimeKey` and the configured cap, and hands
+the lease to `AcpSessionProvider` as `runtime_lease`, so `acquire_session_lease`
+finds one held and returns. Registration therefore still marks the tenant; what
+moved is only where the lease is minted. Such a provider also carries
+`shared_runtime=True`, which selects a third teardown arm: it releases, keeps its
+transcript, destroys its handle to leave the process, and kills only the runtime
+the release hands back. Neither existing arm fits — the sole-owner arm would leave
+a joiner's session context allocated on a process its co-tenants keep using, and
+the sub-agent arm would leak the process when the leaving session was the last
+holder.
+
+A lease is held by a CHAT session and by nothing else, and the difference matters
+to anyone reading a lease count as a tenancy count. `open_task_session` registers a
+session without one, the task-run path forces `_owns_runtime = False` on the
+provider it hands the runtime to, and a companion runtime is spawned bare. So a
+**sub-agent-shared** runtime holds no lease, `outstanding_leases` reads 0 for a
+perfectly healthy one, and what defends it is a tenancy. A mechanism keyed on lease
+absence would end a task run's runtime at the close of its first step.
+
+A **chat-shared** runtime is the other way round: each of its chat sessions holds
+its own lease, so `outstanding_leases` reads the number of sessions resident on it,
+and a sub-agent mid-turn on that same process adds a tenancy on top. Both are
+holders the gate refuses a kill for, which is why anything asking "is this process
+still in use" has to read both tables — `session_lifecycle._pid_is_still_held` is
+the one that does.
 
 ### Tenancies
 
@@ -88,7 +119,10 @@ party that is using a process it may NOT end: a session-sharing sub-agent mid-tu
 on its principal's runtime (`acp.session_provider.AcpSessionProvider._claim_shared_turn`
 / `_end_shared_turn`), and the OAuth mint child mid-exchange
 (`connections.mint`). At `cap=1` a tenancy is the only way such a party is
-represented at all, because an acquisition cannot join an occupied runtime.
+represented at all, because an acquisition cannot join an occupied runtime. Above
+that cap a chat co-tenant holds a LEASE instead — it may end the process, once it
+is the last holder — while a sub-agent and the mint child keep their tenancy for
+the reason the distinction exists: neither may end the process at all.
 
 The two tables are separate for a reason a single refcount cannot express: a
 tenancy has to outlive the lease. A principal's last release forgets the lease
@@ -515,12 +549,15 @@ recover.
 
 - **A session token is not bound to a lease or a claim.** `X-Session-Token` is a
   bearer: a same-uid process that can read `/proc/<pid>/environ` can present a
-  neighbour's token. The reachability is narrow — such a process already has
-  `PTRACE_MODE_READ`, and at `cap=1` a chat session does not reach the shared arm —
-  but the fix is to bind the token to a tenancy claim with a per-process binding
-  the server checks, not to harden the bearer. Tracked in issue #14646 together
-  with the recycled-ancestor case, where the lenient MCP identity refuses every
-  call for an identity-less caller.
+  neighbour's token. Such a process already has `PTRACE_MODE_READ`, which is what
+  keeps the reachability narrow, and the sandbox unshares only `CLONE_NEWUSER` and
+  `CLONE_NEWNS` — never a PID namespace — so the readable set is every same-uid
+  process on the host whether or not any runtime is shared. Raising the cap
+  therefore adds no read: each session still mints its own token, and co-tenancy
+  only changes which process holds them. The fix is to bind the token to a tenancy
+  claim with a per-process binding the server checks, not to harden the bearer.
+  Tracked in issue #14646 together with the recycled-ancestor case, where the
+  lenient MCP identity refuses every call for an identity-less caller.
 - **The `tenancy` seam in `acp.liveness.LivenessOracle` has no production
   declarer.** All four construction sites take the single-tenant reading, so the
   model-wait DEAD verdict is not degraded on a shared runtime. Wiring it means
@@ -532,9 +569,16 @@ recover.
   `runtime_info()` hands a caller a pid outright. They are the bulk of what the pid
   reader ratchet still counts; each needs classifying as a session-level question,
   a runtime handle, or a reading whose owner is the module that holds the pid.
-- **`cap` is not open.** Raising `CHAT_RUNTIME_CAP` needs eligibility rules that
-  decide which sessions may share a process, and a flag to stage it. Neither
-  exists, so every runtime serves one session.
+- **A founding `acquire` runs `spawn()` while holding the registry lock.** One
+  lock serializes the whole registry, and the chat placement path passes a factory
+  that really launches a subprocess and completes the ACP `initialize` — so every
+  other `acquire` and `release` in the gateway waits out that launch, and two
+  founding starts on different keys cannot overlap. With sharing off the factory
+  returns an already-spawned runtime and the window is microseconds; with it on the
+  window is one real spawn per key. The fix is to reserve the key under the lock,
+  run `spawn()` outside it, and publish under a per-key in-flight future so a
+  second arrival on that key awaits the first instead of launching a second
+  process. Issue #15342 carries it.
 - **Membership is narrower than the slice it is compared against.** An app
   backend's pid record (`app_backends.pids.json`) and a long-lived sandboxed
   subprocess are in none of the sources `recorded()` reads, so both are unowned by

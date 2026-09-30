@@ -2354,6 +2354,19 @@ class SessionAllocationService:
                     pre_spawn = await pre_spawn_identity(
                         getattr(owner, "spawn_identity_reader", None)
                     )
+                    # The chat runtime's compatibility key carries the account era,
+                    # so a session starting after a credential change cannot join a
+                    # process that authenticated before it. This is the read it
+                    # keys on -- handed over rather than taken again, so keying on
+                    # it adds no identity-store read and no audit event to the
+                    # start path. Best-effort like the stamp below: a provider that
+                    # will not carry it simply keys on an empty era, which is the
+                    # placement it had before the key had the field.
+                    # ``setattr`` because the static type here is ``LLMProvider``,
+                    # the interface every backend implements, and the slot belongs
+                    # to the one that spawns chat runtimes.
+                    with contextlib.suppress(Exception):
+                        setattr(provider, "pre_spawn_identity", pre_spawn)
                     await provider.start()
                 except (asyncio.CancelledError, Exception):
                     if preparation.revision:
