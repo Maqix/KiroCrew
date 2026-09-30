@@ -1933,6 +1933,59 @@ class TestResolveDollarSkills:
         names = [n for _t, n, _b in out]
         assert names == ["oncall-handover", "nested/ticket-pull"]
 
+    def test_nested_key_uses_forward_slash(self, tmp_path, opened):
+        """The enumerated key of a nested skill is forward-slash-separated.
+
+        Discriminator for a Windows-only failure of ``test_multiple_tokens_anywhere``
+        seen on a CodeBuild container: the resolver leaf-matches ``$ticket-pull``
+        against ``key.rsplit("/", 1)[-1]``, so a key built with the OS separator
+        (``nested\\ticket-pull`` on Windows) would leaf to the whole string and match
+        nothing — an identical-looking assertion failure, but with the bug in NAMING
+        rather than enumeration or the read gate. This pins the key exactly, so a CI
+        run answers which mechanism is at fault instead of leaving it a coin flip: if
+        BOTH this and ``test_multiple_tokens_anywhere`` fail, the key is misnamed; if
+        this passes while the other fails, naming is eliminated. The loader is
+        wrapped in ``opened`` so its catalog-refresh thread and SQLite descriptors
+        are released at teardown.
+        """
+        loader = opened(self._loader(tmp_path))
+        keys = [s["key"] for s in loader.scoped_skills()]
+        assert "nested/ticket-pull" in keys
+        assert "nested\\ticket-pull" not in keys
+
+    def test_two_flat_siblings_both_enumerate_and_resolve(self, tmp_path, opened):
+        """Two flat sibling skills both enumerate and both resolve — a count pin.
+
+        Discriminator for a Windows-only second-token drop seen on a CodeBuild
+        container: resolving ``$one $two`` returns only one skill even though both
+        are flat, top-level, and carry no path separator. That rules out the
+        nested-key/separator theory (there is no separator here) and localizes the
+        drop to the count, not the name. This pins BOTH stages so a CI run says
+        which stage drops the sibling:
+
+        * If ``scoped_skills`` returns one key, the WALK (``_iter_skill_files``)
+          drops a distinct sibling on that filesystem — its only sibling-dropping
+          site is the ``seen_real`` dedup keyed on ``os.path.realpath``.
+        * If ``scoped_skills`` returns both keys but ``resolve_dollar_skills``
+          returns one, the drop is in the resolver's per-token loop.
+
+        Kept minimal and platform-neutral: the assertion holds on every platform,
+        so a red is a real defect on the host that produced it, not a POSIX-only
+        expectation. The loader is wrapped in ``opened`` so its catalog-refresh
+        thread and SQLite descriptors are closed at teardown — a measurement test
+        must not itself leak the resource that makes the suite flaky.
+        """
+        skills_dir = tmp_path / "skills"
+        _create_skill(skills_dir, "one", "---\nname: one\ndescription: A\n---\n# One\nBody one.")
+        _create_skill(skills_dir, "two", "---\nname: two\ndescription: B\n---\n# Two\nBody two.")
+        loader = opened(SkillsLoader(skills_path=skills_dir, install_builtins=False))
+
+        keys = sorted(s["key"] for s in loader.scoped_skills())
+        assert keys == ["one", "two"]
+
+        out = loader.resolve_dollar_skills("use $one and $two")
+        assert [n for _t, n, _b in out] == ["one", "two"]
+
     def test_dedupe_repeated_token(self, tmp_path):
         loader = self._loader(tmp_path)
         out = loader.resolve_dollar_skills("$oncall-handover and again $oncall-handover")
