@@ -795,10 +795,37 @@ The loader is defensive about hand-edited config: a non-string `model` or
 `triggers` collapses to `""`, an unknown `reasoning_effort` collapses to inherit,
 and a junk watchdog override collapses to `0`.
 
-### Crewmate panel: Notes, Work log, Dashboard
+### Crewmate panel: Dashboard, Work log, Notes
 
 The Crewmates page's right panel has exactly three host tabs, in this order:
-**Notes**, **Work log**, **Dashboard**.
+**Dashboard**, **Work log**, **Notes** (`CREW_PANEL_TAB_IDS`). The FIRST of them
+is also the default focus — `usePanelTabs` opens a strip with no stored focus on
+`leadingIds[0]` — so the order and the landing are one fact rather than two
+settings that can disagree. The order is how much of each tab is addressed to the
+person reading it: Dashboard is what the crewmate publishes for them, Work log is
+what it did, Notes is the crewmate's own working memory. Notes led until
+2026-09-30, which meant opening a crewmate showed first the one tab of the three
+written by the agent for itself and the only one the dashboard cannot change (the
+RFC's amendment of that date carries the decision). A STORED focus still wins:
+the default applies only to a bucket that has none, so someone who was reading a
+crewmate's notes comes back to them.
+
+That default is resolved on READ and never written. `syncPinned` leaves a strip
+that has host leading tabs unfocused rather than persisting its own fallback,
+because a derived value in storage outlives its derivation: whichever tab led on
+the build that first opened a strip would otherwise stay that strip's focus for
+good, so changing which tab a surface opens on would reach only the strips nobody
+had ever opened.
+
+A strip whose bucket an EARLIER build already gave a leading-tab focus keeps it,
+and that is deliberate. Once stored, such a focus is byte-identical whether the
+reconcile derived it or the person clicked that chip, so nothing in storage can
+tell the two apart, and clearing it on a guess would throw away a choice someone
+made. The consequence is stated rather than worked around: on a browser that had
+already opened a given crewmate before this change, that crewmate's panel still
+opens on Notes until the person selects another tab once, which stores their own
+choice. Every strip opened for the first time after this change gets the
+Dashboard default, and no strip acquires a derived focus again.
 
 **Notes** renders the crewmate's self-maintained briefing
 (`members/<slug>/briefing.md`) read-only, as markdown, through
@@ -811,6 +838,15 @@ that is the normal state, never a 404. `supported` is
 `member_briefing_supported()`: on a platform without `O_NOFOLLOW` plus the
 pinned ancestor walk the read fails closed to `""` and the panel says the notes
 cannot be read on this computer instead of showing an empty briefing.
+
+A line above the body names whose notes these are and says the tab does not
+change them ("<name> writes these notes for itself as it works. You can read them
+here, but not change them."). It is rendered in EVERY state — loading, empty,
+refused, failed, content — because it describes the tab and not the read, so a
+reader never arrives at this text without knowing who wrote it. The empty state is
+one line for the same reason: the sentence that used to sit under it, saying a
+crewmate keeps its own notes here as it works, is now the always-present line
+above.
 
 The panel offers NO editor for the file, and the response carries no file
 pointer. The file is agent-written; the dashboard's file viewer reads through
@@ -866,7 +902,27 @@ auto-patrol status, and the DM thread's own Crew Log record under the heading
 "This conversation" — named for the thread, so it is not read as one of the
 driven sessions listed above it.
 
-**Dashboard** is the single dashboard entrance for the crewmate. Dynamic
+**Dashboard** is the single dashboard entrance for the crewmate. As the landing
+tab it is on screen for the whole window in which the thread POST is still out,
+so its "Opening the conversation" line is withheld while the main column is
+already showing that same sentence (`activeSlot` unset, no pane to render): two
+surfaces said it at once, one of them a live region. With a cached thread up
+beside it the panel's line is the only one, and it is the honest state -- this
+body cannot bind until the POST confirms. The panel's MOUNT HOLD for this tab
+(`keepMounted`, and the `hasTaskDashboard` term of `shouldMountSidePanel`) is
+armed whenever the tab is on screen, landing on it included. What it protects is
+an unsaved answer: a pending question's draft lives only in `QuestionCard`'s own
+state and the command centre's panel-local `drafts`, so a body that unmounts on a
+tab switch or a panel close takes the typed text with it, and the panel's own
+comments promise the opposite. Since Dashboard became the landing tab that arming
+is true on every crewmate open, so the flag latches and a closed panel is hidden
+with `display: none` rather than leaving `AnimatePresence` -- the docked-column
+collapse and the narrow-window drawer slide and scrim fade do not run. That cost
+is accepted deliberately: arming only on a deliberate visit (a stored focus, which
+only a chip click writes) kept the motion and discarded typed answers, and losing
+an answer silently is worse than losing an animation. Narrowing it again needs a
+"this body holds a draft" signal out of the command centre rather than an
+inference from which tab is focused. Dynamic
 Dashboard adds native task progress, descendant-session summaries, questions
 and approvals to this tab. The chat's one-time **Dashboard** hint card above the
 composer opens this tab and moves keyboard focus into it, then does not return

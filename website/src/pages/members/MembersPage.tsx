@@ -217,10 +217,22 @@ const ACTIVITY_RING = 50
 export const CREW_NOTES_TAB_ID = 'crew-notes'
 export const CREW_WORK_LOG_TAB_ID = 'crew-work-log'
 export const CREW_DASHBOARD_TAB_ID = 'crew-dashboard'
-/** Host tabs of the crewmate panel, in strip order. Notes is the default focus.
+/** Host tabs of the crewmate panel, in strip order. The FIRST one is also the
+ *  default focus (`usePanelTabs`' `leadingIds[0]`), so the two are one fact
+ *  rather than two settings that can disagree.
+ *
+ *  Dashboard leads, Notes comes last. The order is how much of it is addressed
+ *  to the person reading it: Dashboard is what the crewmate publishes FOR them,
+ *  Work log is what it did, and Notes is the crewmate's own working memory —
+ *  written by the agent, for the agent, in whatever language and shorthand it
+ *  works in. Opening a crewmate on that read as paths, rules and half-sentences
+ *  a person has no use for, which is what the RFC's 2026-09-30 amendment
+ *  changes. A stored focus still wins: `usePanelTabs` only falls back to this
+ *  one when the strip has none.
+ *
  *  Must not collide with a chat `TabKind` — `'summary'` is the chat page's
  *  session-summary view, a different thing. */
-export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_NOTES_TAB_ID, CREW_WORK_LOG_TAB_ID, CREW_DASHBOARD_TAB_ID]
+export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_DASHBOARD_TAB_ID, CREW_WORK_LOG_TAB_ID, CREW_NOTES_TAB_ID]
 /** Chat-panel views this page withholds from the strip and the + menu
  *  (`SidePanel.hiddenViews`). The unfed half is DERIVED, not enumerated: every
  *  view `VIEW_DATA_SOURCE` classifies as `chat-transcript` (Changes / Issues /
@@ -1430,7 +1442,7 @@ export default function MembersPage() {
   // member's (or the endpoint could not repair it), so a cached key kept
   // through it would leave every slot-bound panel view (Side chat, Artifacts,
   // Files…) aimed at a foreign session. The panel falls back to the slot-free
-  // Notes / Work log / Dashboard tabs; the thread column keeps rendering the cached key under its
+  // Dashboard / Work log / Notes tabs; the thread column keeps rendering the cached key under its
   // own failure notice (its pre-existing contract, see activeThreadFailed).
   const confirmedSlot =
     active && (pendingThreadFor === active.name || activeThreadFailed) ? '' : activeSlot
@@ -1620,6 +1632,24 @@ export default function MembersPage() {
   const dashboardVisible = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
   const [dashboardVisitedFor, setDashboardVisitedFor] = useState<string | null>(null)
   useEffect(() => {
+    // Armed whenever the Dashboard is on screen, INCLUDING by merely landing on
+    // it. What the flag protects is an unsaved answer: a pending question's
+    // draft lives only in `QuestionCard`'s own state and the command centre's
+    // panel-local `drafts`, nowhere persisted, so a body that unmounts on a tab
+    // switch or a panel close takes the typed text with it. Three comments in
+    // that panel already promise the opposite ("pending QuestionCard answer
+    // drafts remain mounted"), and this is what keeps that promise.
+    //
+    // It is armed on arrival even though a narrower rule was tried. With
+    // Dashboard as the landing tab this is true on every crewmate open, so the
+    // flag also latches `hasTaskDashboard` below and a closed panel is then
+    // hidden with `display: none` rather than leaving `AnimatePresence` -- the
+    // docked-column collapse and the drawer slide and scrim fade do not run.
+    // That is a real cost and it is accepted deliberately: arming only on a
+    // stored focus (a click on the chip) kept the motion but discarded text the
+    // person had typed, and losing an answer silently is worse than losing an
+    // animation. Narrowing it again needs a signal for "this body holds a draft"
+    // out of the command centre, not a guess from which tab is focused.
     if (dashboardVisible) setDashboardVisitedFor(activeMemberKey)
   }, [dashboardVisible, activeMemberKey])
   const closeOverlay = useCallback(() => setOverlayOpen(false), [])
@@ -2888,6 +2918,12 @@ export default function MembersPage() {
         // chat; once that chat is closed the roster is the screen and the
         // notice waits for the reopen.
         className={`${activeName || activeTeam || postCreateError?.kind === 'roster' ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col min-h-0`}
+        // The page's main column: the thread (or the team view, or an empty
+        // state), and never the side panel, which is a sibling of this section.
+        // Named so a case can ask what the THREAD says without matching the
+        // panel's own copy — the two surfaces share several sentences, "Opening
+        // the conversation…" among them, and each says it about itself.
+        data-testid="member-main-column"
       >
         {!greetingNoticeInRoster && postCreateNotice}
         {/* The hero yields to a post-create notice: after the FIRST create a
@@ -3737,7 +3773,17 @@ export default function MembersPage() {
           const dashboardBody = (
             <div className="h-full min-h-0 flex flex-col" data-testid="member-dashboard" aria-label={t('pages.membersPage.dashboard_tab')}>
               <div className="px-3 pt-3 shrink-0">{identityRow}</div>
-              {!confirmedSlot && !activeThreadFailed && <p role="status" className="px-3 text-sm text-muted">{t('pages.membersPage.opening_thread')}</p>}
+              {/* Said here only when the MAIN COLUMN is not already saying it.
+                  That column renders this same sentence while it has no pane to
+                  show (`activeSlot` unset), and as the panel's landing tab this
+                  body is now on screen for that whole window -- so both surfaces
+                  said "Opening the conversation…" at once, one of them a live
+                  region, on every cold open. With a cached thread up beside it
+                  the panel's own line is the only one, and it is the honest
+                  state: this body cannot bind until the POST confirms. */}
+              {!confirmedSlot && !activeThreadFailed && activeSlot
+                ? <p role="status" className="px-3 text-sm text-muted">{t('pages.membersPage.opening_thread')}</p>
+                : null}
               <div className="flex-1 min-h-0">
                 <CommandCenterPanel
                   key={activeMemberKey}
@@ -3761,10 +3807,11 @@ export default function MembersPage() {
           // the DM header, and three faces in a row would name nothing.
           const leadingTabs: SidePanelLeadingTab[] = [
             {
-              id: CREW_NOTES_TAB_ID,
-              title: t('pages.membersPage.notes_tab'),
-              icon: <NotebookPen className="lucide-inline" aria-hidden="true" />,
-              render: () => notesBody,
+              id: CREW_DASHBOARD_TAB_ID,
+              title: t('pages.membersPage.dashboard_tab'),
+              icon: <LayoutDashboard className="lucide-inline" aria-hidden="true" />,
+              keepMounted: dashboardVisitedFor === activeMemberKey,
+              render: () => dashboardBody,
             },
             {
               id: CREW_WORK_LOG_TAB_ID,
@@ -3773,11 +3820,10 @@ export default function MembersPage() {
               render: () => workLogBody,
             },
             {
-              id: CREW_DASHBOARD_TAB_ID,
-              title: t('pages.membersPage.dashboard_tab'),
-              icon: <LayoutDashboard className="lucide-inline" aria-hidden="true" />,
-              keepMounted: dashboardVisitedFor === activeMemberKey,
-              render: () => dashboardBody,
+              id: CREW_NOTES_TAB_ID,
+              title: t('pages.membersPage.notes_tab'),
+              icon: <NotebookPen className="lucide-inline" aria-hidden="true" />,
+              render: () => notesBody,
             },
           ]
           // Everything both placements share. Two different keys do two
