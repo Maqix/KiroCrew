@@ -432,6 +432,18 @@ class TelegramTransport(MessagingTransport):
         """Only one unambiguous owner DM may drive a dashboard session inbound."""
         return thread_id is None and len(self._allowed) == 1 and conversation_id in self._allowed
 
+    def direct_peer_of(self, conversation_id: str) -> str:
+        """A private ``chat_id`` IS the peer's ``user_id``, so the conversation
+        names its own peer -- for the conversations this transport opens, which are
+        exactly the allow-listed users' private chats (:meth:`resolve_conversation`
+        returns the user id unchanged). Answered on the same roster test
+        :meth:`may_send_to` applies to a threadless conversation, so a group or
+        forum ``chat_id``, which is never on the user roster, reads ``""``.
+        """
+        if conversation_id and conversation_id in self._allowed:
+            return conversation_id
+        return ""
+
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
         await self._client.start()
