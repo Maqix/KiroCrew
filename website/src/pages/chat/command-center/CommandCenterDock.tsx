@@ -1,83 +1,91 @@
 import { memo, useId, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { LayoutDashboard } from 'lucide-react'
+import { EyeOff, PanelRightOpen } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { Btn } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { fmtNumber } from '../../../i18n/format'
-import { i18nT } from '../../../i18n/t'
 import { useLanguageGeneration } from '../../../i18n/useLanguageGeneration'
 import { useCommandCenter } from './useCommandCenter'
-import { PANEL_HEADING_ATTR } from './CommandCenterPanel'
-import { safeSetItem } from '../../../utils/safeStorage'
+import StatusTiles, { type Tile } from './StatusTiles'
+import TileList, { TILE_LABEL_KEYS } from './TileList'
+import { PANEL_HEADING_ATTR } from './panelHeading'
 
-/** Once a session's card has been clicked it opens the side panel and stays
- * gone for that session: the panel tab is the way back in. Keyed per slot so
- * another session's first dashboard still gets its one-time entrance.
- * Registered byte-identically in `utils/storageGc.ts` `SESSION_PREFIXES` so a
- * dead session's flag is collected; keep the two in step. */
-const DISMISS_PREFIX = 'mc-task-dashboard-dismissed:'
-function isDismissed(slot: string | null): boolean {
-  if (!slot) return false
-  try { return localStorage.getItem(DISMISS_PREFIX + slot) === '1' } catch { return false }
-}
-
-/** The click unmounts the card, and the focused button with it; neither
- * caller's `onOpen` moves focus, so it would fall to `<body>` and a keyboard or
- * screen-reader user would lose their place. The panel mounts in the commit the
- * caller's updates schedule (or is already mounted, hidden, and merely shown),
- * so look for its shown heading over a few frames and land there. */
-function focusOpenedPanel(attempt = 0) {
+/** Neither caller's `onOpen` moves focus; the panel is lazy, so its first open
+ * waits on a chunk, and later opens mount (or merely show) it in the commit the
+ * caller's updates schedule. Look for its shown heading for up to a second and
+ * land there. `from` is the element focused when the open was asked for: once
+ * focus has left it (the user clicked the composer while the chunk loaded), the
+ * search stops rather than yanking focus back. Body or nothing focused counts as
+ * still waiting, since that is where focus rests after a click on a button. */
+const FOCUS_BUDGET_MS = 1000
+function focusOpenedPanel(from: Element | null, deadline = performance.now() + FOCUS_BUDGET_MS) {
+  const active = document.activeElement
+  if (active && active !== document.body && active !== from) return
   const heading = Array.from(document.querySelectorAll<HTMLElement>(`[${PANEL_HEADING_ATTR}]`)).find(el => !el.closest('[hidden]') && el.getClientRects().length > 0)
   if (heading) { heading.focus({ preventScroll: true }); return }
-  if (attempt < 5) requestAnimationFrame(() => focusOpenedPanel(attempt + 1))
+  if (performance.now() < deadline) requestAnimationFrame(() => focusOpenedPanel(from, deadline))
 }
 
-/** A one-time entrance, not a prescribed dashboard layout. The authored page
- * lives in the existing panel, which already owns dock/expand/mobile behaviour. */
+
+/** Three numbers above the composer, in the composer's own column: progress,
+ * what is blocked, what waits on the user. A tile opens its own short list; the
+ * side panel holds the full page and every answer/approval control, so this
+ * surface never mounts a second copy of a draft. Each tile is a disclosure
+ * button for its list (clicking the open one closes it), so the row carries two
+ * actions (open the panel, hide). Hidden, it shrinks to one dot that lights only
+ * when something needs the user. Gone once the task settles. */
 function CommandCenterDock({ slot, onOpen }: { slot: string | null; onOpen: () => void }) {
+  const { t } = useTranslation()
+  // memo() bails out of the provider-level repaint; fmtNumber reads the language at call time.
   useLanguageGeneration()
-  // The slot dismissed during this mount. Kept in state as well as storage so a
-  // click hides the card even when the flag could not be persisted (quota full,
-  // storage blocked); keyed by slot so a switch still reads that slot's own flag.
-  const [dismissedHere, setDismissedHere] = useState<string | null>(null)
-  const dismissed = (slot !== null && slot === dismissedHere) || isDismissed(slot)
-  // A dismissed session's card renders nothing, so it must not keep reading the
-  // command-center sources either: disabled, the hook issues no requests.
-  const data = useCommandCenter(slot, !dismissed)
+  const data = useCommandCenter(slot)
+  const [hidden, setHidden] = usePersistedBool('mc-task-dashboard-hidden', false)
+  const [selected, setSelected] = useState<Tile | null>(null)
   const reducedMotion = useReducedMotion()
-  const hintId = useId()
-  const open = () => {
-    if (slot) {
-      safeSetItem(DISMISS_PREFIX + slot, '1')
-      setDismissedHere(slot)
-    }
-    onOpen()
-    focusOpenedPanel()
-  }
-  // Same content column as the sibling status bars (TaskProgressBar & co), so
-  // the card lines up with the transcript and composer instead of the pane edge.
-  // The column stays mounted so AnimatePresence can play the clicked card out
-  // instead of cutting it; the card itself is the only thing that comes and goes.
-  return <div className="px-4 mx-auto w-full relative z-[2]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-  <AnimatePresence initial={false}>
-    {data.relevant && !dismissed && <motion.div key="card" animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }} transition={{ duration: reducedMotion ? 0 : 0.2 }} className="mb-2 rounded-lg border border-border bg-card overflow-hidden" data-testid="command-center-dock">
-      <div className="p-2">
-        <Btn className="w-full justify-start border-0 min-w-0" onClick={open} aria-describedby={hintId}>
-          <LayoutDashboard size={15} className="text-accent shrink-0" /><span className="truncate">{i18nT('commandCenter.title')}</span>
-          {data.attention.length > 0 && <span className="ml-auto text-warn font-mono">{i18nT('commandCenter.input_count', { countText: fmtNumber(data.attention.length) })}</span>}
-        </Btn>
-      </div>
-      {data.stale ? <div className="px-3 pb-2">
-        {/* No hand-off: the adjacent chat composer and panel can hold unsent answer drafts. */}
-        <ErrorNotice message={i18nT('commandCenter.stale')} />
-      </div> : <p className="px-3 pb-2 text-[12px] text-muted" aria-live="polite">
-        {i18nT('commandCenter.summary', { running: fmtNumber(data.running), blocked: fmtNumber(data.blocked), approvals: fmtNumber(data.approvalCount) })}
-      </p>}
-      {/* Names the click's outcome: the card is a one-time hint, not a persistent control. */}
-      <p id={hintId} className="px-3 pb-2 text-[12px] text-muted">{i18nT('commandCenter.hint_once')}</p>
-    </motion.div>}
-  </AnimatePresence>
-  </div>
+  const idBase = useId()
+  const open = () => { const from = document.activeElement; onOpen(); focusOpenedPanel(from) }
+  const attention = data.attention.length
+  const transition = { duration: reducedMotion ? 0 : 0.24, ease: [0.34, 1.2, 0.64, 1] as const }
+  const shown = data.relevant && !data.finished
+  return (
+    // `relative z-[2]` clears the transcript's bottom mask, as the sibling bars
+    // do. The INPUT column, not the message column: the dock is the composer's
+    // own status line and must share its edges exactly. The column stays
+    // mounted so the settled dock can collapse out instead of cutting.
+    <div className="px-4 mx-auto w-full relative z-[2]" style={{ maxWidth: 'var(--mc-input-width, 900px)' }}>
+    <AnimatePresence initial={false}>
+      {shown && <motion.div key="dock" exit={{ opacity: 0, height: 0 }} transition={transition} className={`mb-1 flex overflow-hidden ${hidden ? 'justify-end' : ''}`} data-testid="command-center-dock">
+        {/* One element in both forms: the box morphs into the dot and back. */}
+        <motion.div layout transition={transition} className={hidden ? 'inline-flex' : 'w-full min-w-0'}>
+          {hidden
+            ? <Btn aria-label={attention > 0 ? t('commandCenter.input_count', { countText: fmtNumber(attention) }) : t('commandCenter.show')} title={t('commandCenter.show')}
+              onClick={() => setHidden(false)} className="rounded-full bg-card px-2 py-1 gap-1.5 min-h-7">
+              <motion.span aria-hidden="true" className={`inline-block w-2 h-2 rounded-full ${attention > 0 ? 'bg-danger' : 'bg-muted'}`}
+                animate={attention > 0 && !reducedMotion ? { opacity: [1, 0.35, 1] } : undefined} transition={{ duration: 1.4, repeat: 3 }} />
+              {attention > 0 && <span className="font-mono tabular-nums text-[12px] text-danger">{fmtNumber(attention)}</span>}
+            </Btn>
+            : <div className="w-full min-w-0 space-y-1.5">
+              <StatusTiles data={data} selected={selected} idBase={idBase} onSelect={tile => setSelected(current => current === tile ? null : tile)}
+                controls={<div className="flex items-center gap-1">
+                  {/* Labelled in the cell: an icon alone does not say where the full page is. */}
+                  <Btn aria-label={t('commandCenter.open_panel')} onClick={open} className="px-2 min-h-7 text-[12px] whitespace-nowrap"><PanelRightOpen size={14} />{t('commandCenter.open_panel')}</Btn>
+                  <Btn aria-label={t('commandCenter.hide')} title={t('commandCenter.hide')} onClick={() => setHidden(true)} className="px-1.5 min-h-7"><EyeOff size={14} /></Btn>
+                </div>} />
+              {/* No hand-off: the adjacent chat composer and panel can hold unsent answer drafts. */}
+              {data.stale && <ErrorNotice message={t('commandCenter.stale')} />}
+              <motion.div initial={false} animate={{ height: selected ? 'auto' : 0, opacity: selected ? 1 : 0 }} transition={transition} aria-hidden={!selected} className="overflow-hidden">
+                {selected && <div id={`${idBase}-${selected}`} role="region" aria-label={t(TILE_LABEL_KEYS[selected])} className="rounded-lg border border-border bg-card px-2.5 py-1.5">
+                  <TileList tile={selected} data={data} onOpen={open} />
+                </div>}
+              </motion.div>
+            </div>}
+        </motion.div>
+      </motion.div>}
+    </AnimatePresence>
+    </div>
+  )
 }
 
 export default memo(CommandCenterDock)

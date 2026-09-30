@@ -49,7 +49,6 @@
     "stopped": "Interrompido",
     "progress": "{{done}} / {{total}} aceitos ou marcados como concluídos",
     "progress_label": "Progresso verificado da tarefa",
-    "live_activity": "Atividade ao vivo",
     "adaptive_title": "Criar uma visualização publicada para esta tarefa",
     "adaptive_description": "O agente pode publicar aqui uma visualização específica: linha do tempo, quadro, mapa de dependências ou outra visualização útil. Até lá, a atividade ao vivo e as solicitações continuam disponíveis.",
     "contained": "Responda em Perguntas e Aprovações acima. A página criada pelo agente não pode aprovar ações.",
@@ -67,9 +66,16 @@
     "send_refused": "A sessão não aceitou esta resposta.",
     "send_unknown": "A entrega é incerta. Sua resposta foi preservada. Confira a sessão antes de tentar novamente para evitar envios duplicados.",
     "updated": "Última verificação: {{time}}",
-    "hint_once": "Abre a aba Painel. Esta dica não será mostrada novamente.",
     "input_count": "Precisa de você: {{countText}}",
-    "summary": "Em execução {{running}} · Bloqueado {{blocked}} · Aprovações {{approvals}}"
+    "tile_progress": "Progresso",
+    "hide": "Ocultar blocos de status",
+    "show": "Mostrar blocos de status",
+    "open_panel": "Abrir Dashboard",
+    "nothing_running": "Nada em execução.",
+    "running_count": "{{countText}} em execução",
+    "no_blocked": "Nada bloqueado.",
+    "more_in_panel": "Mais {{countText}} no Dashboard",
+    "panel_load_failed": "Não foi possível carregar o painel Dashboard. Recarregue a página para tentar novamente."
   },
   "terminalTab": {
     "rename": "Renomear",

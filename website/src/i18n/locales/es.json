@@ -49,7 +49,6 @@
     "stopped": "Detenido",
     "progress": "{{done}} / {{total}} aceptados o marcados como terminados",
     "progress_label": "Progreso verificado de la tarea",
-    "live_activity": "Actividad en vivo",
     "adaptive_title": "Crear una vista publicada para esta tarea",
     "adaptive_description": "El agente puede publicar aquí una vista específica: cronología, tablero, mapa de dependencias u otra vista útil. Mientras tanto, la actividad en vivo y las solicitudes siguen disponibles.",
     "contained": "Responde en Preguntas y Aprobaciones, arriba. La página diseñada por el agente no puede aprobar acciones.",
@@ -67,9 +66,16 @@
     "send_refused": "La sesión no aceptó esta respuesta.",
     "send_unknown": "La entrega es incierta. Tu respuesta se conserva. Revisa la sesión antes de reintentar para evitar envíos duplicados.",
     "updated": "Última comprobación: {{time}}",
-    "hint_once": "Abre la pestaña Panel. Este aviso no se mostrará de nuevo.",
     "input_count": "Te necesita: {{countText}}",
-    "summary": "En ejecución {{running}} · Bloqueado {{blocked}} · Aprobaciones {{approvals}}"
+    "tile_progress": "Progreso",
+    "hide": "Ocultar mosaicos de estado",
+    "show": "Mostrar mosaicos de estado",
+    "open_panel": "Abrir Dashboard",
+    "nothing_running": "No hay nada en ejecución.",
+    "running_count": "{{countText}} en ejecución",
+    "no_blocked": "No hay nada bloqueado.",
+    "more_in_panel": "{{countText}} más en el Dashboard",
+    "panel_load_failed": "No se pudo cargar el panel Dashboard. Recarga la página para intentarlo de nuevo."
   },
   "terminalTab": {
     "rename": "Renombrar",

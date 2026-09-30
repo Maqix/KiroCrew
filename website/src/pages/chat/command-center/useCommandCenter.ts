@@ -81,16 +81,37 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
     && !!a.session_key && scopedKeySet.has(slotKey(a.session_key)),
   )
   const sources = fleet ? [questions, approvals, workflows, artifacts] : [questions, approvals, workflows, work, artifacts]
+  const loading = canRead && sources.some(q => q.isPending)
+  const stale = canRead && (!connected || sources.some(q => q.isError))
+  // Only a complete, current read may declare the task over: a half-loaded or
+  // disconnected inventory looks settled because it is empty. The verdict is
+  // then LATCHED for this root: a websocket drop, a transient source error or a
+  // remount's loading window must not bring the dock back for a task that is
+  // over. Only evidence of new work releases it — a complete read that shows
+  // something running, blocked or asking, or a live slot state that already
+  // says someone is waiting on the user (`attention` reads the slot flags, so
+  // it needs no completed read to be current).
+  const complete = !loading && !stale
+  const [settledLatch, setSettledLatch] = useState({ scope: draftScope, settled: false })
+  if (settledLatch.scope !== draftScope) setSettledLatch({ scope: draftScope, settled: false })
+  const latched = settledLatch.scope === draftScope && settledLatch.settled
+  const unsettledNow = (complete && !model.settled) || model.attention.length > 0
+  const finished = latched ? !unsettledNow : complete && model.settled
+  if (finished !== latched) setSettledLatch({ scope: draftScope, settled: finished })
   return {
     ...model, dashboards, connected, onQuestionDraftChange,
     approvalMode: effectiveApprovalMode(approvalMode, slots.find(s => s.key === root)),
-    loading: canRead && sources.some(q => q.isPending),
-    stale: canRead && (!connected || sources.some(q => q.isError)),
+    loading, stale,
     // Real clock from completed reads. A websocket connection alone doesn't
     // establish that a server-side question/approval inventory is up to date.
     updatedAt: Math.min(...sources.map(q => q.dataUpdatedAt)),
     approvalCount: model.attention.filter(a => a.kind === 'approval').length,
-    relevant: scoped.length > 1 || model.nodes.some(n => n.kind !== 'session') || model.workItems.length > 0 || dashboards.length > 0 || model.attention.some(a => a.kind === 'approval'),
+    // Anything waiting on the user makes the dock relevant, whatever its kind: the
+    // Needs you tile is the dock's reason to exist. A lone session's TODO list is
+    // deliberately NOT enough: TaskProgressBar already shows that plan above the
+    // composer, and a second readout of the same numbers would only repeat it.
+    relevant: scoped.length > 1 || model.nodes.some(n => n.kind !== 'session') || model.workItems.length > 0 || dashboards.length > 0 || model.attention.length > 0,
+    finished,
   }
 }
 

@@ -8655,10 +8655,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               {/* Close the find pane FIRST, as revealAppInPanel / handleFileOpen /
                   handleOpenDiff do: the find pane owns the right-hand dock
                   exclusively (shouldMountSidePanel returns false while it is
-                  open), and the card persists its one-time dismissal before
-                  calling this -- so without the close the card would be gone
-                  for good while the dashboard opened behind a pane the user
-                  cannot see past. `close()` is safe with nothing open. */}
+                  open), so without the close the dashboard would open behind a
+                  pane the user cannot see past. `close()` is safe with nothing
+                  open. */}
               <CommandCenterDock slot={activeSlot} onOpen={() => { search.close(); dispatch(openActivityPanel()); tabsCtl.openView('command-center') }} />
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />

@@ -3,6 +3,7 @@ import type { ApprovalModeKey } from '../../../components/ApprovalModePicker'
 import { i18nT } from '../../../i18n/t'
 import { fmtNumber } from '../../../i18n/format'
 import { slotChannelNamespace } from '../../../utils/channelOrigin'
+import { deriveToolCallTitle, parseToolArgs } from '../../../utils/toolCallTitle'
 
 export type RunState = 'running' | 'idle' | 'done' | 'blocked' | 'waiting' | 'needs_input' | 'stopped'
 export const APPROVAL_MODE_KEYS: Record<ApprovalModeKey, string> = {
@@ -54,6 +55,15 @@ export interface AttentionItem {
   approval?: PendingApproval
   approvalMode?: ApprovalModeKey
   native?: boolean
+}
+/** The command an approval asks about, as the transcript would title it. Empty
+ * when the inventory carried no tool input to title. */
+export function approvalTitle(approval: PendingApproval): string {
+  const input = approval.tool_input
+  return deriveToolCallTitle({
+    toolName: approval.tool, title: approval.tool || '',
+    rawInput: parseToolArgs(input) ?? (typeof input === 'string' ? { command: input } : input),
+  }).title
 }
 export interface WorkItem {
   item_id: string
@@ -161,9 +171,11 @@ export function buildCommandCenter(source: CommandCenterSources) {
       addAttention({ id: `session-input:${s.key}`, slot: s.key, kind: 'open_session' })
     }
   }
+  // A turn can be idle while delegated or orchestrated work is active, or while
+  // a queued message waits to run; those slot flags keep the session running.
   const nodes: RunNode[] = slots.map((s, index) => ({
     id: `session:${s.key}`, kind: 'session', ref: s.key, slot: s.key, title: s.title && s.title !== s.key ? s.title : '', ordinal: index + 1,
-    state: s.needs_input || s.pending_approval ? 'needs_input' : s.running ? 'running' : 'idle',
+    state: s.needs_input || s.pending_approval ? 'needs_input' : s.running || s.subagents_running || s.orchestrating || (s.queue_depth ?? 0) > 0 ? 'running' : 'idle',
     detail: s.todo?.current || undefined,
   }))
   const agentIds = new Set<string>()
@@ -194,9 +206,19 @@ export function buildCommandCenter(source: CommandCenterSources) {
     : !workItems.length && todo?.tasks.length
       ? { done: todo.tasks.filter(t => t.completed).length, total: todo.tasks.length, source: 'todo' as const }
       : null
+  const RESTING: RunState[] = ['idle', 'done', 'stopped']
   return { nodes, attention, workItems, progress,
     running: nodes.filter(n => n.state === 'running').length,
     blocked: nodes.filter(n => n.state === 'blocked').length + workItems.filter(w => w.state === 'blocked').length,
+    // Nothing runs, waits or asks, and every counted item rests. An idle session
+    // with an open plan is NOT settled: the plan is the thing the dock still has
+    // to show. A board that omitted entries is not settled either: the items it
+    // did not return may be the open ones. The done-over-total test applies to
+    // the plan alone: a work board's `done` counts acceptances, so a rejected or
+    // abandoned item rests without ever counting, and `workItems.every` above
+    // already covers the board.
+    settled: attention.length === 0 && !source.work?.omitted && nodes.every(n => RESTING.includes(n.state))
+      && workItems.every(w => RESTING.includes(w.state)) && (progress?.source !== 'todo' || progress.done >= progress.total),
   }
 }
 

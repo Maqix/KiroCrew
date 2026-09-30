@@ -189,4 +189,27 @@ describe('command center projection', () => {
     ] }))
     expect(model.attention.map(a => a.id)).toEqual(['question:root:card', 'question:child:card'])
   })
+
+  it.each([
+    ['delegated work before live subagent frames arrive', { subagents_running: true }],
+    ['a queued message', { queue_depth: 1 }],
+    ['orchestration outside the active turn', { orchestrating: true }],
+  ] satisfies [string, Partial<ChatSlot>][])('keeps an idle turn unsettled while %s remains', (_description, activity) => {
+    const model = buildCommandCenter(sources({ slots: [slot('root', activity)] }))
+    expect(model.nodes[0].state).toBe('running')
+    expect(model.settled).toBe(false)
+  })
+
+  it('settles only when every run rests, the plan is complete and the board omitted nothing', () => {
+    const done = { item_id: 'a', title: 'a', state: 'accepted' }
+    expect(buildCommandCenter(sources({ work: { items: [done] } })).settled).toBe(true)
+    // A rejected item rests without counting as done; the board is still finished.
+    expect(buildCommandCenter(sources({ work: { items: [done, { item_id: 'r', title: 'r', state: 'rejected' }] } })).settled).toBe(true)
+    expect(buildCommandCenter(sources({ work: { items: [done], omitted: 1 } })).settled).toBe(false)
+    expect(buildCommandCenter(sources({ work: { items: [done, { item_id: 'b', title: 'b', state: 'dispatched' }] } })).settled).toBe(false)
+    expect(buildCommandCenter(sources({ slots: [slot('root', { todo: { tasks: [{ id: '1', text: 'x', completed: false }], total: 1, completed: 0 } }), slot('child', { created_by: 'root' })] })).settled).toBe(false)
+    expect(buildCommandCenter(sources({ subagents: { root: { w: agent('w') } } })).settled).toBe(false)
+    expect(buildCommandCenter(sources({ subagents: { root: { w: agent('w', { status: 'done' }) } } })).settled).toBe(true)
+    expect(buildCommandCenter(sources({ approvals: [{ id: 'p', slot: 'child' }] })).settled).toBe(false)
+  })
 })
