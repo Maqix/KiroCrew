@@ -149,6 +149,16 @@ def _turn_items(
             "cache_read": 5,
             "cache_write": 1,
         }
+        # The provider's occupancy reading. Present on the MEASURED closer only, which
+        # is what carries it in production -- and load-bearing for
+        # ``test_a_fold_never_reaches_into_the_state_it_was_handed``: ``usage`` stamps
+        # this reading onto the context rows its ``context/composed`` already
+        # appended, and those row dicts are SHARED with an earlier snapshot by
+        # ``_usage_copy``. Without a closer that carries occupancy, the copier's miss
+        # is invisible -- the fold produces the right value while editing a caller's
+        # state, and nothing raises. A composition must precede this entry in the same
+        # turn for the stamp to have a row to reach (see ``_busy_log``).
+        done["context"] = {"used": 4_200, "window": 200_000}
     return [
         {"type": "turn/started", "data": start},
         {"type": "step/started", "data": {"turn": turn, "step": 1}},

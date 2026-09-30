@@ -224,6 +224,40 @@ KNOWN_TYPES: Final[frozenset[str]] = frozenset(SESSION_ENTRY_TYPES)
 #: reader is told the list is a window rather than the whole history.
 TIMELINE_LIMIT: Final[int] = 200
 
+#: Newest per-turn context rows a ``usage`` projection keeps, the same posture and
+#: the same value as :data:`TIMELINE_LIMIT`: this is the second window this module
+#: holds, and a projection is pushed over a socket on every growth, so its size is
+#: bounded by construction rather than by how long the session ran. The count dropped
+#: off the front is reported beside it as ``context.turns_omitted`` -- ON THE WIRE and
+#: not yet drawn by any surface, so a reader of the projection can tell this is a
+#: window while the Context panel's own "earlier hidden" count still understates the
+#: hidden turns by exactly that number. Displaying it is a frontend change this fold
+#: does not make.
+#:
+#: Measured at the WORST CASE rather than reasoned about, since this is the fold's
+#: largest new state: 200 rows each holding :data:`CONTEXT_SOURCES_PER_TURN_LIMIT`
+#: sources whose labels sit at :data:`TEXT_LIMIT` is 808,912 bytes of Python objects.
+#: ``test_a_full_context_window_stays_under_the_slot_fold_cell_budget`` re-measures
+#: that same worst case, so the figure fails rather than rots -- and it measures the
+#: CAP, not a realistic row, because a realistic 40-source row is 511,192 and would
+#: leave the real ceiling untested.
+#:
+#: It matters because this fold is read per SLOT, so its state lands in the slot-fold
+#: cache, whose own ceiling is stated against its largest member -- ``radar`` at
+#: 995,342 bytes. A full window here fits under that with 186,430 bytes to spare.
+#: The row shape is what buys that: the entry's own list of three-key dicts measures
+#: 3,319,357 at the same worst case and would breach the ceiling by 2.3 MB. See
+#: ``row_sources`` in ``_usage_step``.
+CONTEXT_TURNS_LIMIT: Final[int] = 200
+
+#: Sources one retained context row details. The label vocabulary
+#: (``context_blocks.split_blocks``) is fixed and far under this, so the cap is what
+#: keeps a row bounded against a NEWER writer's longer vocabulary rather than a limit
+#: today's writer reaches. Past it the row's own ``chars``/``tokens`` totals stay as
+#: recorded and ``sources_omitted`` counts what was left out, so a truncated row is
+#: never mistaken for a smaller prompt.
+CONTEXT_SOURCES_PER_TURN_LIMIT: Final[int] = 64
+
 #: Distinct tool names a ``tools`` projection details. Past it the totals stay
 #: exact and ``names_omitted`` counts the names left out.
 TOOL_NAME_LIMIT: Final[int] = 100
@@ -1367,6 +1401,27 @@ def _usage_start() -> dict[str, Any]:
         "context_blocks": 0,
         "context_estimated": 0,
         "context_by_source": {},
+        # The per-turn window the Context panel reads, newest LAST, bounded by
+        # ``CONTEXT_TURNS_LIMIT``. The cumulative ``context_by_source`` above answers
+        # "what does this session inject in total"; a panel drawing one bar per turn
+        # needs the turns themselves, and cannot recover them from a sum.
+        "context_turns": [],
+        "context_turns_dropped": 0,
+        # The newest NON-ZERO window ``request/configured`` stated. That entry is
+        # written only when the configuration CHANGED, so the newest one still
+        # describes every turn since, and a zero means the provider reported no
+        # window rather than a window of nothing. This is what stamps a context ROW,
+        # whose question is "what window was this prompt composed against".
+        "context_window": 0,
+        # No session-wide occupancy maximum is kept here. Occupancy is stamped onto the
+        # ROWS instead (see the ``turn/completed`` branch in ``_usage_step``), because a
+        # reader bounded to a time window has to be able to exclude a reading from
+        # outside it -- and a scalar maximum cannot be narrowed to a window after the
+        # fact. The reading and the window it was taken against stay together on the
+        # row, so any window's peak is derivable from the rows inside it.
+        # The model the newest ``request/configured`` named, stamped onto each context
+        # row as it is appended. Truncated like every other retained label.
+        "context_model": "",
         "compactions": 0,
         "freed_pct": 0.0,
         "steps": 0,
@@ -1478,6 +1533,52 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
                 state["tokens"][dimension] += measured
                 if per_model is not None:
                     per_model["tokens"] += measured
+        # The fullest this window got, as the PROVIDER measured it, taken as one pair
+        # so the reading and its window always come from the same turn.
+        #
+        # Deliberately NOT derived from ``tokens.input`` above: that total is summed
+        # over every model call the turn made, so on a tool-using turn it exceeds the
+        # window it would be divided by, and the ratio a reader computes from it is
+        # wrong in the direction that looks alarming. Billing and occupancy are two
+        # quantities, and only the second answers "how full did this get".
+        occupancy = data.get("context")
+        if isinstance(occupancy, dict):
+            # Stamped onto this turn's own context ROWS rather than kept as a
+            # session-wide scalar, because a reader asking about a TIME WINDOW has to
+            # be able to exclude a peak from outside it. A scalar maximum cannot be
+            # narrowed after the fact: the fullest turn of the session may be older
+            # than every row a caller asked for, and reporting it would answer a
+            # question nobody asked. On the row the reading travels with a timestamp,
+            # so the peak inside any window is derivable from the rows in it.
+            #
+            # The closer arrives AFTER the compositions it closes, so the rows are
+            # already in the window and are found by walking back from the tail while
+            # the turn matches. A turn with several steps has several rows and the
+            # occupancy is the turn's, so every one of them carries it. A row already
+            # trimmed off the front is simply not there to stamp, which is correct.
+            used = _as_int(occupancy.get("used"))
+            window = _as_int(occupancy.get("window"))
+            turn_no = _as_int(data.get("turn"))
+            rows = state["context_turns"]
+            for index in range(len(rows) - 1, -1, -1):
+                if rows[index]["turn"] != turn_no:
+                    break
+                # REPLACED, never edited in place. ``_usage_copy`` shares these row
+                # dicts between a snapshot and the state that keeps growing -- that
+                # sharing is what makes the copy O(window) instead of O(window x
+                # sources) -- so stamping a row in place would reach into a projection
+                # already handed to a reader and give it occupancy from a later turn.
+                # Replacement is still O(window): the LIST is freshly copied per apply,
+                # so assigning an element touches only this state's own list.
+                rows[index] = {
+                    **rows[index],
+                    "used": used,
+                    # Travels WITH the reading, including as 0: a turn that reported a
+                    # used count but no window is a reading whose window is unknown, and
+                    # borrowing another turn's size would pair the number with something
+                    # it was never measured against.
+                    "used_window": window,
+                }
         duration = data.get("duration_ms")
         if isinstance(duration, int) and not isinstance(duration, bool):
             state["duration_ms"] += duration
@@ -1487,6 +1588,20 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
         state["context_chars"] += _as_int(data.get("chars"))
         if data.get("tokens_estimated") is True:
             state["context_estimated"] += 1
+        # Label to CHARACTERS for this one turn, which is the shape its reader asks
+        # for. Deliberately NOT the entry's own ``[{kind, chars, tokens}]`` list:
+        # per-turn per-source tokens have no reader, and they are not an independent
+        # measurement -- the writer derives every one of them from that source's
+        # ``chars`` at one fixed ratio, and the cumulative ``context_by_source``
+        # below keeps the summed version for a reader who wants them.
+        #
+        # Measured at the worst case rather than argued, and it is what decides the
+        # shape: a full window is 808,912 bytes this way against 3,319,357 as the
+        # entry's list of three-key dicts. This fold is read per SLOT, so the cell
+        # lands in the slot-fold cache whose largest budgeted member is 995,342 --
+        # so the list shape does not merely cost more, it does not fit.
+        row_sources: dict[str, int] = {}
+        sources_omitted = 0
         sources = data.get("sources")
         if isinstance(sources, list):
             for source in sources:
@@ -1502,6 +1617,60 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
                 per_source["tokens"] += _as_int(source.get("tokens"))
                 per_source["chars"] += _as_int(source.get("chars"))
                 state["context_blocks"] += 1
+                # The retained ROW is bounded where the cumulative tally above is
+                # not: that one keys by label and so holds one entry per distinct
+                # label whatever the turn count, while a row is kept per turn and
+                # would multiply any per-row growth by the window. A label at
+                # ``TEXT_LIMIT`` is not keyed, the same reason ``_keyable`` gives
+                # everywhere else: it cannot be told apart from one that was cut, so
+                # two sources would pool into one number.
+                keyed = _as_str(label)
+                if len(row_sources) < CONTEXT_SOURCES_PER_TURN_LIMIT and _keyable(keyed):
+                    row_sources[keyed] = row_sources.get(keyed, 0) + _as_int(source.get("chars"))
+                else:
+                    sources_omitted += 1
+        row: dict[str, Any] = {
+            "turn": _as_int(data.get("turn")),
+            # The entry's own writer-assigned stamp (epoch ms). The entry data
+            # carries no time of its own, and this is the one the log recorded.
+            "ts": entry.time,
+            "chars": _as_int(data.get("chars")),
+            "tokens": _as_int(data.get("tokens")),
+            "tokens_estimated": data.get("tokens_estimated") is True,
+            "sources": row_sources,
+            "sources_omitted": sources_omitted,
+            # Which population this row belongs to, as the COMPOSER stated it, or ""
+            # when it did not. Never derived here: a reader separating the one-off
+            # session-start injection from the per-turn ones needs the composer's own
+            # answer, and the guess available to a fold -- the first row of a unit --
+            # is wrong for the rebuild a mid-session replay triggers.
+            "phase": _as_str(data.get("phase")),
+            # Stamped from the newest configuration rather than looked up later, so a
+            # row records the model and window its prompt was actually measured
+            # against even after either moves.
+            "model": state["context_model"],
+            "window": state["context_window"],
+        }
+        step_no = _as_int(data.get("step"))
+        if step_no:
+            row["step"] = step_no
+        turns_window = state["context_turns"]
+        turns_window.append(row)
+        if len(turns_window) > CONTEXT_TURNS_LIMIT:
+            over = len(turns_window) - CONTEXT_TURNS_LIMIT
+            state["context_turns_dropped"] += over
+            del turns_window[:over]
+    elif entry.type == "request/configured":
+        # Newest NON-ZERO wins. This entry is written only when the configuration
+        # changed, and a provider that reports no window writes 0 -- taking that as
+        # the current window would erase a size the session was told earlier and is
+        # still running under.
+        window = _as_int(data.get("context_window"))
+        if window > 0:
+            state["context_window"] = window
+        configured_model = _as_str(data.get("model"))
+        if configured_model:
+            state["context_model"] = configured_model
     elif entry.type == "compaction/applied":
         state["compactions"] += 1
         freed = data.get("freed_pct")
@@ -1558,6 +1727,24 @@ def _usage_render(state: dict[str, Any]) -> dict[str, Any]:
             "by_source": {
                 name: dict(row) for name, row in sorted(state["context_by_source"].items())
             },
+            # The per-turn window, OLDEST FIRST, and the count that fell off its
+            # front. The pair is what makes this a window rather than a history: a
+            # reader shown 200 rows and no count cannot tell a session of 200 turns
+            # from one of 2,000.
+            "turns": [{**row, "sources": dict(row["sources"])} for row in state["context_turns"]],
+            "turns_omitted": state["context_turns_dropped"],
+            # NO session-wide occupancy pair here. The reading and its window ride on
+            # each ROW (``used`` / ``used_window``), because the reader is bounded to a
+            # TIME WINDOW and a maximum computed here could not be narrowed to it: the
+            # fullest turn of a long session is frequently older than every row the
+            # caller asked for. The reader takes the peak over the rows it keeps and
+            # gets its window from the same row.
+            #
+            # ``window`` remains: it is the newest size ``request/configured`` stated,
+            # which is what a reader with NO occupancy reading in its window can still
+            # be told the session runs under. A reader with a reading uses that row's
+            # own ``used_window`` instead.
+            "window": state["context_window"],
         },
         "compactions": {
             "count": state["compactions"],
@@ -4398,6 +4585,14 @@ USAGE_TYPES: Final[frozenset[str]] = frozenset(
         "subagent/completed",
         "subagent/failed",
         "background/completed",
+        # Not a cost entry, and it is here for the OCCUPANCY pair: the window size
+        # a prompt was measured against lives on this entry and on no other, and a
+        # per-turn context row without it reports a numerator with no denominator.
+        # It is also the only entry written BEFORE the prompt that names the model
+        # the prompt was composed for -- ``turn/completed`` names it afterwards, so
+        # stamping a context row from that one would date each row by the next
+        # turn's configuration.
+        "request/configured",
     }
 )
 
@@ -4450,6 +4645,13 @@ def _usage_copy(state: dict[str, Any]) -> dict[str, Any]:
     grown["context_by_source"] = {
         source: dict(row) for source, row in state["context_by_source"].items()
     }
+    # Appended to, trimmed from the front, and a row is REPLACED when its turn's
+    # occupancy arrives -- so only the LIST is rebuilt. The row dicts are shared with
+    # the snapshot rather than copied, which is what keeps this O(window) instead of
+    # O(window x sources), and that sharing is exactly why the occupancy stamp in
+    # ``_usage_step`` assigns ``rows[index] = {**row, ...}`` instead of writing into a
+    # row: an in-place write would reach a projection already handed to a reader.
+    grown["context_turns"] = list(state["context_turns"])
     grown["omitted_models"] = list(state["omitted_models"])
     return grown
 
@@ -4495,6 +4697,11 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _usage_render,
         affects=USAGE_TYPES,
         copy_state=_usage_copy,
+        # Moved off the base for the per-turn context window and the occupancy pair.
+        # This fold now stores rows and two configuration readings it did not before,
+        # so every savepoint on disk describes the old bookkeeping; the bump retires
+        # THIS fold's files to a cold fold and leaves the other folds' standing.
+        state_version=_FOLD_STATE_VERSION_BASE + 1,
     ),
     # LAZY on purpose, and the one fold where that deserves saying. It is the fold a
     # reader would guess wants pushing, because it is the one that looks like a live
