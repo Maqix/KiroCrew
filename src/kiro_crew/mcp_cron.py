@@ -444,6 +444,20 @@ _BRACE_SCAN_STEP_BUDGET = 1_000_000
 _CRON_MAX_COMMAND_SCAN = 8192
 
 
+# A word that hands its arguments to another parse: a shell, ``eval``, or a
+# launcher that execs one (``env``, ``xargs``, ``find -exec``, ``ssh``...). It gates
+# only the brace scan's THIRD and deeper levels, each needing one more match, so a
+# name missing here is a miss only for a group hidden behind two or more nested
+# re-parses. The list is broad on
+# purpose: an extra name costs an over-refusal, a missing one a bypass.
+_CRON_NESTED_REPARSER_RE = re.compile(
+    r"(?:^|[\s;&|()`/])(?:sh|bash|dash|zsh|ksh|mksh|ash|yash|posh|busybox|eval|exec|env"
+    r"|xargs|find|parallel|nohup|timeout|nice|ionice|stdbuf|setsid|sudo|doas|su|runuser"
+    r"|chroot|unshare|nsenter|flock|watch|script|ssh|python3?|perl|ruby|node|awk)"
+    r"(?=$|[\s;&|()`])"
+)
+
+
 class _ScanTooComplex(Exception):
     """The brace scan hit its step budget, so no verdict was reached."""
 
@@ -487,7 +501,7 @@ def _strip_shell_quotes(command: str) -> str:
     return "".join(out)
 
 
-def _scan_one_level(command: str) -> bool:
+def _scan_one_level(command: str, budget: list[int] | None = None) -> bool:
     """True when *command* holds a brace expansion at its own parse level.
 
     Every character's meaning depends on the quote state it sits in, which is not
@@ -529,8 +543,10 @@ def _scan_one_level(command: str) -> bool:
     states, escaped = _quote_states(command)
     n = len(command)
     # Bounded because the walk below is quadratic on a hostile shape and one entry
-    # point receives an uncapped string. See ``_BRACE_SCAN_STEP_BUDGET``.
-    budget = _BRACE_SCAN_STEP_BUDGET
+    # point receives an uncapped string. See ``_BRACE_SCAN_STEP_BUDGET``. A caller
+    # scanning several projections passes ONE budget so the bound covers them all.
+    if budget is None:
+        budget = [_BRACE_SCAN_STEP_BUDGET]
     for start, ch in enumerate(command):
         if ch != "{" or escaped[start]:
             continue
@@ -541,8 +557,8 @@ def _scan_one_level(command: str) -> bool:
         depth = 0
         j = start + 1
         while j < n:
-            budget -= 1
-            if budget <= 0:
+            budget[0] -= 1
+            if budget[0] <= 0:
                 raise _ScanTooComplex(f"brace scan exceeded {_BRACE_SCAN_STEP_BUDGET} steps")
             if escaped[j] or states[j] != state:
                 # Escaped, or nested inside a quote the brace itself is not in:
@@ -608,12 +624,12 @@ def _has_bash_brace_expansion(command: str) -> bool:
         '{'x,x'}'    literal   quoted braces
 
     ...but the last three rows are about THIS parse level only, and the string
-    reaches more than one parser. Two levels are therefore scanned, and either one
+    reaches more than one parser. Every level is therefore scanned, and any one
     refuses:
 
     1. the command as written, for the shell that runs the cron;
     2. the command with quote delimiters removed, which is what a nested shell
-       receives — verified, ``bash -c "cat ~/.ss{h","h}/x"`` hands the inner shell
+       receives, and again for each deeper shell until removal changes nothing — verified, ``bash -c "cat ~/.ss{h","h}/x"`` hands the inner shell
        ``cat ~/.ss{h,h}/x``, which expands. The separator there sits OUTSIDE the
        quotes while the braces sit inside, so no single-level rule can see it.
 
@@ -637,15 +653,47 @@ def _has_bash_brace_expansion(command: str) -> bool:
     the brace for this scan and is passed through to the tool, where BRE reads
     ``\\{m,n\\}`` as the interval (verified both halves). It is not a remedy for ERE,
     where ``\\{`` means a literal brace, so an ERE interval belongs in a ``script``
-    job. Refusing rather than enumerating which commands re-parse their arguments is
-    deliberate: an enumeration of shell-invoking spellings (``sh -c``, ``xargs``,
+    job. Levels 1 and 2 refuse rather than enumerate which commands re-parse their
+    arguments: an enumeration of shell-invoking spellings (``sh -c``, ``xargs``,
     ``find -exec``, ``env``, ``timeout``, ``busybox``…) fails OPEN on the one nobody
-    listed, and this scan is the only rule covering that class.
+    listed, and this scan is the only rule covering that class. Levels 3 and deeper
+    DO consult such a list (``_CRON_NESTED_REPARSER_RE``), counting one named
+    re-parser per extra level, because an ungated third level strips the BRE
+    backslashes above. The residual is a group hidden behind two or more nested
+    re-parses at least one of which is unlisted.
 
     The common shapes are unaffected: ``awk '{print x, y}'`` and
     ``jq '{a: .x, b: .y}'`` survive quote removal with their bare spaces intact.
     """
-    return _scan_one_level(command) or _scan_one_level(_strip_shell_quotes(command))
+    budget = [_BRACE_SCAN_STEP_BUDGET]
+    level = command
+    depth = 1
+    # Each nested shell strips one more layer, so a group can stay hidden for
+    # any fixed number of levels: ``bash -c "bash -c cat\ p{x\,x}q"`` is clean at
+    # levels 1 and 2 and expands at the third parse. Scan every projection until
+    # quote removal stops changing the text. Each unchanged-or-shorter step
+    # removes at least one character, so this ends; the shared budget bounds it.
+    #
+    # Levels 1 and 2 are always scanned. Level N past that models N-1 nested
+    # re-parses, so it is taken only when the text names at least N-1 re-parsers:
+    # depth is gated by evidence of that many parses. Without the gate the walk
+    # strips the backslashes of ``grep "[0-9]\{1,3\}"`` -- the documented BRE
+    # spelling, which reaches grep as ``[0-9]\{1,3\}`` and is never parsed again --
+    # and refuses it; with a presence test instead of a count, one launcher such as
+    # ``timeout 60 grep ...`` would refuse it the same way.
+    while True:
+        if _scan_one_level(level, budget):
+            return True
+        if depth >= 2 and len(_CRON_NESTED_REPARSER_RE.findall(level)) < depth:
+            return False
+        stripped = _strip_shell_quotes(level)
+        if stripped == level:
+            return False
+        depth += 1
+        budget[0] -= len(level)
+        if budget[0] <= 0:
+            raise _ScanTooComplex(f"brace scan exceeded {_BRACE_SCAN_STEP_BUDGET} steps")
+        level = stripped
 
 
 def _glob_could_reach_credentials(command: str) -> bool:
@@ -1059,8 +1107,23 @@ def _vet_shell_command(command: str, *, governance_checked: bool = False) -> str
             "strings a static check cannot see. If your job needs runtime "
             "composition, ship it as a `script` job — the body is scanned in full."
         )
+    # Scanned after local assignments resolve too: `A={; B=}` then `${A}s,s${B}`
+    # hands a nested shell a brace group the raw text never spells out. Resolution
+    # can multiply the length -- one long value referenced many times -- so the
+    # resolved form gets the same ceiling as the raw one, checked BEFORE the scan
+    # allocates per-character state for it.
+    resolved_for_braces = _substitute_local_assignments(command)
+    if len(resolved_for_braces) > _CRON_MAX_COMMAND_SCAN:
+        return (
+            "Error: cron command blocked: with its local variables filled in, the "
+            f"command is {len(resolved_for_braces)} characters, above the "
+            f"{_CRON_MAX_COMMAND_SCAN}-character ceiling this vet will scan. Ship a "
+            "`script` job instead — the body is scanned in full."
+        )
     try:
-        brace_expansion = _has_bash_brace_expansion(command)
+        brace_expansion = any(
+            _has_bash_brace_expansion(form) for form in (command, resolved_for_braces)
+        )
     except _ScanTooComplex:
         # No verdict was reached, so this is not "clean" -- refusing is the only
         # answer the scan can honestly give. Reached from the IMPORT path, where the
