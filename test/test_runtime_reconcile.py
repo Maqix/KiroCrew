@@ -734,6 +734,220 @@ def test_an_unreadable_app_backend_record_refuses_the_pass(
     assert bmod._read_pidfile() == {}, "the spawn and reap paths still read it as empty"
 
 
+# ── issue #15019, condition 3: the two leak shapes pinned in one place ─────────
+
+
+def test_a_pid_only_in_the_app_backend_record_is_claimed_not_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MUTATION TARGET: ``recorded_backend_pids()`` is part of the ``recorded()`` union.
+
+    The first half of issue #15019. An app backend lives inside the agent slice,
+    carries the spawn marker and is long-lived by design, yet it is not a session,
+    not a pooled MCP backend and in neither tracked pid file. The one record that
+    names it is ``app_backends.pids.json``, and that record is the one thing
+    keeping it out of the unowned population: drop the backend reader from the
+    ``recorded()`` union and this backend is unowned on every pass, collects an
+    ownership-gate allow, and has a kill attribution written naming it.
+
+    The membership answer under test is the REAL wiring's: ``recorded_pids`` is
+    ``build_reconciler``'s own ``recorded()`` closure, which reads the tmp pidfile
+    through the shipped ``recorded_backend_pids()``. Nothing stubs that reader to a
+    fixed set, so if the union stopped including it the recorded pid would be
+    counted and would reach the gate, and this test would go red. The unrecorded
+    neighbour is the positive control: it reaches the gate and is signalled, which
+    proves the arm is armed rather than inert.
+    """
+    from kiro_crew import platform_compat, session_pid
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(session_pid, "config_dir", lambda: home)
+    monkeypatch.setattr(rr, "_mcp_backend_pids", lambda: set())
+    _app_pidfile(
+        tmp_path,
+        monkeypatch,
+        {"file-explorer": {"pid": 5411, "start_time": "ST-5411", "port": 9110}},
+    )
+    monkeypatch.setattr(bmod, "_proc_start_time", lambda pid: f"ST-{pid}")
+    monkeypatch.setattr(
+        "kiro_crew.platform_compat.pid_liveness", lambda pid: platform_compat.PID_ALIVE
+    )
+
+    wired = rr.build_reconciler(active_pids=lambda: set(), notify_dead=lambda pid: None)
+    asked: list[int] = []
+    killed: list[int] = []
+    rec = rr.RuntimeReconciler(
+        slice_pids=lambda: {5411, 5412},
+        recorded_pids=wired._recorded_pids,
+        is_alive=lambda pid: True,
+        identity_of=lambda pid: f"id-{pid}",
+        is_ours=lambda pid: True,
+        is_managed=lambda pid: True,
+        leases_on=lambda pid: 0,
+        claims_on=lambda pid: 0,
+        authorize=lambda pid, reason: asked.append(pid) is None,
+        kill_tree=lambda pid, expected=None: killed.append(pid) or 1,
+        forget=lambda pid: "not-mine",
+        notify_dead=lambda pid: None,
+        age_secs=lambda pid: 10_000.0,
+        audit=lambda pid, outcome, why: None,
+    )
+    first = rec.run_once()
+    rec.run_once()
+
+    assert first.supported, first.reason
+    assert first.unowned_alive == 1, "only the unrecorded neighbour is unowned"
+    assert first.owned_alive == 1, "the backend its record names is counted as owned"
+    assert 5411 not in asked, f"the recorded backend never reaches the gate; got {asked}"
+    assert asked == [5412], f"only the unrecorded neighbour is asked; got {asked}"
+    assert killed == [5412], f"and only it is signalled; got {killed}"
+
+
+def test_a_sandbox_tool_subprocess_is_excluded_from_the_candidate_population(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MUTATION TARGET: the ``_unowned`` sandbox-tool exclusion.
+
+    The second half of issue #15019. A tree spawned through the sandbox chokepoint
+    -- a LaTeX build, an npx install, a provisioning run -- lands in the agent
+    slice carrying the inherited spawn marker but with no membership record, so
+    once it outlives the age floor it reads as unowned on every pass. The chokepoint
+    stamps a distinct ``KIROCREW_SANDBOX_TOOL`` marker on the whole tree, and the
+    reconciler excludes any candidate carrying it from the population, read from the
+    exec-time environment rather than spared by its argv0.
+
+    The exclusion under test is the REAL one: ``is_sandbox_tool`` is the shipped
+    ``process_is_sandbox_tool_subprocess`` predicate bound to a fixture ``proc_root``,
+    so the read runs through the real ``session_pid._env_is_sandbox_tool_subprocess``
+    against a real ``environ`` file, and the skip runs inside the real ``_unowned``.
+    The pid otherwise satisfies every kill condition (unowned, our marker, a managed
+    argv, past the age floor, seen on two passes), so without the exclusion it would
+    be counted in ``unowned_alive`` and reach the gate. The control below flips the
+    marker off for the same pid and proves it then reaches the gate, so this test
+    goes red if the exclusion is removed.
+    """
+    marked = tmp_path / "6001"
+    marked.mkdir()
+    (marked / "environ").write_bytes(b"PATH=/usr/bin\0KIROCREW_SANDBOX_TOOL=1\0")
+
+    asked: list[int] = []
+    killed: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+    rec = rr.RuntimeReconciler(
+        slice_pids=lambda: {6001},
+        recorded_pids=lambda: set(),
+        is_alive=lambda pid: True,
+        identity_of=lambda pid: f"id-{pid}",
+        is_ours=lambda pid: True,
+        is_managed=lambda pid: True,
+        is_sandbox_tool=lambda pid: rr.process_is_sandbox_tool_subprocess(pid, proc_root=tmp_path),
+        leases_on=lambda pid: 0,
+        claims_on=lambda pid: 0,
+        authorize=lambda pid, reason: asked.append(pid) is None,
+        kill_tree=lambda pid, expected=None: killed.append(pid) or 1,
+        forget=lambda pid: "not-mine",
+        notify_dead=lambda pid: None,
+        age_secs=lambda pid: 10_000.0,
+        audit=lambda pid, outcome, why: audited.append((pid, outcome, why)),
+    )
+    first = rec.run_once()
+    second = rec.run_once()
+
+    assert first.supported and second.supported
+    assert first.unowned_alive == 0, "the tool subprocess is not in the candidate population"
+    assert second.unowned_alive == 0, "and stays out of it on the confirming pass too"
+    assert asked == [], f"an excluded pid never reaches the gate; got {asked}"
+    assert killed == [], f"and is never signalled; got {killed}"
+    assert audited == [], "an excluded pid is not even audited as withheld"
+
+
+def test_a_slice_pid_without_the_sandbox_tool_marker_reaches_the_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POSITIVE CONTROL for the sandbox-tool exclusion.
+
+    Same shape as the exclusion test, but the pid's exec-time environment carries
+    NO ``KIROCREW_SANDBOX_TOOL`` marker, so the real predicate reads ``False`` and
+    the pid stays in the candidate population. Otherwise killable, it is confirmed
+    on the second pass and reaches the gate. Without this control the exclusion test
+    would pass for free if ``_unowned`` dropped every pid, so this proves the arm is
+    armed and that only the marker takes a pid out of it.
+    """
+    unmarked = tmp_path / "6002"
+    unmarked.mkdir()
+    (unmarked / "environ").write_bytes(b"PATH=/usr/bin\0")
+
+    asked: list[int] = []
+    killed: list[int] = []
+    rec = rr.RuntimeReconciler(
+        slice_pids=lambda: {6002},
+        recorded_pids=lambda: set(),
+        is_alive=lambda pid: True,
+        identity_of=lambda pid: f"id-{pid}",
+        is_ours=lambda pid: True,
+        is_managed=lambda pid: True,
+        is_sandbox_tool=lambda pid: rr.process_is_sandbox_tool_subprocess(pid, proc_root=tmp_path),
+        leases_on=lambda pid: 0,
+        claims_on=lambda pid: 0,
+        authorize=lambda pid, reason: asked.append(pid) is None,
+        kill_tree=lambda pid, expected=None: killed.append(pid) or 1,
+        forget=lambda pid: "not-mine",
+        notify_dead=lambda pid: None,
+        age_secs=lambda pid: 10_000.0,
+        audit=lambda pid, outcome, why: None,
+    )
+    first = rec.run_once()
+    second = rec.run_once()
+
+    assert first.unowned_alive == 1, "the unmarked pid is a candidate on the first pass"
+    assert second.unowned_alive == 1, "and stays one through confirmation"
+    assert asked == [6002], f"and reaches the gate; got {asked}"
+    assert killed == [6002], f"and is signalled once confirmed; got {killed}"
+
+
+def test_a_slice_pid_whose_sandbox_tool_marker_is_unreadable_is_not_excluded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exclusion fails TOWARD the existing conditions on doubt.
+
+    A pid whose environ cannot be read gives the real predicate a ``None`` answer,
+    which the exclusion treats as NOT-excluded: only a positive marker read spares a
+    pid, so an unreadable environ leaves the pid to the two-pass, marker, age and
+    gate conditions rather than widening what escapes them. Here the fixture has no
+    ``environ`` file for the pid, so the read raises and returns ``None``; the pid
+    stays a candidate and reaches the gate.
+    """
+    present = tmp_path / "6003"
+    present.mkdir()  # a process directory with no readable environ
+
+    asked: list[int] = []
+    killed: list[int] = []
+    rec = rr.RuntimeReconciler(
+        slice_pids=lambda: {6003},
+        recorded_pids=lambda: set(),
+        is_alive=lambda pid: True,
+        identity_of=lambda pid: f"id-{pid}",
+        is_ours=lambda pid: True,
+        is_managed=lambda pid: True,
+        is_sandbox_tool=lambda pid: rr.process_is_sandbox_tool_subprocess(pid, proc_root=tmp_path),
+        leases_on=lambda pid: 0,
+        claims_on=lambda pid: 0,
+        authorize=lambda pid, reason: asked.append(pid) is None,
+        kill_tree=lambda pid, expected=None: killed.append(pid) or 1,
+        forget=lambda pid: "not-mine",
+        notify_dead=lambda pid: None,
+        age_secs=lambda pid: 10_000.0,
+        audit=lambda pid, outcome, why: None,
+    )
+    rec.run_once()
+    second = rec.run_once()
+
+    assert second.unowned_alive == 1, "an unreadable marker does not exclude the pid"
+    assert asked == [6003], f"so it still reaches the gate; got {asked}"
+    assert killed == [6003], f"and is signalled once confirmed; got {killed}"
+
+
 def test_a_recycled_pid_does_not_inherit_the_previous_passs_confirmation() -> None:
     """MUTATION TARGET: the two-pass memory is keyed on identity, not just number.
 
