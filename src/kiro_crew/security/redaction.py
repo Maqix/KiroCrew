@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import base64
 import bisect
+import functools
 import hashlib
 import hmac
 import json
 import math
+import os
 import posixpath
 import re
 import secrets
@@ -541,6 +543,34 @@ _VOWELS: frozenset[str] = frozenset("aeiouAEIOU")
 # All-hex runs are git SHAs (40 hex), sha256 (64 hex), md5 (32 hex), etc. — never
 # an AWS secret key (which uses the full base64 alphabet). Reject them outright.
 _HEX_ONLY_RE = re.compile(r"\A[0-9a-fA-F]+\Z")
+
+# The macOS per-user directory id: ``confstr`` names the temp and cache roots
+# ``/var/folders/<2>/<30>/T`` and ``.../C``, the two variable components an
+# OS-generated lowercase encoding of the user's UUID and uid. ``/`` is in the run
+# alphabet, so a path under them is one run whose window straddling the id and
+# the ``T`` clears every gate, and every temp path -- a computer-use screenshot
+# echoed as ``![](path)`` among them -- would read as a key. Pass 3 therefore
+# withholds the id bytes and scans the pieces on either side as separate runs,
+# the split ``dashboard.handlers.files._redact_project_path`` makes: only a window
+# containing an id byte is given up. Only THIS host's id, as the OS reports it:
+# in free text an id's bytes are the writer's to choose and could carry most of a
+# key-shaped window, while the host's id is chosen by nobody who writes text. The
+# prefix must start a path (no run-alphabet byte, ``/`` included, before it) and
+# the byte after the directory letter must not continue the run: ``/`` starts the
+# next component, and any byte outside the run alphabet ends the run there, so a
+# bare root printed, quoted, or followed by a newline is the same two-byte ``/T``
+# piece as one that ends the text. ``/Tevil`` is a chosen name and gets no
+# exemption. A key after ``/T_evil`` sits in the next run and is judged there;
+# the pieces the exemption leaves in this run are the prefix and the ``/T``, both
+# shorter than one key, so no key-shaped window survives in them.
+_DARWIN_USER_DIR_PREFIX_RE = r"(?<![A-Za-z0-9+/])(?:/private)?/var/folders/"
+_DARWIN_USER_DIR_SUFFIX_RE = r"/[CT](?![A-Za-z0-9+])"
+# ``_CS_DARWIN_USER_TEMP_DIR`` in Darwin's ``<unistd.h>``; Python has no name for
+# it, and its answer is the temp root with a trailing separator.
+_CS_DARWIN_USER_TEMP_DIR = 65537
+_DARWIN_USER_TEMP_DIR_RE = re.compile(
+    r"\A(?:/private)?/var/folders/(?P<id>[a-z0-9_]{2}/[a-z0-9_]{30})/T/?\Z"
+)
 
 # The Shannon term ``(c / _SECRET_KEY_LEN) * log2(c / _SECRET_KEY_LEN)``, indexed by
 # the character count ``c``. Element 0 is a ``0.0`` placeholder that keeps ``c``
@@ -1417,6 +1447,41 @@ def _uncovered(start: int, end: int, taken: list[_RedactionSpan]) -> list[tuple[
     return gaps
 
 
+@functools.lru_cache(maxsize=1)
+def _host_darwin_user_dir_id() -> str | None:
+    """This user's ``<2>/<30>`` directory id as the OS reports it, asked once.
+
+    ``confstr``, not ``tempfile.gettempdir()``, which follows ``$TMPDIR``. Windows
+    has no ``os.confstr`` and other POSIX systems refuse the name; either, or an
+    answer outside the grammar, means None and nothing withheld.
+    """
+    confstr = getattr(os, "confstr", None)
+    if confstr is None:
+        return None
+    try:
+        match = _DARWIN_USER_TEMP_DIR_RE.match(confstr(_CS_DARWIN_USER_TEMP_DIR) or "")
+    except (OSError, ValueError):
+        return None
+    return match.group("id") if match else None
+
+
+@functools.lru_cache(maxsize=4)
+def _darwin_user_dir_id_re(host_id: str) -> re.Pattern[str]:
+    return re.compile(
+        _DARWIN_USER_DIR_PREFIX_RE + f"(?P<id>{re.escape(host_id)})" + _DARWIN_USER_DIR_SUFFIX_RE
+    )
+
+
+def _darwin_user_dir_ids(text: str) -> list[_RedactionSpan]:
+    """This host's directory id in *text*, as spans for :func:`_uncovered` to subtract."""
+    host_id = _host_darwin_user_dir_id()
+    # The substring check keeps the regex off the almost-every text that does not
+    # carry this host's id.
+    if host_id is None or f"folders/{host_id}/" not in text:
+        return []
+    return [(*m.span("id"), "") for m in _darwin_user_dir_id_re(host_id).finditer(text)]
+
+
 def _splice(text: str, spans: list[_RedactionSpan]) -> str:
     """Apply *spans* (sorted, disjoint) to *text* in one left-to-right pass."""
     parts: list[str] = []
@@ -1636,23 +1701,39 @@ def _credential_redaction_plan(
     # word of a `aws_secret_access_key=` label, say — has the part still in
     # plaintext redacted, because the run as a whole was judged to hold a key
     # and the earlier pass consumed only its label.
+    #
+    # A run holding this host's macOS directory id is judged as the pieces either
+    # side of it (see `_DARWIN_USER_DIR_PREFIX_RE`); every other run is one piece.
+    # The split is entered only for a run the whole-run scan would redact, so it
+    # can only remove redaction: the fragment ceiling and the encoded-text
+    # exclusion inside `_contains_bare_secret` read a run's length and alignment,
+    # and a piece cut from a run would otherwise face them on its own terms. An
+    # unsplit run IS its one piece, so it is scanned once, below.
+    withheld = _darwin_user_dir_ids(text)
     pass3: list[_RedactionSpan] = []
     for m in b64_matches:
-        run = m.group().rstrip("=")
-        # Slide a 40-char window across the run rather than gating the whole run
-        # on len == 40: a real secret glued to an adjacent base64 char (no
-        # delimiter) yields a 41+ char run that the exact-40 shape check would
-        # miss, leaking the key verbatim. Redact the whole run if ANY window is a
-        # secret.
-        if not _contains_bare_secret(run):
+        run_end = m.start() + len(m.group().rstrip("="))
+        pieces = _uncovered(m.start(), run_end, withheld)
+        if pieces != [(m.start(), run_end)] and not _contains_bare_secret(
+            text[m.start() : run_end]
+        ):
             continue
-        gaps = _uncovered(m.start(), m.start() + len(run), taken)
-        if not gaps:
-            continue
-        for start, end in gaps:
-            pass3.append((start, end, _REDACTED_CREDENTIAL_TAG))
-            rules[start] = ("bare_aws_secret", "")
-        warnings.append(f"Redacted bare secret key ({len(run)} chars)")
+        for piece_start, piece_end in pieces:
+            piece = text[piece_start:piece_end]
+            # Slide a 40-char window across the piece rather than gating it on
+            # len == 40: a real secret glued to an adjacent base64 char (no
+            # delimiter) yields a 41+ char run that the exact-40 shape check
+            # would miss, leaking the key verbatim. Redact the whole piece if ANY
+            # window is a secret.
+            if not _contains_bare_secret(piece):
+                continue
+            gaps = _uncovered(piece_start, piece_end, taken)
+            if not gaps:
+                continue
+            for start, end in gaps:
+                pass3.append((start, end, _REDACTED_CREDENTIAL_TAG))
+                rules[start] = ("bare_aws_secret", "")
+            warnings.append(f"Redacted bare secret key ({len(piece)} chars)")
     taken = sorted(taken + pass3)
 
     # 4. `?token=` / `&token=` URL parameter VALUES, keyed on the parameter
