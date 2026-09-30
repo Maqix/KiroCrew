@@ -6836,6 +6836,18 @@ class TestEnvDumpGrepAwsNarrowing:
         # ``AWS_1``, so selecting one cannot print a credential.
         "env | grep AWS1",
         "env | grep AWS_1",
+        # ``AWS`` followed by a name-or-path separator (``. : / -``) is never a
+        # variable-name prefix -- a shell variable name cannot contain any of them --
+        # so the bare-prefix branch must not fire on it. The concrete false positive
+        # is the CloudFront/S3 access-log key ``AWSLogs/aws-account-id=<digits>/``,
+        # whose text contains ``aws-``; it reads nothing from the environment.
+        "aws s3 ls s3://my-bucket/AWSLogs/aws-account-id=533267344656/CloudFront/ --profile p | head",
+        "env | grep AWSLogs/aws-account-id=533267344656/CloudFront/",
+        "env | grep aws-account-id",
+        "env | grep AWS-account-id",
+        "env | grep AWS.example.com",
+        "env | grep AWS:role",
+        "env | grep AWSLogs",
         # No filter at all.
         "env | cut -d= -f1 | sort",
         "docker exec kirocrew printenv KIROCREW_PORT",
@@ -7049,6 +7061,59 @@ class TestEnvDumpGrepAwsNarrowing:
         # classes cannot drift apart.
         assert "A-Za-z0-9_" in security._AWS_VAR_SELECTOR
         assert "(?![A-Za-z_])" not in security._AWS_VAR_SELECTOR
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The reported false positive: a CloudFront/S3 access-log listing whose S3
+            # key layout is ``AWSLogs/aws-account-id=<digits>/CloudFront/``. The ``aws-``
+            # token is a path segment, not a variable-name prefix, so the bare-prefix
+            # branch must not select on it.
+            "aws s3 ls s3://my-bucket/AWSLogs/aws-account-id=533267344656/CloudFront/ --profile p | head",
+            "env | grep AWSLogs/aws-account-id=533267344656/CloudFront/",
+            # A name-or-path separator immediately after ``AWS`` disqualifies the bare
+            # prefix, because no shell variable name can contain ``- . : /``.
+            "env | grep aws-account-id",
+            "env | grep AWS-account-id",
+            "env | grep AWS.example.com",
+            "env | grep AWS:role",
+            "env | grep AWS/logs",
+        ],
+    )
+    def test_hyphenated_aws_path_tokens_are_not_a_credential_selector(self, cmd: str) -> None:
+        # ``aws-account-id`` and its kin match ``AWS`` + a separator that no
+        # environment-variable name can contain, so the bare-prefix branch (branch 1)
+        # must not fire. Checked on both tiers and the full gate, the same way the
+        # ``ALLOWED`` set is, so the fix cannot pass on one tier while another still
+        # refuses the command.
+        from kiro_crew.security import is_denied
+
+        assert not self._keystone(cmd), cmd
+        assert not self._catalog_matcher().match(cmd), cmd
+        assert is_denied(cmd) is None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "env | grep AWS_SECRET_ACCESS_KEY",
+            "env | grep AWS_SESSION_TOKEN",
+            "env | grep AWS_ACCESS_KEY_ID",
+            "env | grep AWS_SECURITY_TOKEN",
+            # The bare-prefix branch still catches a whole-environment select that
+            # ends at a real word boundary rather than a name-or-path separator.
+            "env | grep AWS",
+            'env | grep "AWS"',
+        ],
+    )
+    def test_real_credential_selectors_still_denied_after_the_separator_fix(self, cmd: str) -> None:
+        # Narrowing branch 1 to reject ``- . : /`` must not weaken detection of any
+        # genuine ``env | grep AWS_...`` credential dump, nor the bare word-bounded
+        # ``AWS`` select.
+        from kiro_crew.security import is_denied
+
+        assert self._keystone(cmd), cmd
+        assert self._catalog_matcher().match(cmd), cmd
+        assert is_denied(cmd) is not None, cmd
 
     def test_the_printenv_rule_keeps_whole_words_only(self) -> None:
         # ``printenv`` resolves EXACT names, so extending it with the grep selector's

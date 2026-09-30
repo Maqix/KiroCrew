@@ -107,9 +107,20 @@ def _aws_secret_word_prefix_alternation() -> str:
 # The boundary classes include DIGITS: ``env | grep AWS1`` selects a variable whose
 # name contains ``AWS1``, which no secret-bearing name does, so treating a digit as
 # the end of the bare prefix would deny a command that cannot leak.
+#
+# Branch 1 (the bare-``AWS`` prefix) additionally rejects the name-or-path
+# separators ``. : / -``. A shell/env variable name is ``[A-Za-z_][A-Za-z0-9_]*``
+# and cannot contain any of them, so ``AWS`` followed by one of these is never a
+# variable-name prefix -- it is a path or hostname segment such as the CloudFront
+# access-log key ``AWSLogs/aws-account-id=<digits>/CloudFront/``. Selecting on that
+# shape can never print a credential, so a bare-prefix match there is a false
+# positive. Branches 2--4 are unaffected: they already require ``AWS_`` with an
+# underscore and keep catching real credential variables (``AWS_SECRET_ACCESS_KEY``,
+# ``AWS_SESSION_TOKEN``, ``AWS_SECURITY_TOKEN``, ``AWS_ACCESS_KEY_ID``) and their
+# truncations.
 _AWS_SECRET_WORD_PREFIXES = _aws_secret_word_prefix_alternation()
 _AWS_VAR_SELECTOR = (
-    r"AWS(?:(?![A-Za-z0-9_])"
+    r"AWS(?:(?![A-Za-z0-9_.:/\-])"
     r"|_(?![A-Za-z0-9])"
     rf"|_{_AWS_SECRET_VAR_NAMES}"
     rf"|_(?:{_AWS_SECRET_WORD_PREFIXES})(?![A-Za-z0-9_]))"
