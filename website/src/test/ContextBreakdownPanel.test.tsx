@@ -67,6 +67,7 @@ const trace = (over: Partial<ContextTrace> = {}): ContextTrace => ({
   peak_context_used: 0,
   context_window: 0,
   window_days: 14,
+  turns_omitted: 0,
   ...over,
 })
 
@@ -272,6 +273,26 @@ describe('ContextBreakdownPanel rendering', () => {
     expect(screen.getByRole('button', { name: /^Turn 6:/ })).toBeInTheDocument()
     // The newest turn is still "latest" even though earlier ones are hidden.
     expect(screen.getByText(`Turn ${MAX_CHART_TURNS + 5} · latest`)).toBeInTheDocument()
+  })
+
+  it('adds the backend-dropped turns to the earlier-hidden count', () => {
+    // The backend window already dropped 40 per-turn rows before this payload;
+    // the chart clips 5 more of its own. The label must report all 45, not just
+    // the 5 it can see -- otherwise a long session reads as far shorter than it is.
+    const many = Array.from({ length: MAX_CHART_TURNS + 5 }, (_, i) => turnOf({ your_message: 10 + i, memory: 100 }))
+    render(<ContextBreakdownPanel trace={trace({ turns: many, turns_omitted: 40 })} />)
+    expect(screen.getByText('45 earlier turns not shown')).toBeInTheDocument()
+    // The chart still draws exactly the newest MAX_CHART_TURNS it was given.
+    expect(screen.getAllByRole('button', { name: /^Turn \d+:/ })).toHaveLength(MAX_CHART_TURNS)
+  })
+
+  it('reports earlier-hidden from turns_omitted even when the chart clips nothing', () => {
+    // Fewer rows than the chart cap, but the backend still dropped some: the count
+    // comes entirely from turns_omitted, and the chart draws every row it has.
+    const few = Array.from({ length: 3 }, (_, i) => turnOf({ your_message: 10 + i, memory: 100 }))
+    render(<ContextBreakdownPanel trace={trace({ turns: few, turns_omitted: 7 })} />)
+    expect(screen.getByText('7 earlier turns not shown')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^Turn \d+:/ })).toHaveLength(3)
   })
 
   it('carries neither a whole-window estimate nor a credits column', () => {

@@ -550,6 +550,164 @@ def test_usage_bills_injected_context_per_source():
     assert context["by_source"]["system"] == {"blocks": 1, "tokens": 25, "chars": 100}
 
 
+def test_usage_a_retry_attempts_reading_does_not_stamp_the_first_attempts_rows():
+    """MUTATION-SENSITIVE: a rerun of one turn ordinal is a separate attempt.
+
+    A regenerate or rewind reruns a turn the ordinal already names, so one ordinal can
+    carry two attempts, each with its own compositions and its own closer. Matching a
+    reading to rows by TURN NUMBER alone conflates them: attempt 2's closer walking the
+    tail back would reach attempt 1's rows -- same ordinal -- and stamp them with
+    attempt 2's occupancy. It bites hardest when attempt 1 reported NO occupancy, so
+    its rows are unstamped and nothing else marks them closed. Each closer sealing its
+    own run is what keeps the two apart, whether or not attempt 1 measured anything.
+    """
+
+    def _completed(reading: dict[str, int] | None) -> dict[str, Any]:
+        done: dict[str, Any] = {
+            "turn": 1,
+            "stop_reason": "end_turn",
+            "depth": 0,
+            "duration_ms": 100,
+            "model": "opus",
+            "provider": "kiro",
+            "credits": 0.1,
+            "tokens": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0},
+        }
+        if reading is not None:
+            done["context"] = reading
+        return done
+
+    def _composed(kind: str, chars: int) -> dict[str, Any]:
+        return {
+            "turn": 1,
+            "sources": [{"kind": kind, "chars": chars, "tokens": chars // 4}],
+            "chars": chars,
+            "tokens": chars // 4,
+            "tokens_estimated": True,
+        }
+
+    handle = _log()
+    _opened(handle)
+    # Attempt 1 at ordinal 1 composes, then completes WITHOUT an occupancy reading.
+    handle.append("context/composed", _composed("memory", 40), src=GATEWAY)
+    handle.append("turn/completed", _completed(None), src=GATEWAY)
+    # Attempt 2 reruns ordinal 1, composes fresh rows, and completes WITH a reading.
+    handle.append("context/composed", _composed("system", 90), src=GATEWAY)
+    handle.append(
+        "turn/started", {"turn": 1, "actor": "user", "depth": 0, "attempt": 2}, src=GATEWAY
+    )
+    handle.append("turn/completed", _completed({"used": 8_000, "window": 200_000}), src=GATEWAY)
+    turns = crew_log.fold_usage(_entries(handle))["context"]["turns"]
+    # Attempt 1's row keeps NO reading; only attempt 2's row carries the 8_000. The
+    # reading did not walk back across the attempt boundary onto the earlier run.
+    assert [("used" in row) for row in turns] == [False, True]
+    assert [row.get("used") for row in turns] == [None, 8_000]
+
+
+def test_usage_each_attempt_of_one_turn_keeps_its_own_reading():
+    """MUTATION-SENSITIVE: two attempts that BOTH measured keep their own readings.
+
+    When each attempt reports occupancy the seal still matters: attempt 2's closer
+    must not overwrite attempt 1's already-stamped reading, and attempt 1's must not be
+    left for attempt 2 to claim.
+    """
+    handle = _log()
+    _opened(handle)
+    handle.append(
+        "context/composed",
+        {
+            "turn": 1,
+            "sources": [{"kind": "memory", "chars": 40, "tokens": 10}],
+            "chars": 40,
+            "tokens": 10,
+            "tokens_estimated": True,
+        },
+        src=GATEWAY,
+    )
+    _turn(handle, 1)  # the helper's closer carries a used=4_200 reading
+    handle.append(
+        "context/composed",
+        {
+            "turn": 1,
+            "sources": [{"kind": "system", "chars": 90, "tokens": 22}],
+            "chars": 90,
+            "tokens": 22,
+            "tokens_estimated": True,
+        },
+        src=GATEWAY,
+    )
+    handle.append(
+        "turn/started", {"turn": 1, "actor": "user", "depth": 0, "attempt": 2}, src=GATEWAY
+    )
+    handle.append(
+        "turn/completed",
+        {
+            "turn": 1,
+            "stop_reason": "end_turn",
+            "depth": 0,
+            "duration_ms": 100,
+            "model": "opus",
+            "provider": "kiro",
+            "credits": 0.1,
+            "tokens": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0},
+            "context": {"used": 8_000, "window": 200_000},
+        },
+        src=GATEWAY,
+    )
+    turns = crew_log.fold_usage(_entries(handle))["context"]["turns"]
+    assert [row.get("used") for row in turns] == [4_200, 8_000]
+
+
+def test_usage_snapshot_row_is_not_stamped_by_a_later_completion():
+    """MUTATION-SENSITIVE: a copied snapshot's rows are independent of the base's.
+
+    The ``turn/completed`` closer stamps the provider's occupancy reading onto the
+    rows of the turn it closes, AFTER those rows were appended. ``copy_state`` ships a
+    snapshot of the fold to socket owners, so if that snapshot shared the row objects
+    a later completion would stamp a reading into a snapshot a reader is still holding
+    -- an occupancy from a turn the snapshot was taken BEFORE. The copy must be deep
+    enough at the row level that the base can be stamped without touching it.
+    """
+    from kiro_crew.crew_log.schema import Entry
+
+    state = crew_log._usage_start()
+    crew_log._usage_step(
+        state,
+        Entry(
+            seq=1,
+            time=1000,
+            type="request/configured",
+            src=GATEWAY,
+            data={"turn": 1, "context_window": 200_000},
+        ),
+    )
+    crew_log._usage_step(
+        state,
+        Entry(
+            seq=2,
+            time=1001,
+            type="context/composed",
+            src=GATEWAY,
+            data={"turn": 1, "sources": [{"kind": "memory", "chars": 40}], "chars": 40},
+        ),
+    )
+    snapshot = crew_log._usage_copy(state)
+    assert "used" not in snapshot["context_turns"][0]
+    # The turn now closes with a reading. It must land on the base state's row only.
+    crew_log._usage_step(
+        state,
+        Entry(
+            seq=3,
+            time=1002,
+            type="turn/completed",
+            src=GATEWAY,
+            data={"turn": 1, "context": {"used": 9_000, "window": 200_000}},
+        ),
+    )
+    assert state["context_turns"][0]["used"] == 9_000
+    assert "used" not in snapshot["context_turns"][0]
+
+
 def test_usage_bills_every_source_that_spends_and_says_which_spent_what():
     """A session's bill is its turns PLUS its children PLUS its helpers.
 

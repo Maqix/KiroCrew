@@ -36,6 +36,14 @@ export interface ContextTrace {
   peak_context_used: number
   context_window: number
   window_days: number
+  /**
+   * Per-turn rows the backend's own window dropped off its front before this
+   * payload was built, so `turns` is a WINDOW rather than the whole history. The
+   * chart's "earlier hidden" count adds this to the rows it clips itself; without
+   * it the count silently understates the hidden turns by exactly this number once
+   * a session outgrows the backend window.
+   */
+  turns_omitted: number
 }
 
 /** The user's own text, and the labels the backend groups under one bucket. */
@@ -536,8 +544,13 @@ function ContextBreakdownCard({ trace, chartWidth }: { trace: ContextTrace; char
   // the size of any later turn and would pin the y-axis, flattening the rest.
   const starts = all.filter(t => t.isStart)
   const regular = all.filter(t => !t.isStart)
-  const hidden = Math.max(0, regular.length - MAX_CHART_TURNS)
-  const shown = regular.slice(hidden)
+  // Hidden = the per-turn rows the BACKEND window already dropped (turns_omitted)
+  // PLUS the ones this chart clips from its own front. Counting only the chart's
+  // clip would understate the total by exactly turns_omitted once a session
+  // outgrows the backend window, so the "earlier hidden" label reads low.
+  const clipped = Math.max(0, regular.length - MAX_CHART_TURNS)
+  const hidden = (trace.turns_omitted ?? 0) + clipped
+  const shown = regular.slice(clipped)
   const newest = all.length
   const selectable = new Set([...starts, ...shown].map(t => t.n))
   const selected = pinned !== null && selectable.has(pinned) ? pinned : newest

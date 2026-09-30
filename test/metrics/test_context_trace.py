@@ -423,6 +423,29 @@ class TestContextTrace:
         # The open turn must not drag the peak down to its own absent reading.
         assert out["peak_context_used"] == 6_000
 
+    def test_a_later_units_reading_does_not_restamp_the_previous_units_turn(self):
+        """Turn numbers restart per unit, so a match is not proof of the same turn.
+
+        The fold merges every unit of a slot into one window, and each unit numbers
+        its turns from 1. The closer walks the window back from the tail while the
+        turn number matches -- so a later unit's turn 1 would reach the PREVIOUS
+        unit's turn 1 and re-stamp its reading, the incoherence Opus flagged. The
+        earlier row already carries its own unit's reading, and that is the boundary
+        the walk must not cross.
+        """
+        _open("acp-first")
+        _compose({"memory": 100}, unit="acp-first", turn=1)
+        _billed(unit="acp-first", turn=1, used=3_000)
+        _flush()
+        _open("acp-second")
+        _compose({"memory": 200}, unit="acp-second", turn=1)
+        _billed(unit="acp-second", turn=1, used=7_000)
+        _flush()
+        out = usage_mod.context_trace(SLOT, 14)
+        # Each unit's turn 1 keeps its OWN reading; the second's 7_000 does not bleed
+        # back onto the first's 3_000.
+        assert [t["context_used"] for t in out["turns"]] == [3_000, 7_000]
+
     def test_peak_is_zero_when_no_turn_reported_occupancy(self):
         _open()
         _compose({"memory": 100})
@@ -690,6 +713,35 @@ class TestContextTraceWindowBounds:
             _compose({"memory": turn}, turn=turn)
         _flush()
         assert usage_mod.context_trace(SLOT, 14)["turns_omitted"] == 0
+
+    def test_truncation_preserves_the_session_start_row(self, monkeypatch):
+        """The session-start injection anchors the panel and must survive the window.
+
+        A session-start composition is the one-off injection a unit opens with, many
+        times the size of a per-turn one and the row the panel draws its history and
+        totals against. Trimming it like an ordinary per-turn row once a session
+        passes the bound would silently drop the largest bar and understate the
+        totals the reader sums from the retained rows. The trim skips it: only the
+        oldest PER-TURN rows fall off, and ``turns_omitted`` counts only those, so the
+        panel's hidden-turn offset stays the number of per-turn turns actually hidden.
+        """
+        monkeypatch.setattr(crew_log, "CONTEXT_TURNS_LIMIT", 4)
+        _open()
+        _compose({"memory": 9_000}, turn=1, phase=PHASE_SESSION_START)
+        for turn in range(2, 8):
+            _compose({"memory": turn}, turn=turn, phase=PHASE_PER_TURN)
+        _flush()
+        out = usage_mod.context_trace(SLOT, 14)
+        # The session-start row is still there (oldest), then the newest 3 per-turn
+        # rows fill the window of 4. Three per-turn rows (turns 2-4) were dropped.
+        assert [t["phase"] for t in out["turns"]] == [
+            "session_start",
+            "per_turn",
+            "per_turn",
+            "per_turn",
+        ]
+        assert [t["blocks"]["memory"] for t in out["turns"]] == [9_000, 5, 6, 7]
+        assert out["turns_omitted"] == 3
 
     #: The slot-fold cache's own ceiling, stated in ``projection.py`` against that
     #: cache's largest budgeted member (``radar``). A full context window has to fit

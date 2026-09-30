@@ -68,6 +68,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, cast
 
 from kiro_crew.config.paths import data_home
+from kiro_crew.context_blocks import PHASE_SESSION_START
 from kiro_crew.crew_log.entry_types import (
     PANEL_CREW_KEY_LIMIT,
     PANEL_ENTRY_TYPE,
@@ -1541,44 +1542,50 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
         # window it would be divided by, and the ratio a reader computes from it is
         # wrong in the direction that looks alarming. Billing and occupancy are two
         # quantities, and only the second answers "how full did this get".
+        #
+        # A closer SEALS the rows it closes, whether or not it carried a reading. The
+        # window merges every UNIT of a slot and turn ordinals restart per unit, and a
+        # regenerate or rewind reruns an ordinal as a fresh ATTEMPT -- so a matching
+        # turn number is NOT on its own proof a row belongs to the turn now closing.
+        # Two things could otherwise be conflated: a later unit's turn 1 walking back
+        # into a previous unit's turn 1, and this turn's attempt 2 walking back into
+        # its own attempt 1 (whose rows are the SAME ordinal). The seal is what tells
+        # them apart: each attempt's closer marks its own tail run closed, and the next
+        # closer stops at the first already-closed row. Sealing happens even for a
+        # closer with no reading, because otherwise an attempt that reported no
+        # occupancy would leave its rows unsealed and the next attempt's reading would
+        # stamp them. ``_closed`` is private bookkeeping the panel reader never sees;
+        # the reading itself is ``used`` / ``used_window``, present only when measured.
         occupancy = data.get("context")
+        used: int | None = None
+        window = 0
         if isinstance(occupancy, dict):
-            # Stamped onto this turn's own context ROWS rather than kept as a
-            # session-wide scalar, because a reader asking about a TIME WINDOW has to
-            # be able to exclude a peak from outside it. A scalar maximum cannot be
-            # narrowed after the fact: the fullest turn of the session may be older
-            # than every row a caller asked for, and reporting it would answer a
-            # question nobody asked. On the row the reading travels with a timestamp,
-            # so the peak inside any window is derivable from the rows in it.
-            #
-            # The closer arrives AFTER the compositions it closes, so the rows are
-            # already in the window and are found by walking back from the tail while
-            # the turn matches. A turn with several steps has several rows and the
-            # occupancy is the turn's, so every one of them carries it. A row already
-            # trimmed off the front is simply not there to stamp, which is correct.
             used = _as_int(occupancy.get("used"))
             window = _as_int(occupancy.get("window"))
-            turn_no = _as_int(data.get("turn"))
-            rows = state["context_turns"]
-            for index in range(len(rows) - 1, -1, -1):
-                if rows[index]["turn"] != turn_no:
-                    break
-                # REPLACED, never edited in place. ``_usage_copy`` shares these row
-                # dicts between a snapshot and the state that keeps growing -- that
-                # sharing is what makes the copy O(window) instead of O(window x
-                # sources) -- so stamping a row in place would reach into a projection
-                # already handed to a reader and give it occupancy from a later turn.
-                # Replacement is still O(window): the LIST is freshly copied per apply,
-                # so assigning an element touches only this state's own list.
-                rows[index] = {
-                    **rows[index],
-                    "used": used,
-                    # Travels WITH the reading, including as 0: a turn that reported a
-                    # used count but no window is a reading whose window is unknown, and
-                    # borrowing another turn's size would pair the number with something
-                    # it was never measured against.
-                    "used_window": window,
-                }
+        turn_no = _as_int(data.get("turn"))
+        rows = state["context_turns"]
+        for index in range(len(rows) - 1, -1, -1):
+            if rows[index]["turn"] != turn_no:
+                break
+            # The boundary between this closer's rows and an earlier attempt's (or an
+            # earlier unit's same-ordinal turn's): that run was sealed by its own
+            # closer, so its reading -- or its deliberate absence of one -- must stand.
+            if rows[index].get("_closed"):
+                break
+            # REPLACED, never edited in place. ``_usage_copy`` shares these row dicts
+            # between a snapshot and the state that keeps growing -- that sharing is
+            # what makes the copy O(window) instead of O(window x sources) -- so writing
+            # into a row would reach a projection already handed to a reader. Assigning
+            # an element touches only this state's own freshly-copied list.
+            sealed = {**rows[index], "_closed": True}
+            if used is not None:
+                sealed["used"] = used
+                # Travels WITH the reading, including as 0: a turn that reported a used
+                # count but no window is a reading whose window is unknown, and
+                # borrowing another turn's size would pair the number with something it
+                # was never measured against.
+                sealed["used_window"] = window
+            rows[index] = sealed
         duration = data.get("duration_ms")
         if isinstance(duration, int) and not isinstance(duration, bool):
             state["duration_ms"] += duration
@@ -1658,8 +1665,35 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
         turns_window.append(row)
         if len(turns_window) > CONTEXT_TURNS_LIMIT:
             over = len(turns_window) - CONTEXT_TURNS_LIMIT
-            state["context_turns_dropped"] += over
-            del turns_window[:over]
+            # Drop the OLDEST per-turn rows first, and keep the session-start rows they
+            # sit among. A session-start composition is the one-off injection a unit
+            # opens with -- many times the size of a per-turn one and the anchor the
+            # Context panel draws its history against. Trimming it like an ordinary row
+            # once a session passes CONTEXT_TURNS_LIMIT turns would silently corrupt the
+            # panel's totals (the reader sums the RETAINED rows) and lose the largest
+            # bar, while ``context_turns_dropped`` still reported it as one hidden turn
+            # like any other. So the trim skips session-start rows: only per-turn rows
+            # count toward ``over`` and are removed, oldest first, and the offset the
+            # panel consumes stays exactly the number of PER-TURN turns hidden.
+            #
+            # Session-start rows are one per unit start/rebuild, so the count preserved
+            # is bounded by the units folded into a slot, not by how long the session
+            # ran. The final clamp below is the backstop for the pathological case where
+            # session-start rows alone would exceed the cap: it drops oldest-overall so
+            # the byte budget this limit exists to hold is never breached.
+            removed = 0
+            index = 0
+            while removed < over and index < len(turns_window):
+                if turns_window[index].get("phase") == PHASE_SESSION_START:
+                    index += 1
+                    continue
+                del turns_window[index]
+                removed += 1
+            state["context_turns_dropped"] += removed
+            if len(turns_window) > CONTEXT_TURNS_LIMIT:
+                extra = len(turns_window) - CONTEXT_TURNS_LIMIT
+                state["context_turns_dropped"] += extra
+                del turns_window[:extra]
     elif entry.type == "request/configured":
         # Newest NON-ZERO wins. This entry is written only when the configuration
         # changed, and a provider that reports no window writes 0 -- taking that as
@@ -1730,8 +1764,16 @@ def _usage_render(state: dict[str, Any]) -> dict[str, Any]:
             # The per-turn window, OLDEST FIRST, and the count that fell off its
             # front. The pair is what makes this a window rather than a history: a
             # reader shown 200 rows and no count cannot tell a session of 200 turns
-            # from one of 2,000.
-            "turns": [{**row, "sources": dict(row["sources"])} for row in state["context_turns"]],
+            # from one of 2,000. ``_closed`` is the fold's private seal (which closer
+            # already stamped this row) and is dropped here: it exists only to keep a
+            # later attempt's reading off an earlier one's rows, and no reader wants it.
+            "turns": [
+                {
+                    **{k: v for k, v in row.items() if k != "_closed"},
+                    "sources": dict(row["sources"]),
+                }
+                for row in state["context_turns"]
+            ],
             "turns_omitted": state["context_turns_dropped"],
             # NO session-wide occupancy pair here. The reading and its window ride on
             # each ROW (``used`` / ``used_window``), because the reader is bounded to a

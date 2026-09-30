@@ -35,6 +35,7 @@ const trace = (over: Partial<ContextTrace> = {}): ContextTrace => ({
   peak_context_used: 12000,
   context_window: 200000,
   window_days: 14,
+  turns_omitted: 0,
   ...over,
 })
 

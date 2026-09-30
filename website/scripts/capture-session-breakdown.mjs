@@ -83,6 +83,7 @@ function makeTrace(slot, turnBlocks, peakFrac) {
     peak_context_used: Math.round(window * peakFrac),
     context_window: window,
     window_days: 14,
+    turns_omitted: 0,
   }
 }
 
