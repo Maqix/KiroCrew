@@ -472,7 +472,6 @@ class TestTheSpecGenerationIsObservedNotGuessed:
         descriptor. Hashing a spec must not become a way to hash a credential.
         """
         import kiro_crew.pinned_fs as pinned
-
         from kiro_crew.acp.chat_runtime_sharing import agent_spec_generation
 
         d = tmp_path / ".kiro" / "agents"
@@ -501,7 +500,6 @@ class TestTheSpecGenerationIsObservedNotGuessed:
         one refused read hand a session a process whose spec it never checked.
         """
         import kiro_crew.pinned_fs as pinned
-
         from kiro_crew.acp.chat_runtime_sharing import agent_spec_generation
 
         d = tmp_path / ".kiro" / "agents"
