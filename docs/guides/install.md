@@ -314,10 +314,23 @@ only when that directory is not already on your PATH, and touches no other rc
 line. A plain gateway already running on this crew's port is restarted so it
 runs the new build; an installed service is left alone. From GitHub it skips
 the optional tools (git-lfs, ffmpeg for voice, the extra agent adapter);
-`--with-extras` installs them. `--no-start` stops before opening the chat, and
+`--with-extras` installs them. `--quick` skips optional tools when rerunning
+from a checkout and preserves the existing crew data. `--no-start` stops before opening the chat, and
 `--demo` runs a throwaway demo instead (`scripts/demo-first-run.sh`: temporary
 folders, a simulated cloud home, a sample agent to import, your own MCP servers
 switched off).
+
+On WSL, setup checks that the systemd user manager answers before starting the
+gateway. If its bus is unavailable (including a hidden `/run/user/<uid>/bus`
+socket), setup warns and starts the gateway without `XDG_RUNTIME_DIR` or
+`DBUS_SESSION_BUS_ADDRESS`. Filesystem sandboxing stays enabled, but cgroup
+memory and process limits are unavailable. This affects only setup's stop/start commands;
+your shell settings and installed services are unchanged. Repair the WSL user
+session and verify `systemctl --user show --property=Version` succeeds to
+restore those limits. Until then, later manual starts need
+`env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS kirocrew start` as well.
+An already-running gateway must be stopped before a changed launch environment
+can take effect. `--no-start` skips the check.
 
 By hand: build the dashboard, install the backend into a local virtualenv
 (`.venv`), and run the gateway straight out of `src/`:

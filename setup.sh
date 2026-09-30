@@ -18,6 +18,7 @@
 #   7. `kirocrew start`: the gateway, and the first-run chat in your browser
 #
 # Options (after `| bash -s --` when piped):
+#   --quick         skip optional tools; rebuild and reopen the existing crew
 #   --no-start      stop after step 6
 #   --with-extras   also install the optional tools (git-lfs, ffmpeg, the extra
 #                   agent adapter); from a checkout they are installed by default
@@ -84,6 +85,52 @@ _kc_spin() {
     fi
     return "$_kc_rc"
 }
+
+# WSL can export a runtime directory whose user-bus socket is hidden by a
+# mount. Probe the manager itself: an environment variable is not proof that
+# systemd-run can reach it. Keep the fallback local even when setup is sourced.
+_kc_start_gateway() (
+    case "$(uname -s):$(uname -r)" in
+        Linux:*[Mm]icrosoft*|Linux:*WSL*)
+            if ! "$_py" - <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(
+        ["systemctl", "--user", "show", "--property=Version", "--value"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=5,
+    )
+except (OSError, subprocess.TimeoutExpired):
+    sys.exit(1)
+sys.exit(result.returncode)
+PY
+            then
+                echo "  ⚠️  WSL's systemd user bus is unavailable."
+                echo "     Continuing with filesystem sandboxing; cgroup memory and process limits"
+                echo "     are unavailable for this gateway launch."
+                echo "     Only this launch clears XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS."
+                echo "     Repair the WSL user session, then verify with: systemctl --user show --property=Version"
+                echo "     Until then, for manual starts: env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS kirocrew start"
+                if [ "${_kc_facts#* }" = 1 ]; then
+                    echo "     An installed service keeps its own environment; it still needs the WSL user bus repaired."
+                fi
+                unset XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+            fi
+            ;;
+    esac
+    # A running gateway must release this crew's port before the new build
+    # starts. An installed service keeps its own install and environment.
+    if [ "${_kc_facts#* }" = 1 ]; then
+        echo "→ A Kiro Crew service is installed on this machine; it is left as it is"
+    elif [ -n "$_kc_port" ] && kirocrew stop --port "$_kc_port" >/dev/null 2>&1; then
+        echo "→ Restarted the Kiro Crew running on port $_kc_port so it runs this build"
+    fi
+    kirocrew start
+)
 
 # ── 0. From GitHub: no checkout around this file ──
 # Also for --demo from a checkout too old to carry the demo script.
@@ -451,23 +498,21 @@ if [ "$_kc_start" = 1 ]; then
 from kiro_crew.service import controller
 print(cli_server.resolve_client_port(None), 1 if controller.installed_unit_path() else 0)' 2>/dev/null || true)"
     _kc_port="${_kc_facts% *}"
-    if [ "${_kc_facts#* }" = 1 ]; then
-        echo "→ A Kiro Crew service is installed on this machine; it is left as it is"
-    elif [ -n "$_kc_port" ] && kirocrew stop --port "$_kc_port" >/dev/null 2>&1; then
-        echo "→ Restarted the Kiro Crew running on port $_kc_port so it runs this build"
-    fi
     echo "→ Starting Kiro Crew; your browser opens on the chat, where setup continues."
     # Under `curl | bash` stdin is this script; give kirocrew the terminal, so
     # kiro-cli's own sign-in can run there when it is needed.
     if (exec </dev/tty) 2>/dev/null; then
-        kirocrew start </dev/tty
+        _kc_start_gateway </dev/tty
     else
-        kirocrew start
+        _kc_start_gateway
     fi
+    _kc_result=$?
 else
     echo "  kirocrew start      # start the gateway and open the chat"
     echo "  kirocrew doctor     # verify everything"
+    _kc_result=0
 fi
 
 # Cleanup
 cd - > /dev/null 2>&1
+return "$_kc_result" 2>/dev/null || exit "$_kc_result"

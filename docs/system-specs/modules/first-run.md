@@ -59,6 +59,18 @@ chat is recorded, so a restart before then keeps the gate
 ([learn-cron-dashboard](learn-cron-dashboard.md)). Installing kiro-cli for the
 user is RFC Q2, still open.
 
+Before `setup.sh` launches the gateway on WSL, it queries the systemd user
+manager with a five-second timeout. A missing, unreachable or unresponsive
+manager triggers a visible warning and clears `XDG_RUNTIME_DIR` and
+`DBUS_SESSION_BUS_ADDRESS` only in the stop/start subshell. This selects the
+gateway's existing no-user-session fallback: filesystem sandboxing remains,
+but cgroup memory and process limits are unavailable. A working WSL manager
+and other operating systems retain their environment. `--no-start` skips the
+probe. Setup neither repairs OS mounts nor changes services or the caller's
+environment; an installed service keeps its own environment. The warning
+names the user-bus check and the temporary command for later manual starts.
+The script preserves the gateway start command's exit status.
+
 On a desktop-width page load that opens on the first-run chat before
 graduation, the dashboard starts with the nav rail collapsed to its icons and
 the session list hidden (`hooks/useFirstRunLayout.ts`). The rule is decided once
