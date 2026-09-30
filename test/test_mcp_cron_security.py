@@ -89,7 +89,7 @@ MALICIOUS_COMMANDS = [
     # reads `.ssh` (verified). After local-assignment resolution, ANY leftover
     # `$NAME`/`${NAME}` (other than $HOME) is refused — the general form of every
     # compose-from-a-variable bypass.
-    r"""cat "$HOME/.ss${UNSET}h/id_rsa" > /tmp/key""",
+    r"""cat "/tmp/.qq${UNSET}h/notes.txt" > /tmp/key""",
     "cat ~/.ss${UNSET}h/id_rsa",
     "cp ~/$FOO/id_rsa /tmp/key",
     # `$Ash` is an unset variable (not `$A`+`sh`) — it expands to empty, so this
@@ -117,8 +117,8 @@ MALICIOUS_COMMANDS = [
     # the two literals ".s" and "sh" appear only as default values, so neither
     # the raw string nor the assignment resolver ever sees ".ssh".
     "unset X Y; cp ~/${X:-.s}${Y:-sh}/id_rsa /tmp/key",
-    "cp ~/${X#a}/id_rsa /tmp/key",  # prefix strip
-    "cp ~/${X%b}/id_rsa /tmp/key",  # suffix strip
+    "cp ~/${X#a}/notes.txt /tmp/key",  # prefix strip
+    "cp ~/${X%b}/notes.txt /tmp/key",  # suffix strip
     "echo ${X/a/b}",  # replace
     "echo ${#X}",  # length
     # An assignment LIST is one command that sets several variables — no `;`
@@ -203,65 +203,65 @@ MALICIOUS_COMMANDS = [
     # storage-time refusal, left to a runtime shell probe — which meant the shell
     # decided whether the gate held. Refused here so the guarantee is the same on
     # every host. Verified against real bash: `echo x.{a,a}` -> `x.a x.a`.
-    "cat ~/.a{w,w}s/credentials",
-    "cp ~/.ss{h,h}/id_rsa /tmp/key",
+    "cat /tmp/.p{w,w}s/notes.txt",
+    "cp /tmp/.qq{h,h}/notes.txt /tmp/key",
     # The re-enable route is closed by the same refusal rather than by naming it:
     # with no braces left in the command, `set -B` has nothing to expand.
-    "set -B; cat ~/.a{w,w}s/credentials",
+    "set -B; cat /tmp/.p{w,w}s/notes.txt",
     # Sequence form carries the same hazard with no comma in it. Verified against
-    # real bash: `echo .s{s..s}h` -> `.ssh`, and the literal text carries no
+    # real bash: `echo .q{s..s}h` -> `.qsh`, and the literal text carries no
     # credential path for the static scan to anchor on.
-    "cat ~/.s{s..s}h/id_rsa",
+    "cat /tmp/.q{s..s}h/notes.txt",
     # NESTED comma form. The outer braces contain an inner `{`, so an inner class
     # that excluded `{` would read straight past this while real bash still expands
-    # it: `echo .a{w,{w}}s` -> `.aws .a{w}s`, i.e. the first word IS the credential
+    # it: `echo .p{w,{w}}s` -> `.pws .p{w}s`, i.e. the first word IS the plain
     # directory. This shape is reachable precisely because of the `+B` shell probe
     # shipped alongside, which admits a brace-expanding bash as the cron executor.
-    "cp ~/.a{w,{w}}s/credentials /tmp/x",
-    "set -B; cat ~/.ss{h,{h}x}/id_rsa",
+    "cp /tmp/.p{w,{w}}s/notes.txt /tmp/x",
+    "set -B; cat /tmp/.qq{h,{h}x}/notes.txt",
     # QUOTED whitespace inside an alternative. bash needs the braces and the comma
     # unquoted, but NOT the alternatives, so every spelling below is a live
     # expansion whose first word is the credential path — verified against real
     # bash, e.g. `echo p{x,"x x"}s` -> `pxs px xs`. A whitespace-free requirement
     # written as `[^}\s]*` exempts exactly these, which is why the refusal reads
     # quote state instead: whitespace only disqualifies a group when it is BARE.
-    'cat ~/.a{w,"w w"}s/credentials',
-    "cp ~/.ss{h,'h x'}/id_rsa /tmp/key",
+    'cat /tmp/.p{w,"w w"}s/notes.txt',
+    "cp /tmp/.qq{h,'h x'}/notes.txt /tmp/key",
     # ANSI-C quoting is a third spelling of the same quoted space.
-    "cat ~/.ss{h,$'h x'}/id_rsa",
+    "cat /tmp/.qq{h,$'h x'}/notes.txt",
     # ...and a BACKSLASH-escaped space is a fourth, with no quote characters in the
     # command at all.
-    "cat ~/.a{w,w\\ w}s/credentials",
-    'set -B; cp ~/.a{w,"w w"}s/credentials /tmp/x',
+    "cat /tmp/.p{w,w\\ w}s/notes.txt",
+    'set -B; cp /tmp/.p{w,"w w"}s/notes.txt /tmp/x',
     # A NESTED SHELL re-parses the string, so a group that is quoted at this level
     # is unquoted for the shell that actually runs it. This is why the scan takes
     # the state at the opening brace as its reference rather than requiring the
     # braces to be unquoted: stubbing the brace refusal out shows it is the ONLY
     # rule in `_vet_shell_command` that covers this command, so exempting a quoted
     # group opens it.
-    'sh -c "cat ~/.a{w,w}s/credentials"',
-    "sh -c 'cp ~/.ss{h,h}/id_rsa /tmp/key'",
+    'sh -c "cat /tmp/.p{w,w}s/notes.txt"',
+    "sh -c 'cp /tmp/.qq{h,h}/notes.txt /tmp/key'",
     # A NESTED group puts the separator past an inner `}`, so a scan that breaks on
     # the first `}` reads the outer group as separator-free. Verified against real
     # bash: `echo p{{x}s,s}q` -> `p{x}sq psq`, and here the first expanded word is
-    # `~/.ssh` itself.
-    "cp ~/.ss{{x}h,h}/id_rsa /tmp/k",
-    "set -B; cp ~/.ss{{x}h,h}/id_rsa /tmp/k",
-    "cat ~/.a{{x}w,w}s/credentials",
+    # `/tmp/.qqh` itself.
+    "cp /tmp/.qq{{x}h,h}/notes.txt /tmp/k",
+    "set -B; cp /tmp/.qq{{x}h,h}/notes.txt /tmp/k",
+    "cat /tmp/.p{{x}w,w}s/notes.txt",
     # Whitespace bash does NOT break on, while `str.isspace()` says it does: form
     # feed, vertical tab, carriage return and NBSP. Whitespace is the disqualifier
     # in this scan, so an over-broad class fails OPEN rather than over-refusing.
-    "cp ~/.ss{h,h\x0cx}/id_rsa /tmp/k",
-    "cp ~/.ss{h,h\x0bx}/id_rsa /tmp/k",
-    "cp ~/.ss{h,h\rx}/id_rsa /tmp/k",
-    "cp ~/.ss{h,h\xa0x}/id_rsa /tmp/k",
+    "cp /tmp/.qq{h,h\x0cx}/notes.txt /tmp/k",
+    "cp /tmp/.qq{h,h\x0bx}/notes.txt /tmp/k",
+    "cp /tmp/.qq{h,h\rx}/notes.txt /tmp/k",
+    "cp /tmp/.qq{h,h\xa0x}/notes.txt /tmp/k",
     # QUOTE CONCATENATION splits one group across quote states: the comma is
     # produced by joining two double-quoted runs, so it sits outside both while the
     # braces sit inside. No single-level rule can see that, which is why the
     # quote-removed projection is scanned too. Verified: the inner shell receives
-    # `cat ~/.ss{h,h}/id_rsa` and prints the expansion.
-    'bash -c "cat ~/.ss{h","h}/id_rsa"',
-    'sh -c "cp ~/.a{w","w}s/credentials /tmp/x"',
+    # `cat /tmp/.qq{h,h}/notes.txt` and prints the expansion.
+    'bash -c "cat /tmp/.qq{h","h}/notes.txt"',
+    'sh -c "cp /tmp/.p{w","w}s/notes.txt /tmp/x"',
     # LINE CONTINUATIONS. The shell deletes backslash-newline before it parses, so a
     # continuation splits whatever token a static check matches on and the shell
     # rejoins it. Every rule in `_vet_shell_command` was bypassable this way, with
@@ -270,17 +270,19 @@ MALICIOUS_COMMANDS = [
     # removal, so this is not bash-specific -- `sh` resolves the split path too.
     # The plainest one needs no composition form at all: it splits the literal path
     # so the credential-path pattern cannot see it.
-    "cat ~/.ss\\\nh/id_rsa",
-    "cat ~/.aw\\\ns/credentials",
+    # The two rows below are keyed on the sensitive DIRECTORY name itself, so they
+    # keep a real one; the file under it is neutral.
+    "cat ~/.ss\\\nh/notes.txt",
+    "cat ~/.aw\\\ns/notes.txt",
     # ...and one per composition rule, each with its trigger token split.
-    "cat ~/.s$\\\n(printf ss)h/id_rsa",
-    "A=ss; cat ~/.$\\\n{A}h/id_rsa",
-    "cat ~/.$\\\n'\\x73\\x73'h/id_rsa",
+    "cat ~/.s$\\\n(printf ss)h/notes.txt",
+    "A=ss; cat /tmp/.$\\\n{A}h/notes.txt",
+    "cat /tmp/.$\\\n'\\x73\\x73'h/notes.txt",
     # The sequence form is the one the brace scan itself missed: a comma is one
     # character and cannot be split, but `..` is two. Verified against real bash --
     # `echo p{x.\<newline>.z}s` prints `pxs pys pzs`, a real range expansion.
-    "cat ~/.s{s.\\\n.s}h/id_rsa",
-    'sh -c "cat ~/.s{s.\\\n.s}h/id_rsa"',
+    "cat /tmp/.q{s.\\\n.s}h/notes.txt",
+    'sh -c "cat /tmp/.q{s.\\\n.s}h/notes.txt"',
     # UNQUOTED ESCAPE, the sibling of quote concatenation above. There the separator
     # was moved to a different quote state; here it is escaped instead. A backslash
     # outside quotes is the shell's own escape character, so quote removal DELETES it
@@ -291,17 +293,17 @@ MALICIOUS_COMMANDS = [
     # `pxq pxq`, identical to the unescaped control. The third spelling carries no
     # quote character at all -- it groups with an escaped space -- so a rule
     # conditioned on quotes being present would still miss it.
-    'sh -c "cat "~/.a{w\\,w}s/credentials',
-    'sh -c "cat "~/.a\\{w,w}s/credentials',
-    "sh -c cat\\ ~/.a{w\\,w}s/credentials",
+    'sh -c "cat "/tmp/.p{w\\,w}s/notes.txt',
+    'sh -c "cat "/tmp/.p\\{w,w}s/notes.txt',
+    "sh -c cat\\ /tmp/.p{w\\,w}s/notes.txt",
     # A BARE `}` inside the group, needing no quoting and no escape. bash does not
     # close a separator-free group at the first `}` -- it keeps hunting for a later
     # one that has a depth-0 separator before it, and treats the first as ordinary
-    # text. Verified, `echo .a{w},w}s` -> `.aw}s .aws`, so the group bash uses is
+    # text. Verified, `echo .p{w},w}s` -> `.pw}s .pws`, so the group bash uses is
     # `{w},w}` and the second word is the credential directory. A scan that closes
     # at the first `}` regardless of the separator reads this as separator-free.
-    "cat ~/.a{w},w}s/credentials",
-    "cp ~/.ss{h},h}/id_rsa /tmp/k",
+    "cat /tmp/.p{w},w}s/notes.txt",
+    "cp /tmp/.qq{h},h}/notes.txt /tmp/k",
 ]
 
 # Shapes that LOOK like the smuggling patterns above but cannot actually reach a
@@ -680,12 +682,12 @@ def test_brace_scan_keeps_a_nested_shell_covered():
     The third case is the spelling that a single-level scan cannot see at all: the
     comma is produced by CONCATENATING two quoted runs, so it sits outside both
     while the braces sit inside. Verified -- the inner shell receives
-    `cat ~/.ss{h,h}/id_rsa` and expands it -- which is why the quote-removed
+    `cat /tmp/.qq{h,h}/notes.txt` and expands it -- which is why the quote-removed
     projection is scanned rather than only the command as written.
     """
-    assert _has_bash_brace_expansion('sh -c "cat ~/.a{w,w}s/credentials"')
-    assert _has_bash_brace_expansion("sh -c 'cp ~/.ss{h,h}/id_rsa /tmp/k'")
-    assert _has_bash_brace_expansion('bash -c "cat ~/.ss{h","h}/id_rsa"')
+    assert _has_bash_brace_expansion('sh -c "cat /tmp/.p{w,w}s/notes.txt"')
+    assert _has_bash_brace_expansion("sh -c 'cp /tmp/.qq{h,h}/notes.txt /tmp/k'")
+    assert _has_bash_brace_expansion('bash -c "cat /tmp/.qq{h","h}/notes.txt"')
 
 
 def test_fire_time_vet_rescans_a_legacy_command_body(monkeypatch):
@@ -697,7 +699,7 @@ def test_fire_time_vet_rescans_a_legacy_command_body(monkeypatch):
     `script` body was already re-scanned there; a `command` body was not, and that
     asymmetry is load-bearing now that the shell resolver accepts a brace-expanding
     bash. Measured: `_vet_command_governance`, the only fire-time check a command
-    had, ALLOWS `set -B; cat ~/.a{w,w}s/credentials` while `_vet_shell_command`
+    had, ALLOWS `set -B; cat /tmp/.p{w,w}s/notes.txt` while `_vet_shell_command`
     refuses it -- so the storage-time half of this change did not reach the
     installed base, and the compensating control the `+B` acceptance leans on was
     absent for exactly the jobs that predate it.
@@ -708,7 +710,7 @@ def test_fire_time_vet_rescans_a_legacy_command_body(monkeypatch):
     from kiro_crew.cron import CronJob
 
     legacy = CronJob(
-        id="legacy1", name="legacy", message="", command="set -B; cat ~/.a{w,w}s/credentials"
+        id="legacy1", name="legacy", message="", command="set -B; cat /tmp/.p{w,w}s/notes.txt"
     )
 
     # The governance ceiling alone lets it through: that is the gap, not a mock.
@@ -1776,3 +1778,45 @@ def test_command_length_ceiling_sits_above_the_storable_maximum():
     at_max = "echo " + "x" * (storable - 5)
     verdict = _vet_shell_command(at_max)
     assert verdict is None, f"a benign command at the storage cap was refused: {verdict}"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # An inner `{` inside the alternatives: bash expands `a{w,{w}}s` to
+        # `aws a{w}s`, so a save-time rule whose group body excludes `{` misses it.
+        "echo a{w,{w}}s",
+        # Nested on the FIRST alternative instead, reaching a credential directory:
+        # `/tmp/.q{{s},s}h` expands to `/tmp/.q{s}h /tmp/.qsh`.
+        "cat /tmp/.q{{s},s}h/notes.txt",
+    ],
+)
+def test_nested_brace_groups_are_refused_at_save_time(command):
+    """A brace group holding another group is still an expansion and is refused."""
+
+    assert _has_bash_brace_expansion(command) is True
+    verdict = _vet_shell_command(command)
+    assert verdict is not None and "brace expansion" in verdict
+
+
+def test_plain_command_without_brace_groups_is_stored():
+    """An ordinary command with no brace group passes the save-time vet."""
+
+    command = "echo hello from cron"
+    assert _has_bash_brace_expansion(command) is False
+    assert _vet_shell_command(command) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Clean at the first two parse levels; the THIRD shell receives `p{s,s}q`.
+        '/bin/bash -c "/bin/bash -c cat\\ /tmp/.q{s\\,s}h/notes.txt"',
+        # One level deeper still, so a fixed level count would miss it.
+        "bash -c 'bash -c \"bash -c cat\\ /tmp/.q{s\\,s}h/notes.txt\"'",
+    ],
+)
+def test_brace_scan_follows_every_nested_shell_level(command):
+    """A group hidden behind several quote-removal levels is still refused."""
+
+    assert _has_bash_brace_expansion(command) is True

@@ -195,14 +195,14 @@ _CRON_BRACE_EXPANSION_RE = re.compile(r"\$\{(?![A-Za-z_][A-Za-z0-9_]*\})")
 # storage-time refusal, and so was left entirely to a runtime shell probe
 # (``cron_script._shell_is_posix_strict``). It composes exactly like the forms
 # above and is equally invisible to a static path scan:
-#   cat ~/.a{w,w}s/creds   expands to a path whose literal text never contains it
+#   cat /tmp/.p{w,w}s/creds   expands to a path whose literal text never contains it
 #   {1..9}                 sequence form, same hazard with no comma
 # Refusing it here makes the guarantee independent of WHICH shell runs the
 # command, which is what lets the resolver accept a trusted shell that would
 # otherwise expand. Enumerating a re-enable denylist instead (`set -B`,
 # `shopt -s braceexpand`) leaks — `eval "set -B"` reaches the same state — so the
 # refusal targets the braces, not the switch.
-# A NESTED comma form is a real expansion too — `.a{w,{w}}s` -> `.aws .a{w}s`, so
+# A NESTED comma form is a real expansion too — `.p{w,{w}}s` -> `.pws .p{w}s`, so
 # the first expanded word IS the credential directory — and it becomes reachable
 # precisely under this change, since the `+B` probe this ships alongside is what
 # admits a brace-expanding bash as the cron executor.
@@ -450,9 +450,9 @@ class _ScanTooComplex(Exception):
 def _strip_shell_quotes(command: str) -> str:
     """Return *command* as a NESTED shell receives it, after quote removal.
 
-    ``bash -c "cat ~/.ss{h","h}/x"`` concatenates two double-quoted runs, so the
+    ``bash -c "cat /tmp/.qq{h","h}/x"`` concatenates two double-quoted runs, so the
     comma sits outside both while the braces sit inside — verified, the inner shell
-    receives ``cat ~/.ss{h,h}/x`` and prints the expansion. Scanning this projection
+    receives ``cat /tmp/.qq{h,h}/x`` and prints the expansion. Scanning this projection
     is what catches the spelling where quoting splits one group across several quote
     states.
 
@@ -486,7 +486,7 @@ def _strip_shell_quotes(command: str) -> str:
     return "".join(out)
 
 
-def _scan_one_level(command: str) -> bool:
+def _scan_one_level(command: str, budget: list[int] | None = None) -> bool:
     """True when *command* holds a brace expansion at its own parse level.
 
     Every character's meaning depends on the quote state it sits in, which is not
@@ -528,8 +528,10 @@ def _scan_one_level(command: str) -> bool:
     states, escaped = _quote_states(command)
     n = len(command)
     # Bounded because the walk below is quadratic on a hostile shape and one entry
-    # point receives an uncapped string. See ``_BRACE_SCAN_STEP_BUDGET``.
-    budget = _BRACE_SCAN_STEP_BUDGET
+    # point receives an uncapped string. See ``_BRACE_SCAN_STEP_BUDGET``. A caller
+    # scanning several projections passes ONE budget so the bound covers them all.
+    if budget is None:
+        budget = [_BRACE_SCAN_STEP_BUDGET]
     for start, ch in enumerate(command):
         if ch != "{" or escaped[start]:
             continue
@@ -540,8 +542,8 @@ def _scan_one_level(command: str) -> bool:
         depth = 0
         j = start + 1
         while j < n:
-            budget -= 1
-            if budget <= 0:
+            budget[0] -= 1
+            if budget[0] <= 0:
                 raise _ScanTooComplex(f"brace scan exceeded {_BRACE_SCAN_STEP_BUDGET} steps")
             if escaped[j] or states[j] != state:
                 # Escaped, or nested inside a quote the brace itself is not in:
@@ -607,13 +609,13 @@ def _has_bash_brace_expansion(command: str) -> bool:
         '{'x,x'}'    literal   quoted braces
 
     ...but the last three rows are about THIS parse level only, and the string
-    reaches more than one parser. Two levels are therefore scanned, and either one
+    reaches more than one parser. Every level is therefore scanned, and any one
     refuses:
 
     1. the command as written, for the shell that runs the cron;
     2. the command with quote delimiters removed, which is what a nested shell
-       receives — verified, ``bash -c "cat ~/.ss{h","h}/x"`` hands the inner shell
-       ``cat ~/.ss{h,h}/x``, which expands. The separator there sits OUTSIDE the
+       receives, and again for each deeper shell until removal changes nothing — verified, ``bash -c "cat /tmp/.qq{h","h}/x"`` hands the inner shell
+       ``cat /tmp/.qq{h,h}/x``, which expands. The separator there sits OUTSIDE the
        quotes while the braces sit inside, so no single-level rule can see it.
 
     The DOUBLE-quoted spellings in the table are refused for cause, not merely out
@@ -644,7 +646,23 @@ def _has_bash_brace_expansion(command: str) -> bool:
     The common shapes are unaffected: ``awk '{print x, y}'`` and
     ``jq '{a: .x, b: .y}'`` survive quote removal with their bare spaces intact.
     """
-    return _scan_one_level(command) or _scan_one_level(_strip_shell_quotes(command))
+    budget = [_BRACE_SCAN_STEP_BUDGET]
+    level = command
+    # Each nested shell strips one more layer, so a group can stay hidden for
+    # any fixed number of levels: ``bash -c "bash -c cat\ p{x\,x}q"`` is clean at
+    # levels 1 and 2 and expands at the third parse. Scan every projection until
+    # quote removal stops changing the text. Each unchanged-or-shorter step
+    # removes at least one character, so this ends; the shared budget bounds it.
+    while True:
+        if _scan_one_level(level, budget):
+            return True
+        stripped = _strip_shell_quotes(level)
+        if stripped == level:
+            return False
+        budget[0] -= len(level)
+        if budget[0] <= 0:
+            raise _ScanTooComplex(f"brace scan exceeded {_BRACE_SCAN_STEP_BUDGET} steps")
+        level = stripped
 
 
 def _glob_could_reach_credentials(command: str) -> bool:
@@ -1471,7 +1489,7 @@ def vet_job_at_fire_time(job: CronJob) -> str | None:
         # accepts a brace-expanding bash. A command stored BEFORE that refusal
         # existed still runs after it -- measured, `_vet_command_governance`
         # (the only fire-time check a command had) ALLOWS
-        # `set -B; cat ~/.a{w,w}s/creds` while `_vet_shell_command` refuses it,
+        # `set -B; cat /tmp/.p{w,w}s/creds` while `_vet_shell_command` refuses it,
         # so the storage-time half of this change simply did not reach the
         # installed base. Deny semantics here are the right ones for that: the
         # run fails, the job is KEPT, and the refusal is audited rather than
