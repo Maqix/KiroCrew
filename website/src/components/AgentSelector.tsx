@@ -52,7 +52,7 @@ export interface KiroCrewAgent {
  *  trim — a stored label arrives trimmed, but an in-flight edit draft may
  *  not be). */
 export function crewDisplayName(a: Pick<KiroCrewAgent, 'name' | 'display_name'>): string {
-  return a.display_name?.trim() || a.name
+  return a.display_name?.trim() || (a.name === 'default' ? i18nT('components.assistantWelcome.default_name') : a.name)
 }
 
 interface Props {

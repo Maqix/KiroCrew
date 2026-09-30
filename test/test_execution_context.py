@@ -442,6 +442,8 @@ def test_every_binder_declares_whether_it_vouches():
         ("dashboard/session_control.py", "_persist_birth"): "True",
         ("member_memory_auth.py", "bind_private_session_store"): "True",
         ("session_agent_selection.py", "record_agent_selection"): "vouch",
+        # Carries the store out of the session's own record, like the provider switch.
+        ("session_agent_selection.py", "publish_default_assistant_adoption"): "False",
         ("subagent_manager/run.py", "publish_execution"): "ABSENT",
         ("subagent_persistence.py", "bind_session_memory_mode"): "ABSENT",
     }

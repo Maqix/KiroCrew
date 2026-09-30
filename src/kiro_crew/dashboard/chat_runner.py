@@ -387,6 +387,8 @@ from kiro_crew.security.redaction import redact_credentials_with_records
 from kiro_crew.sel import SecurityEvent, sel, sel_is_warm
 from kiro_crew.session import SessionBusyError, SessionClosingError, SpeculativeResumeRefused
 from kiro_crew.session_agent_selection import (
+    plan_default_assistant_adoption,
+    publish_default_assistant_adoption,
     record_agent_selection,
     record_provider_agent_switch,
     resolve_session_agent_bindings,
@@ -6583,6 +6585,76 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
     _pending_reset_retries[slot.key] = (slot, asyncio.create_task(_retry()))
 
 
+async def _adopt_default_assistant_at_boundary(
+    state: DashboardState, slot: _ChatSlot, session_key: str
+) -> bool:
+    """Move an existing default-member DM onto the adopted Assistant template.
+
+    Runs at turn START, under the caller's ``slot_switch_session_lock`` and before
+    bindings are resolved, so no turn of this slot is rebound mid-flight. Returns
+    whether the record now names the Assistant; every refusal leaves the record
+    and the live session exactly as they were, and the next turn boundary tries
+    again.
+
+    Order is record first, runtime second. The record is compare-and-set against
+    the exact prior (``publish_default_assistant_adoption``), so a concurrent
+    owner pick wins. The retained runtime then goes through
+    ``discard_conversation(skip_if_busy=True)``: its busy refusal is atomic with
+    the pop, so a sibling alias's streaming turn (a linked channel reply) is never
+    torn down, and the native resume sid is cleared in the same tick, so the next
+    cold start replays the transcript into the NEW template instead of
+    ``session/load``-ing the old template's conversation behind the new label.
+    Any refusal or raise after the record moved rolls the record back through
+    ``restore_agent_selection``, which compares against what this call published,
+    so the record never names the Assistant while the old template stays live.
+
+    Deferred, not forced: attached sub-agent children (the discard releases their
+    runtime) and an eager prewarm still starting (it would register the old
+    template after the discard) both leave adoption for a later boundary.
+    """
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    if slot.mode != DM_SLOT_MODE or slot._app or slot.agent != "default":
+        return False
+    eager = slot._eager_spawn_task
+    if eager is not None and not eager.done():
+        return False
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    plan = await asyncio.to_thread(plan_default_assistant_adoption, cfg, session_key)
+    if plan is None:
+        return False
+    if await subagents_attached_async(state, slot, session_key, "default_assistant_adoption"):
+        return False
+    try:
+        change = await asyncio.to_thread(publish_default_assistant_adoption, session_key, plan)
+    except UnknownMemoryStore:
+        # Someone else republished the record since the plan read it; theirs wins.
+        logger.debug("default Assistant adoption lost its compare-and-set", exc_info=True)
+        return False
+    try:
+        discarded = await state.sessions.discard_conversation(session_key, skip_if_busy=True)
+    except BaseException as exc:
+        slot.forget_session_model_state()
+        await drained_to_thread(restore_agent_selection, session_key, change)
+        logger.warning(
+            "default Assistant adoption rolled back: runtime teardown failed for slot %s",
+            slot.key,
+            exc_info=True,
+        )
+        if not isinstance(exc, Exception):
+            raise
+        return False
+    if not discarded:
+        await drained_to_thread(restore_agent_selection, session_key, change)
+        logger.debug("default Assistant adoption deferred: slot %s is busy", slot.key)
+        return False
+    slot.forget_session_model_state()
+    if slot.clear_mcp_report():
+        state.broadcast_ws("mcp_report_update", {"slot": slot.key, "mcp_report": None})
+    logger.info("default Assistant adopted by existing member DM slot %s", slot.key)
+    return True
+
+
 async def _consume_pending_reset(
     state: DashboardState, slot: _ChatSlot, *, allow_discard: bool = False
 ) -> bool:
@@ -11580,6 +11652,12 @@ async def _run_chat(
                 )
 
         try:
+            # The default-Assistant adoption lands HERE: under the switch lock,
+            # before this turn resolves bindings or allocates a provider, so the
+            # turn that follows starts on the adopted template and no turn is
+            # rebound mid-flight. A refusal changes nothing and retries next turn.
+            await _adopt_default_assistant_at_boundary(state, slot, session_key)
+            _require_current_binding()
             cfg = KiroCrewConfig.load()
             loaded_cfg = cfg
             provider_name = cfg.agent.provider

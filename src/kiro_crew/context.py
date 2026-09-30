@@ -3578,11 +3578,32 @@ class ContextBuilder:
         rules = _scrub_member_payload(rules)
         briefing = _scrub_member_payload(briefing)
 
-        identity = [
-            f"[MEMBER IDENTITY]\nYou are {member}. Not a generic assistant, and not an "
-            f"extension of the user: {member} is an identity of your own — your name, "
-            "your role, your memory of this thread, and your track record belong to you."
-        ]
+        assistant = (
+            member == "default"
+            and not strict
+            and not template_selected
+            and crew is not None
+            and getattr(crew, "kiro_agent", "") == "kirocrew-assistant"
+            and not getattr(crew, "member_id", "")
+            and getattr(crew, "memory_store", "") == "default"
+        )
+        display_name = getattr(crew, "display_name", "") if assistant else ""
+        spoken_name = (
+            _scrub_member_payload(display_name.strip())
+            if isinstance(display_name, str) and display_name.strip()
+            else "Assistant"
+        )
+        identity = (
+            [
+                f"[MEMBER IDENTITY]\nYou are {spoken_name}. Your member key is {member}.",
+            ]
+            if assistant
+            else [
+                f"[MEMBER IDENTITY]\nYou are {member}. Not a generic assistant, and not an "
+                f"extension of the user: {member} is an identity of your own — your name, "
+                "your role, your memory of this thread, and your track record belong to you."
+            ]
+        )
         if description:
             identity.append(f"Your role: {description}")
         if triggers:

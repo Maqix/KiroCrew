@@ -80,6 +80,79 @@ def resolve_session_agent_bindings(
     return bindings
 
 
+DEFAULT_ASSISTANT_TEMPLATE = "kirocrew-assistant"
+# The templates a default-member record captured before the Assistant existed:
+# the shipped default, and the empty template a legacy V1 member may carry.
+_PRE_ASSISTANT_TEMPLATES = ("", "kirocrew")
+
+
+def plan_default_assistant_adoption(
+    config, session_key: str
+) -> tuple[ExecutionContext, ExecutionContext] | None:
+    """Read-only: the one record rewrite the default-Assistant adoption allows.
+
+    A default-member DM captured ``template_id="kirocrew"`` on its first turn, and
+    the resolver honours the captured template forever, so adopting the Assistant
+    in config alone changes only conversations that never had a turn. This plans
+    the narrow republication that moves an EXISTING one: the reserved Global/V1
+    ``default`` member, selected as a member (never a template pick), with no app,
+    still on a pre-Assistant template, while config binds the Assistant to that
+    member's unchanged V1 identity. Everything else -- store, memory mode, app,
+    selection name -- is carried over exactly; only the template moves.
+
+    Eligibility is read from CONFIG, not from the record: the record only has to
+    still look like the untouched shape, and the store it names must be what
+    config independently resolves for the member. A custom template, a V2 member,
+    a template-selected chat, or a record already changed by anyone else returns
+    ``None``. Pure read; publication is :func:`publish_default_assistant_adoption`
+    under the caller's turn-boundary lock.
+    """
+    prior = read_session_execution(session_key)
+    if (
+        prior is None
+        or prior.member_id is not None
+        or prior.store != MemoryStoreRef("default")
+        or prior.selection_kind != "member"
+        or prior.selection_name != "default"
+        or prior.app
+        or prior.template_id not in _PRE_ASSISTANT_TEMPLATES
+    ):
+        return None
+    member = getattr(config, "agents", {}).get("default")
+    if (
+        member is None
+        or getattr(member, "kiro_agent", "") != DEFAULT_ASSISTANT_TEMPLATE
+        or getattr(member, "member_id", "")
+    ):
+        return None
+    try:
+        from kiro_crew.memory_stores import require_member_memory_store
+
+        store = require_member_memory_store(config, "default", require_directory=False)
+    except Exception:  # noqa: BLE001 -- an unresolvable member is simply not adopted
+        return None
+    declaration = getattr(config, "memory_stores", {}).get(store)
+    if store != "default" or getattr(declaration, "memory_version", 1) == 2:
+        return None
+    return prior, dataclass_replace(
+        prior, template_id=DEFAULT_ASSISTANT_TEMPLATE, selection_revision=uuid.uuid4().hex
+    )
+
+
+def publish_default_assistant_adoption(
+    session_key: str, plan: tuple[ExecutionContext, ExecutionContext]
+) -> SelectionChange:
+    """Compare-and-set the planned record; raises when anyone changed it since.
+
+    Never vouches: the store is carried out of the session's own record, the same
+    reason ``record_provider_agent_switch`` does not vouch a carried owner. The
+    returned change is what :func:`restore_agent_selection` rolls back.
+    """
+    prior, adopted = plan
+    bind_session_execution(session_key, adopted, replace_existing=True, expected=prior, vouch=False)
+    return prior.to_record(), adopted.to_record()
+
+
 def record_provider_agent_switch(config, session_key, prior_agent, new_agent, project_dir):
     prior = read_session_execution(session_key)
     selected = resolve_agent_bindings(config, new_agent, project_dir, selection_kind="template")

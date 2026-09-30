@@ -271,7 +271,13 @@ describe('crew editor — collision warning', () => {
       default_agent: 'default',
     })
     await renderRoster()
-    const sheet = await openEditor('default')
+    // The `default` crew is presented under its display name (`crewDisplayName`
+    // maps the bare `default` key to "Assistant"); its config key never
+    // reaches the card's accessible name.
+    expect(screen.queryByRole('button', { name: 'Edit agent default' })).toBeNull()
+    const sheet = await openEditor('Assistant')
+    // The dialog's visible title agrees with the card it was opened from.
+    expect(within(sheet).getByRole('heading', { name: 'Assistant' })).toBeInTheDocument()
     // Both the picker and the warning live on the workspace/memory pane.
     fireEvent.click(within(sheet).getByTestId('crew-rail-place'))
 

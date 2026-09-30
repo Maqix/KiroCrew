@@ -2136,7 +2136,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
              not "Create Agent" — the app never says the two are one thing. */
           aria-label={creating
             ? i18nT('pages.kiroCrewAgentsPage.add_crew_member')
-            : i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: displayName.trim() || editing })}
+            : i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: crewDisplayName({ name: editing, display_name: displayName }) })}
           /* Radix closes on an outside pointerdown and on Escape. Dismissing
              mid-write is DELIBERATELY still allowed: the sheetEpoch/settleFor
              machinery below exists to make the abandoned write land harmlessly,
@@ -2180,7 +2180,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               <DialogTitle className="flex-1 font-mono">
                 {/* The draft label, live: retitling the crew is the one edit
                     whose effect IS this text, so it previews before Save. */}
-                {creating ? i18nT('pages.kiroCrewAgentsPage.add_crew_member') : (displayName.trim() || editing)}
+                {creating ? i18nT('pages.kiroCrewAgentsPage.add_crew_member') : crewDisplayName({ name: editing, display_name: displayName })}
               </DialogTitle>
               {!creating && editingAgent?.source && <SourceBadge source={editingAgent.source} />}
             </div>

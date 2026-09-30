@@ -165,6 +165,30 @@ missing member carrier reports memory unavailable and never chooses Global.
 Existing ordinary V1 sessions retain their V1 behavior; old V2 grants are not
 migrated or used as a second authority.
 
+One record is migrated on purpose: the default-Assistant adoption. A default
+member DM captured `template_id="kirocrew"` on its first turn, and the resolver
+honours a captured template, so binding `agents.default.kiro_agent` to
+`kirocrew-assistant` alone would reach only DMs that never had a turn. At turn
+START, under `slot_switch_session_lock` and before bindings resolve,
+`chat_runner._adopt_default_assistant_at_boundary` moves only this shape: a
+member-mode slot for `default` with no app, whose record is the Global V1
+`default` store selected as a member (not a template pick), with no app and a
+pre-Assistant template (`""` or `kirocrew`), while config independently binds
+`kirocrew-assistant` to a `default` member with no `member_id`, resolving to the
+V1 `default` store. `session_agent_selection.plan_default_assistant_adoption`
+reads that plan; `publish_default_assistant_adoption` compare-and-sets it
+against the exact prior, unvouched, changing the template alone. The retained
+runtime then goes through `discard_conversation(skip_if_busy=True)`, so the next
+cold start replays the transcript into the new template rather than
+`session/load`-ing the old template's native conversation. A busy decline, a
+teardown raise, attached sub-agent children, or an eager prewarm still starting
+leaves the record (rolled back through `restore_agent_selection` where it had
+moved) and the runtime unchanged, and the next boundary retries. A turn already
+running is never rebound, and `resolve_session_agent_bindings` stays read-only
+for every caller, prewarm included. A linked channel that holds the session's
+lease for its whole listening life therefore stays on the old template until a
+boundary finds it idle.
+
 One record shape is backfilled instead of refused: a persistent session written
 before the field existed (0.7.0.5), carrying `agent` and a `memory_store` that
 names a declared V2 store but no `execution_context`. `read_session_execution`
