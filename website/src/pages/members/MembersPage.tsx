@@ -46,7 +46,7 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Check, ChevronRight, Circle, Goal, LayoutDashboard, ListChecks, MessageCircleQuestionMark, NotebookPen, Pencil, Plus, RotateCw, Route, Sparkles, Square, Star, Users, Zap } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, Circle, Goal, LayoutDashboard, ListChecks, MessageCircleQuestionMark, MessageSquare, NotebookPen, Pencil, Plus, RotateCw, Route, Sparkles, Square, Star, Users, Zap } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { Btn } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
@@ -106,8 +106,9 @@ import {
   type MemberSignals, type MemberSort, type MemberSourceFilter, type MemberStatusFilter, type RosterQuery,
 } from './rosterFilter'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '../chat/sidePanelMount'
+import { isSidePanelHidden, shouldMountSidePanel } from '../chat/sidePanelMount'
 import SidePanel, { SIDE_PANEL_MIN_W, SIDE_PANEL_RESERVED_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
+import MembersPageTabBar from './MembersPageTabBar'
 import { CHAT_TRANSCRIPT_VIEWS, VIEW_DATA_SOURCE, useAnyLiveAppTab, usePanelTabs, type ViewKind } from '../../hooks/usePanelTabs'
 import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
@@ -212,13 +213,23 @@ const ROSTER_WIDTH_KEY = 'mc-members-roster-width'
  *  ring means older in-window events were dropped, so a count off it is a
  *  floor, not exact. */
 const ACTIVITY_RING = 50
+export const CREW_CHAT_TAB_ID = 'crew-chat'
 export const CREW_NOTES_TAB_ID = 'crew-notes'
 export const CREW_WORK_LOG_TAB_ID = 'crew-work-log'
 export const CREW_DASHBOARD_TAB_ID = 'crew-dashboard'
-/** Host tabs of the crewmate panel, in strip order. Notes is the default focus.
- *  Must not collide with a chat `TabKind` — `'summary'` is the chat page's
- *  session-summary view, a different thing. */
-export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_NOTES_TAB_ID, CREW_WORK_LOG_TAB_ID, CREW_DASHBOARD_TAB_ID]
+/** Host tabs of the crewmate page, in bar order. Chat is the FIRST tab and the
+ *  default focus — its body is the DM thread; Notes / Work log / Dashboard are
+ *  panel bodies. The whole set drives a page-level tab bar
+ *  (`MembersPageTabBar`); each fills the content area (Chat included). None may
+ *  collide with a chat `TabKind` — `'summary'` is the chat page's
+ *  session-summary view, a different thing. Chat is a bar-only tab: it has no
+ *  SidePanel leading body (when Chat is active the thread renders in place of
+ *  the panel), but it IS in `leadingIds` so a fresh strip opens on it and focus
+ *  can fall back to it. */
+export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_CHAT_TAB_ID, CREW_NOTES_TAB_ID, CREW_WORK_LOG_TAB_ID, CREW_DASHBOARD_TAB_ID]
+/** The panel's OWN leading tabs (Notes / Work log / Dashboard) — Chat is not
+ *  one of them, its body is the thread column, not a panel body. */
+export const CREW_PANEL_BODY_TAB_IDS: readonly string[] = [CREW_NOTES_TAB_ID, CREW_WORK_LOG_TAB_ID, CREW_DASHBOARD_TAB_ID]
 /** Chat-panel views this page withholds from the strip and the + menu
  *  (`SidePanel.hiddenViews`). The unfed half is DERIVED, not enumerated: every
  *  view `VIEW_DATA_SOURCE` classifies as `chat-transcript` (Changes / Issues /
@@ -363,9 +374,6 @@ const DRIVING_STATUS: Record<TabStatus, { cls: string; text: string; label: stri
 }
 // Module-level so the resize hook's memoised resolver isn't invalidated every render.
 const loadRosterWidth = () => loadColumnWidth(ROSTER_WIDTH_KEY, ROSTER_MIN, ROSTER_MAX, ROSTER_DEFAULT)
-/** The chat side panel's right-dock mount preset — module-pure, so one
- *  constant serves every render. */
-const dockMotion = sidePanelDockMotion('right')
 /** The auto-nudge service's terminal codes (`NudgeLoop.stopped_reason`) a
  *  member slot can actually receive, each mapped to the sentence the patrol
  *  block shows for a stopped loop. A code not listed here — a future terminal
@@ -1004,7 +1012,7 @@ export default function MembersPage() {
   // — so dismissing the drawer must not also hide the column the next time the
   // window widens.
   const [dockedOpen, setDockedOpen] = usePersistedBool(PANEL_OPEN_KEY, true)
-  const { panelVisible, showOpener } = panelChrome({ beside, dockedOpen, overlayOpen })
+  const { panelVisible: basePanelVisible, showOpener: baseShowOpener } = panelChrome({ beside, dockedOpen, overlayOpen })
   const closeDocked = useCallback(() => setDockedOpen(false), [setDockedOpen])
   // One gesture drives whichever placement is live, so the header button and
   // the dashboard's side-panel chord share it. The chord reaches this page the
@@ -1592,10 +1600,42 @@ export default function MembersPage() {
   // in the strip without moving the store, and that tab must load when it is the
   // one on screen.
   const [shownTabId, setShownTabId] = useState<string | null>(null)
-  const activeTabId = shownTabId ?? tabsCtl.activeId
-  const notesVisible = panelVisible && activeTabId === CREW_NOTES_TAB_ID
-  const workLogVisible = panelVisible && activeTabId === CREW_WORK_LOG_TAB_ID
-  const dashboardVisible = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
+  // The tab the PAGE shows is the true stored focus (`tabsCtl.activeId`), never
+  // the SidePanel's reported tab: Chat is not one of the panel's leading tabs,
+  // so the panel resolves its own active to its first body tab (Notes) and
+  // would otherwise clobber a Chat click the instant it reported. A null focus
+  // reads as Chat (a fresh strip opens on `CREW_PANEL_TAB_IDS[0]`).
+  const activeTabId = tabsCtl.activeId ?? CREW_CHAT_TAB_ID
+  const chatVisible = activeTabId === CREW_CHAT_TAB_ID
+  // Desktop (Option 1): every tab fills the content region, so there is no
+  // open/close toggle — the panel body is "visible" exactly when a non-Chat
+  // body tab is the active one, and Chat shows the thread column instead. The
+  // header opener is gone on desktop (the bar switches tabs). Mobile keeps the
+  // overlay semantics: `basePanelVisible` (overlayOpen) and its opener.
+  const panelVisible = beside ? !chatVisible : basePanelVisible
+  const showOpener = beside ? false : baseShowOpener
+  // The panel's own body data-read gates use what the PANEL shows (`shownTabId`
+  // via onActiveTabChange), falling back to the page focus — a body tab
+  // withheld while unconfirmed makes the panel report a fallback, and its data
+  // read must follow the body actually on screen.
+  const panelActiveTabId = shownTabId ?? activeTabId
+  const notesVisible = panelVisible && panelActiveTabId === CREW_NOTES_TAB_ID
+  const workLogVisible = panelVisible && panelActiveTabId === CREW_WORK_LOG_TAB_ID
+  const dashboardVisible = panelVisible && panelActiveTabId === CREW_DASHBOARD_TAB_ID
+  // The page-level tab bar's fixed HEAD: Chat first (its body is the thread),
+  // then the three panel bodies. Only the id/title/icon are read by the bar
+  // (the bodies themselves render below the bar); Chat's `render` is a no-op
+  // placeholder since the thread column, not a panel body, is its content.
+  const barHead = useMemo<SidePanelLeadingTab[]>(() => [
+    { id: CREW_CHAT_TAB_ID, title: t('pages.membersPage.chat_tab'), icon: <MessageSquare className="lucide-inline" aria-hidden="true" />, render: () => null },
+    { id: CREW_NOTES_TAB_ID, title: t('pages.membersPage.notes_tab'), icon: <NotebookPen className="lucide-inline" aria-hidden="true" />, render: () => null },
+    { id: CREW_WORK_LOG_TAB_ID, title: t('pages.membersPage.work_log_tab'), icon: <ListChecks className="lucide-inline" aria-hidden="true" />, render: () => null },
+    { id: CREW_DASHBOARD_TAB_ID, title: t('pages.membersPage.dashboard_tab'), icon: <LayoutDashboard className="lucide-inline" aria-hidden="true" />, render: () => null },
+  ], [t])
+  // Bridges the SidePanel's GUARDED tab close (dirty-file confirmation) to the
+  // page tab bar: SidePanel publishes its `handleCloseTab` here, the bar calls
+  // it so closing a dynamic document tab cannot silently drop an unsaved buffer.
+  const closeTabRef = useRef<((id: string) => void) | null>(null)
   const [dashboardVisitedFor, setDashboardVisitedFor] = useState<string | null>(null)
   useEffect(() => {
     if (dashboardVisible) setDashboardVisitedFor(activeMemberKey)
@@ -2857,6 +2897,23 @@ export default function MembersPage() {
         </div>
       </aside>
 
+      {/* Content column (desktop): the page tab bar on top, then the region
+          that swaps between the thread (Chat tab) and the panel body (Notes /
+          Work log / Dashboard / dynamic tabs). Each fills this column, so
+          switching tabs replaces the whole area (Option 1). Below md this
+          wrapper is transparent to layout (`contents`) and the thread / overlay
+          render exactly as before. */}
+      <div className={beside ? 'flex flex-1 min-w-0 flex-col min-h-0 gap-2 pb-2' : 'contents'}>
+        {active && beside && (
+          <MembersPageTabBar
+            tabsCtl={tabsCtl}
+            activeId={activeTabId}
+            leadingTabs={barHead}
+            hiddenViews={hiddenViews}
+            projectDir={projectDir}
+            onCloseTab={(id) => closeTabRef.current?.(id)}
+          />
+        )}
       {/* DM thread */}
       <section
         // Below md the column shows only while a chat or a team view is open —
@@ -2865,7 +2922,12 @@ export default function MembersPage() {
         // failure and its retry are said. A greeting notice sits over its
         // chat; once that chat is closed the roster is the screen and the
         // notice waits for the reopen.
-        className={`${activeName || activeTeam || postCreateError?.kind === 'roster' ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col min-h-0`}
+        //
+        // Desktop (Option 1): when a member is open and a NON-Chat body tab is
+        // active, the thread hides and the panel body fills the content column
+        // in its place. Chat (or no member) keeps the thread on screen. The
+        // team view and hero states are `!active`, so they are unaffected.
+        className={`${active && beside && !chatVisible ? 'hidden' : activeName || activeTeam || postCreateError?.kind === 'roster' ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col min-h-0`}
       >
         {!greetingNoticeInRoster && postCreateNotice}
         {/* The hero yields to a post-create notice: after the FIRST create a
@@ -3205,7 +3267,6 @@ export default function MembersPage() {
           </>
         )}
       </section>
-      </div>
 
       {/* Side panel — the chat page's tabbed SidePanel, docked to this page.
           Read-only observation lives in its permanent first tab (Crew
@@ -3762,6 +3823,16 @@ export default function MembersPage() {
             leadingTabs,
             slotTitle: crewDisplayName(activeView ?? active),
             canDockBottom: false,
+            // Desktop (Option 1): the page tab bar drives the tabs, so the
+            // panel's OWN strip is suppressed — otherwise the page would show
+            // two tab rows. Mobile keeps the panel's strip (it is the overlay's
+            // own chrome).
+            hideStrip: beside,
+            // Desktop: the panel fills a wide content column, so center each
+            // body at a reading measure like the chat transcript. Mobile is
+            // already narrow, so no cap there.
+            bodyMaxWidth: beside ? '900px' : undefined,
+            closeTabRef,
           }
           // ONE SidePanel instance for both placements. Docked and overlay differ
           // only in the wrapper (an in-flow column vs a fixed sheet below the
@@ -3785,7 +3856,14 @@ export default function MembersPage() {
           // from the right edge. Both axes are named in every target — see
           // sidePanelDockMotion for why an axis left out of `animate` freezes.
           const outerMotion = beside
-            ? dockMotion
+            /* Desktop (Option 1): the panel fills the content column via
+               `flex-1`, so a width reveal (dockMotion) would fight the layout.
+               A plain opacity fade in/out instead. */
+            ? {
+              initial: { opacity: 0 },
+              animate: { opacity: 1 },
+              exit: { opacity: 0 },
+            }
             : {
               initial: { opacity: 0, width: 'auto', height: '100%' },
               animate: { opacity: 1, width: 'auto', height: '100%' },
@@ -3805,7 +3883,10 @@ export default function MembersPage() {
                   exit={outerMotion.exit}
                   transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
                   className={beside
-                    ? 'h-full overflow-visible flex justify-end shrink-0'
+                    /* Desktop (Option 1): fill the content column below the tab
+                       bar. The thread section is hidden when a body tab is
+                       active, so the panel body occupies the same area. */
+                    ? 'flex-1 min-w-0 min-h-0 flex overflow-visible'
                     /* Both placements are dismissable, and the overlay carries a
                        second dismiss on top of the strip's close: the scrim,
                        the drawer convention. On a phone the panel is
@@ -3823,7 +3904,7 @@ export default function MembersPage() {
                     animate={innerMotion.animate}
                     exit={innerMotion.exit}
                     transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
-                    className={beside ? 'h-full flex justify-end relative' : 'h-full flex justify-end max-w-full relative'}
+                    className={beside ? 'flex-1 min-w-0 h-full flex relative' : 'h-full flex justify-end max-w-full relative'}
                   >
                     {/* The open reply thread covers the panel's tabs while it is on
                         screen and slides away on close, so the tabs the user had are
@@ -3878,6 +3959,8 @@ export default function MembersPage() {
             </AnimatePresence>
           )
         })()}
+      </div>
+      </div>
       {/* New team / Edit team. A saved team opens its team view; a deleted one
           that was open drops `?team=` and the bare URL falls to the page's
           default (the remembered or most recently used crewmate, or the hero
