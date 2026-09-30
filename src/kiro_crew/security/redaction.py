@@ -542,6 +542,51 @@ _VOWELS: frozenset[str] = frozenset("aeiouAEIOU")
 # an AWS secret key (which uses the full base64 alphabet). Reject them outright.
 _HEX_ONLY_RE = re.compile(r"\A[0-9a-fA-F]+\Z")
 
+# ── macOS per-user temp prefix: an OS-generated path, never a place a key sits ──
+# SHAPE EXEMPTION, in the SAME spirit as `_HEX_ONLY_RE` above (reject-by-shape
+# before the entropy machinery can fire), but consulted from pass 3 rather than
+# from `_looks_like_secret_key`, because the offending run's identity is only
+# visible at its POSITION in the whole text (see `_credential_redaction_plan`).
+#
+# The bug this closes: computer-use hands the model a screenshot path under the
+# macOS per-user temp dir, e.g.
+#   /var/folders/zz/pq7mtk933xwbn58cmrlt67hv40000gn/T/kirocrew-computer-shots/shot-<ms>-<hex>.jpeg
+# (`macos_ffi.shots_dir_default()` == `os.path.join(tempfile.gettempdir(),
+# SCREENSHOT_DIR_NAME)`; `tempfile.gettempdir()` returns confstr
+# `_CS_DARWIN_USER_TEMP_DIR`). The agent prompt tells the model to show an image
+# with `![](/absolute/path)`; when the model echoes that path, the leading
+# segment up to the first `.`/`-`/`_` is ONE base64-alphabet run, and its sliding
+# 40-char windows clear every gate of the bare-secret heuristic (three char
+# classes, no long lowercase run, vowel ratio 0, entropy > 4.3, no printable
+# decode, slash count within `_SECRET_MAX_SLASHES`). Pass 3 then masks the head
+# of the path, the `![](path)` link is destroyed, and the user sees a
+# "credential removed" card instead of the picture.
+#
+# PRECEDENT: `render.py` already dodges THIS EXACT bug for the tool's own note by
+# appending the screenshot note AFTER its redaction pass (see
+# `render._render_image_note` and `computer_use/tools.py`, which redacts the
+# header and body separately for the same reason). That workaround covers only
+# the text the tool itself emits; the MODEL-ECHO path (`![](path)` the model
+# writes back) has no such carve-out and is exactly what this exemption fixes.
+#
+# GRAMMAR (confstr DARWIN_USER_TEMP_DIR / _CS_DARWIN_USER_TEMP_DIR): a fixed
+# `/var/folders/` (or `/private/var/folders/`, the resolved-symlink spelling),
+# then a two-char bucket `[a-z0-9_]{2}`, then the random component, then `/T/`
+# (temp) or `/C/` (cache). The component is lowercase-only base64-alphabet-minus
+# uppercase-and-plus-and-slash `[a-z0-9_]`, no vowels, typically ending
+# `0000gn`/`0000gp`. Its length VARIES, so a range is used rather than a fixed
+# `{30}`: the reporter's own example `pq7mtk933xwbn58cmrlt67hv40000gn` is 31
+# chars while the stale mixed-case fixture's component is 28; `{26,34}` covers the
+# real spread with headroom. Anchored at `^` so it matches ONLY a leading OS temp
+# prefix and can never be found mid-string — a key does not appear as this
+# grammar; it is a place name, not a secret. This regex is deliberately NOT one
+# of the coupled base64-run patterns (`_BARE_SECRET_RUN_RE` / `_B64_CHUNK_RE`):
+# it is a NEW predicate consulted in pass 3, leaving those and the `{40,}` floor
+# and the `_CREDENTIAL_PATTERNS` branch set untouched.
+_MACOS_USER_TEMP_PREFIX_RE = re.compile(
+    r"^/(?:private/)?var/folders/[a-z0-9_]{2}/[a-z0-9_]{26,34}/[TC]/"
+)
+
 # The Shannon term ``(c / _SECRET_KEY_LEN) * log2(c / _SECRET_KEY_LEN)``, indexed by
 # the character count ``c``. Element 0 is a ``0.0`` placeholder that keeps ``c``
 # usable as a direct index; it is never read, because a count of zero cannot appear
@@ -1636,9 +1681,27 @@ def _credential_redaction_plan(
     # word of a `aws_secret_access_key=` label, say — has the part still in
     # plaintext redacted, because the run as a whole was judged to hold a key
     # and the earlier pass consumed only its label.
+    # The confstr macOS per-user temp prefix, matched ONCE against the whole
+    # text (the regex is `^`-anchored, so at most one match, at offset 0). A run
+    # whose OWN start lies inside this span is an OS-generated path segment, not
+    # a secret, and is exempted below. POSITION-SCOPED on purpose: this is the
+    # leading `/var/folders/.../T/<spool>/shot-...` segment only, so a genuine
+    # standalone key sitting LATER in the same string (even one that also begins
+    # with a confstr prefix) starts past this span and is still redacted. See
+    # `_MACOS_USER_TEMP_PREFIX_RE` for the full rationale and the render.py
+    # precedent this mirrors for the model-echo path.
+    macos_temp = _MACOS_USER_TEMP_PREFIX_RE.match(text)
+    macos_temp_end = macos_temp.end() if macos_temp is not None else -1
+
     pass3: list[_RedactionSpan] = []
     for m in b64_matches:
         run = m.group().rstrip("=")
+        # Exempt ONLY a run that begins inside the OS temp prefix. Keyed on the
+        # run's start, never on the mere presence of the prefix somewhere in the
+        # text, so this is a shape exemption for one path segment and not a
+        # blanket bypass of the bare-secret heuristic.
+        if macos_temp is not None and m.start() < macos_temp_end:
+            continue
         # Slide a 40-char window across the run rather than gating the whole run
         # on len == 40: a real secret glued to an adjacent base64 char (no
         # delimiter) yields a 41+ char run that the exact-40 shape check would

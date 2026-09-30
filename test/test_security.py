@@ -21,6 +21,7 @@ import pytest
 from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
 from kiro_crew import cron_inflight, platform_compat, security
+from kiro_crew.computer_use.types import SCREENSHOT_DIR_NAME
 from kiro_crew.security import (
     _SECRET_KEY_LEN,
     _SECRET_MAX_SLASHES,
@@ -1568,6 +1569,15 @@ class TestPathWindowsAreNotBareSecrets:
             # The macOS per-user temp directory. `computer_use/render.py` documents
             # this same mechanism destroying every screenshot note on macOS.
             "/var/folders/6r/qKz9XyT3wLmNp7vB2cQ4hJ8000gn/T/screenshot.png",
+            # The PRODUCTION computer-use spool path (reporter's option 1): a
+            # real-shaped lowercase confstr component (31 chars, [a-z0-9], ending
+            # `0000gn`, zero vowels) PLUS the real `SCREENSHOT_DIR_NAME` spool
+            # component (NOT a hardcoded literal) PLUS a `shot-<ms>-<hex>.jpeg`
+            # filename. Before the shape exemption landed, this whole leading run
+            # cleared every bare-secret gate and pass 3 masked the head of the
+            # path, destroying the `![](path)` link the model echoes.
+            f"/var/folders/zz/pq7mtk933xwbn58cmrlt67hv40000gn/T/{SCREENSHOT_DIR_NAME}"
+            "/shot-1700000000000-abcd1234.jpeg",
             "/Users/Someone/Projects/DeepCamelCaseFolder/AnotherCamelFolder/SomeComponentName.ts",
             "/srv/build/src/main/java/com/Example/Service2/FooBarBazClas1/Handler9.java",
             "/mnt/data/RepoName2/PackageNameCDK/lib/config/RegionConfig3/UsEast1Props.ts",
@@ -1602,6 +1612,55 @@ class TestPathWindowsAreNotBareSecrets:
         result, _ = redact_credentials(path)
         assert REDACTED_CREDENTIAL_TAG not in result
         assert result.startswith("/") and result.endswith(".ts")
+
+    def test_the_macos_screenshot_path_is_still_renderable(self) -> None:
+        """The macOS symptom: the model echoes ``![](path)`` and it must survive.
+
+        `computer_use` writes each screenshot under the macOS per-user temp dir
+        (`macos_ffi.shots_dir_default()` == `os.path.join(tempfile.gettempdir(),
+        SCREENSHOT_DIR_NAME)`). The agent prompt tells the model to show an image
+        with `![](/absolute/path)`; when the model repeats that path, the product's
+        own redaction must not mask it, or the markdown image link is destroyed and
+        the user sees a "credential removed" card instead of the picture.
+
+        Built from the REAL `SCREENSHOT_DIR_NAME` constant (not a hardcoded
+        literal) plus a real-shaped confstr component, and asserts the two
+        properties a consumer needs, mirroring
+        ``test_the_reported_path_is_still_openable``.
+        """
+        path = (
+            f"/var/folders/zz/pq7mtk933xwbn58cmrlt67hv40000gn/T/{SCREENSHOT_DIR_NAME}"
+            "/shot-1700000000000-abcd1234.jpeg"
+        )
+        result, warnings = redact_credentials(path)
+        assert REDACTED_CREDENTIAL_TAG not in result
+        assert result.startswith("/var/folders/") and result.endswith(".jpeg")
+        assert result == path
+        assert not warnings
+
+    def test_the_confstr_exemption_is_position_scoped(self) -> None:
+        """The exemption keys on the RUN's own start, not on the prefix's presence.
+
+        A genuine bare AWS secret that merely sits LATER in a string which also
+        begins with a confstr temp prefix must still be redacted: the exemption
+        covers only the leading OS-generated path segment, never a run elsewhere.
+        This is what keeps the shape exemption from becoming a blanket bypass.
+        """
+        path = (
+            f"/var/folders/zz/pq7mtk933xwbn58cmrlt67hv40000gn/T/{SCREENSHOT_DIR_NAME}"
+            "/shot-1700000000000-abcd1234.jpeg"
+        )
+        for label, key in (
+            ("slash-bearing key", _AWS_EXAMPLE_KEY),
+            ("slash-free key", _NO_SLASH_KEY),
+        ):
+            text = f"{path} and the key is {key}"
+            result, warnings = redact_credentials(text)
+            assert key not in result, f"{label}: key leaked: {key!r}"
+            assert REDACTED_CREDENTIAL_TAG in result, label
+            assert warnings, label
+            # The benign leading path is still preserved end-to-end.
+            assert result.startswith(path), label
 
     # ── a standalone key is never subject to the ceiling ──
 
