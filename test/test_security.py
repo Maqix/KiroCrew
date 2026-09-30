@@ -1662,6 +1662,32 @@ class TestPathWindowsAreNotBareSecrets:
             # The benign leading path is still preserved end-to-end.
             assert result.startswith(path), label
 
+    def test_a_secret_glued_straight_onto_the_confstr_prefix_is_still_redacted(self) -> None:
+        """The exemption is bounded to the prefix SPAN, not the whole leading run.
+
+        `/var/folders/.../T/` is one greedy base64-alphabet run (`/` is in the
+        alphabet), so a 40-char secret written straight after `/T/` using only
+        base64 characters -- no `-`/`.`/`_`/space to break the run -- lands in
+        that same offset-0 run. If the exemption skipped the WHOLE run on the
+        strength of its start being inside the prefix, that glued secret would
+        ride the exemption out and leak verbatim. Only the prefix bytes are
+        exempt; the tail past `/T/` still faces the bare-secret heuristic.
+
+        Uses `_NO_SLASH_KEY` (a valid `_looks_like_secret_key` shape with no
+        separators) so the key stays inside the leading run rather than starting
+        a fresh one. This case FAILS against a run-scoped exemption and PASSES
+        against the span-scoped one.
+        """
+        prefix = "/var/folders/aa/bcdfghjklmnpqrstvwxyz0000gn/T/"
+        text = prefix + _NO_SLASH_KEY
+        result, warnings = redact_credentials(text)
+        assert _NO_SLASH_KEY not in result, f"glued secret leaked: {result!r}"
+        assert REDACTED_CREDENTIAL_TAG in result
+        assert warnings
+        # The OS path prefix itself is still preserved -- only the secret tail is
+        # masked, so the exemption still does its job for the benign segment.
+        assert result.startswith(prefix)
+
     # ── a standalone key is never subject to the ceiling ──
 
     # Uniformly random 40-char base64 tokens that the seven gates accept AND that

@@ -571,20 +571,26 @@ _HEX_ONLY_RE = re.compile(r"\A[0-9a-fA-F]+\Z")
 #
 # GRAMMAR (confstr DARWIN_USER_TEMP_DIR / _CS_DARWIN_USER_TEMP_DIR): a fixed
 # `/var/folders/` (or `/private/var/folders/`, the resolved-symlink spelling),
-# then a two-char bucket `[a-z0-9_]{2}`, then the random component, then `/T/`
+# then a two-char bucket `[a-z0-9]{2}`, then the random component, then `/T/`
 # (temp) or `/C/` (cache). The component is lowercase-only base64-alphabet-minus
-# uppercase-and-plus-and-slash `[a-z0-9_]`, no vowels, typically ending
-# `0000gn`/`0000gp`. Its length VARIES, so a range is used rather than a fixed
-# `{30}`: the reporter's own example `pq7mtk933xwbn58cmrlt67hv40000gn` is 31
-# chars while the stale mixed-case fixture's component is 28; `{26,34}` covers the
-# real spread with headroom. Anchored at `^` so it matches ONLY a leading OS temp
-# prefix and can never be found mid-string — a key does not appear as this
-# grammar; it is a place name, not a secret. This regex is deliberately NOT one
-# of the coupled base64-run patterns (`_BARE_SECRET_RUN_RE` / `_B64_CHUNK_RE`):
-# it is a NEW predicate consulted in pass 3, leaving those and the `{40,}` floor
-# and the `_CREDENTIAL_PATTERNS` branch set untouched.
+# uppercase-and-plus-and-slash-and-vowels `[a-z0-9]` (a base32-ish hash),
+# typically ending `0000gn`/`0000gp`. The class is `[a-z0-9]`, NOT `[a-z0-9_]`:
+# `_` never appears in a real confstr component, and — because `_` is not in the
+# base64 run alphabet `[A-Za-z0-9+/]` — a `_` in the path would end the leading
+# base64 run at that point anyway, so admitting it only WIDENS the exempted
+# surface without matching any real path. Matching the real grammar keeps the
+# exemption as narrow as the shape it is meant to cover. Its length VARIES, so a
+# range is used rather than a fixed `{30}`: the reporter's own example
+# `pq7mtk933xwbn58cmrlt67hv40000gn` is 31 chars while the stale mixed-case
+# fixture's component is 28; `{26,34}` covers the real spread with headroom.
+# Anchored at `^` so it matches ONLY a leading OS temp prefix and can never be
+# found mid-string — a key does not appear as this grammar; it is a place name,
+# not a secret. This regex is deliberately NOT one of the coupled base64-run
+# patterns (`_BARE_SECRET_RUN_RE` / `_B64_CHUNK_RE`): it is a NEW predicate
+# consulted in pass 3, leaving those and the `{40,}` floor and the
+# `_CREDENTIAL_PATTERNS` branch set untouched.
 _MACOS_USER_TEMP_PREFIX_RE = re.compile(
-    r"^/(?:private/)?var/folders/[a-z0-9_]{2}/[a-z0-9_]{26,34}/[TC]/"
+    r"^/(?:private/)?var/folders/[a-z0-9]{2}/[a-z0-9]{26,34}/[TC]/"
 )
 
 # The Shannon term ``(c / _SECRET_KEY_LEN) * log2(c / _SECRET_KEY_LEN)``, indexed by
@@ -1682,12 +1688,14 @@ def _credential_redaction_plan(
     # plaintext redacted, because the run as a whole was judged to hold a key
     # and the earlier pass consumed only its label.
     # The confstr macOS per-user temp prefix, matched ONCE against the whole
-    # text (the regex is `^`-anchored, so at most one match, at offset 0). A run
-    # whose OWN start lies inside this span is an OS-generated path segment, not
-    # a secret, and is exempted below. POSITION-SCOPED on purpose: this is the
-    # leading `/var/folders/.../T/<spool>/shot-...` segment only, so a genuine
+    # text (the regex is `^`-anchored, so at most one match, at offset 0). The
+    # matched span `[0, macos_temp_end)` is an OS-generated path segment, not a
+    # secret, and the pass-3 scan below is advanced PAST it. SPAN-SCOPED, not
+    # run-scoped: only the prefix bytes are exempt; a base64 tail that spills
+    # past `/T/` (a glued secret with no delimiter, or a `<spool>/shot-...`
+    # continuation) still faces the bare-secret heuristic on its own bytes. A
     # standalone key sitting LATER in the same string (even one that also begins
-    # with a confstr prefix) starts past this span and is still redacted. See
+    # with a confstr prefix) is judged on its own span. See
     # `_MACOS_USER_TEMP_PREFIX_RE` for the full rationale and the render.py
     # precedent this mirrors for the model-echo path.
     macos_temp = _MACOS_USER_TEMP_PREFIX_RE.match(text)
@@ -1696,26 +1704,47 @@ def _credential_redaction_plan(
     pass3: list[_RedactionSpan] = []
     for m in b64_matches:
         run = m.group().rstrip("=")
-        # Exempt ONLY a run that begins inside the OS temp prefix. Keyed on the
-        # run's start, never on the mere presence of the prefix somewhere in the
-        # text, so this is a shape exemption for one path segment and not a
-        # blanket bypass of the bare-secret heuristic.
-        if macos_temp is not None and m.start() < macos_temp_end:
+        # The scan span of the trimmed run in the ORIGINAL text. `run_start`
+        # never moves; `run_end` is `run_start + len(run)` because `rstrip("=")`
+        # only drops trailing padding.
+        run_start = m.start()
+        run_end = run_start + len(run)
+        # Exempt the OS temp prefix by BOUNDING the exempted portion to the
+        # prefix span itself, NOT by skipping the whole run. `/var/folders/.../T/`
+        # is a single greedy base64-alphabet run (`/` is in the alphabet), so a
+        # run that begins at offset 0 extends until the first `.`/`-`/`_`/space.
+        # Skipping the whole run on `run_start < macos_temp_end` would exempt
+        # ANY base64 tail glued straight onto `/T/` with no delimiter -- i.e. a
+        # 40-char secret written after the prefix would ride the exemption out
+        # and leak verbatim. Instead, advance the scanned window PAST the prefix
+        # so only `[run_start, macos_temp_end)` (the OS path segment) is exempt
+        # and the tail past `/T/` still faces the bare-secret heuristic. This is
+        # the same whole-span safety `_HEX_ONLY_RE` has (it rejects on the whole
+        # run, never on a start position), applied here to the sub-run. Keyed on
+        # this run's OWN start, never on the mere presence of the prefix
+        # elsewhere in the text, so a standalone key later in the string is
+        # judged on its own span.
+        if macos_temp is not None and run_start < macos_temp_end:
+            scan_start = macos_temp_end
+        else:
+            scan_start = run_start
+        if scan_start >= run_end:
             continue
+        scanned = text[scan_start:run_end]
         # Slide a 40-char window across the run rather than gating the whole run
         # on len == 40: a real secret glued to an adjacent base64 char (no
         # delimiter) yields a 41+ char run that the exact-40 shape check would
         # miss, leaking the key verbatim. Redact the whole run if ANY window is a
         # secret.
-        if not _contains_bare_secret(run):
+        if not _contains_bare_secret(scanned):
             continue
-        gaps = _uncovered(m.start(), m.start() + len(run), taken)
+        gaps = _uncovered(scan_start, run_end, taken)
         if not gaps:
             continue
         for start, end in gaps:
             pass3.append((start, end, _REDACTED_CREDENTIAL_TAG))
             rules[start] = ("bare_aws_secret", "")
-        warnings.append(f"Redacted bare secret key ({len(run)} chars)")
+        warnings.append(f"Redacted bare secret key ({len(scanned)} chars)")
     taken = sorted(taken + pass3)
 
     # 4. `?token=` / `&token=` URL parameter VALUES, keyed on the parameter
