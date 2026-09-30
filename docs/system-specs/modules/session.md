@@ -2393,12 +2393,45 @@ there for the same reason the per-conversation flags and overrides do: the
 entry is the durable per-session record, so the ledger survives a gateway
 restart and is pruned with the entry. Three rules shape it:
 
-- **Scoped to the native conversation, not the key.** `SessionMap.set` drops
-  the field whenever it stores a DIFFERENT `sid` for the entry (`/new`, a
-  discarded conversation, a provider switch), because the new native
-  conversation carries none of the images the old one did; re-saving the same
-  sid keeps it. A compaction inside one native conversation does not reset it
-  — the ledger errs toward not re-sending.
+- **Scoped to the native conversation, not the key.** The ledger carries the
+  `sid` of the native conversation its images were inlined into. The prompt
+  path reads a ledger naming another sid as empty (`image_ledger.load_image_ledger`),
+  so a fresh conversation never inherits the previous one's ledger — including
+  the resume whose fresh session's sid promotion is deferred behind a history
+  replay, where the entry still records the OLD sid while the new conversation
+  already takes prompts: its first turn writes its own ledger under the new sid,
+  and `SessionMap.set` keeps a ledger whose sid matches the sid it is recording
+  and drops one that names any other conversation (`/new`, a discarded
+  conversation, a provider switch). The comparison is against the ledger's own
+  sid, never the entry's previous sid, which is what lets the deferred write
+  survive its promotion. A confirmed native `/clear` empties the conversation
+  under the SAME sid, so the scoping never fires for it: the prompt path that
+  owns the `_kiro.dev/clear/status` frame resets the ledger itself
+  (`SessionImageBudget.reset`, which stores an empty ledger and so removes the
+  field). A `/clear` a harness receives as prompt text is an ordinary prompt to
+  the ledger: no harness has been measured to empty its conversation on that
+  text, and the two possible errors are not symmetric -- a ledger emptied for a
+  harness that did NOT clear re-sends every picture into a history that still
+  holds them (the growth the ledger exists to stop), while a ledger kept across
+  a clear that did happen costs a `sent earlier` marker that names the file. A
+  harness shown to clear on the text can be admitted later by an opt-in
+  membership (H6 in `harness-parity.md`) carrying the measurement. A
+  compaction inside one native conversation does not reset it — the
+  ledger errs toward not re-sending, and the `sent earlier` marker keeps the
+  file path so the picture stays reachable to a tool-capable agent. The byte
+  total is not refunded on a compaction either: whether the runtime's
+  post-compaction replay still carries the earlier image blocks has not been
+  measured, and a refund granted while it does would re-open the growth, so a
+  conversation that crosses `MAX_SESSION_IMAGE_B64_BYTES` stays on path-bearing
+  markers for its remaining life (`/new` starts a fresh ledger). That is an
+  accepted degradation, not an oversight; a refund on the compaction-status
+  frame is a follow-up that starts with that measurement.
+- **Charged by the write, not the build.** The prompt path stages the
+  recomputed ledger while it builds the blocks and writes it here only after
+  the `session/prompt` frame has been written; a write that raises discards the
+  stage, so a message the caller re-queues after a runtime death still carries
+  its image instead of a `sent earlier` marker for a picture the conversation
+  never received.
 - **Never materializes an entry.** `set_image_ledger` writes only onto an
   existing entry and returns `False` otherwise; `get_image_ledger` returns
   `None` for a key with no entry. That `None` is what tells the prompt path a
@@ -2406,9 +2439,11 @@ restart and is pruned with the entry. Three rules shape it:
   and must keep its ledger in memory on its own handle — so no row accretes
   per stateless session. An empty ledger removes the field.
 - **Normalized at the point of retention.** The write bounds the digest list,
-  drops anything that is not a 64-hex-character digest and clamps the byte
-  count, so a hand-edited or corrupt record can neither grow the row nor be
-  read as anything but a smaller ledger.
+  drops anything that is not a lowercase 64-hex-character SHA-256, clamps the
+  byte count and holds the sid to the map's one ACP-session-id bound
+  (`bounded_session_id`; an over-long sid is refused, not truncated), so a
+  hand-edited or corrupt record can neither grow the row nor be read as
+  anything but a smaller ledger.
 
 The ACP layer holds a session KEY and nothing that reaches the manager, and a
 throwaway `SessionMap()` is read-only by this class's contract, so the LIVE map

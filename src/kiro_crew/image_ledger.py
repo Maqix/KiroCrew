@@ -22,11 +22,13 @@ list that bounds that growth, whatever produced the blocks:
 
 The ledger lives on the session's durable record -- the ``SessionMap`` entry,
 reached through the store the session manager registers here -- so it survives
-a gateway restart, and it is scoped to the native conversation: a session whose
-``sid`` changes (``/new``, a discarded conversation, a provider switch) starts
-an empty ledger, because the new conversation carries none of the old images. A
-session with no durable record (a stateless cron or subagent session, the direct
-client) keeps an in-memory ledger for the life of its handle.
+a gateway restart, and it names the native conversation it describes: it carries
+the ACP session id (``sid``) its images were inlined into, and a prompt on a
+different sid reads it as empty, because a new native conversation (``/new``, a
+discarded conversation, a provider switch, a fresh session whose sid promotion is
+deferred behind a history replay) carries none of the old images. A session with
+no durable record (a stateless cron or subagent session, the direct client)
+keeps an in-memory ledger for the life of its handle.
 
 A LEAF module, like :mod:`kiro_crew.imaging`: it imports nothing from
 ``kiro_crew.acp`` (which imports it) and nothing from ``kiro_crew.session_map``
@@ -38,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -81,32 +84,30 @@ MAX_PROMPT_IMAGE_BLOCKS = 20
 #: at most 16 KiB on the session record.
 MAX_LEDGER_HASHES = 256
 
-#: Length of a hex SHA-256 digest -- the only shape a retained digest may have.
-_DIGEST_HEX_LEN = 64
+#: The only shape a retained digest may have: the lowercase hex SHA-256 that
+#: :func:`image_digest` produces. Anything else in a record -- a wrong length, an
+#: uppercase or non-hex character -- is dropped at retention, so a malformed
+#: entry can neither occupy a slot nor evict a real digest past the bound.
+_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 
-#: Host-side annotation a producer attaches to an image block:
-#: ``{"name": <file name>, "path": <the path as it appeared in the text>}``.
-#: Read here to rewrite the block's text marker when the block is degraded, and
-#: stripped -- with every other ``_``-prefixed key -- before the list is
-#: returned, so it never reaches the wire. A block without it is still deduped
-#: and budgeted; only its text note is generic.
+#: Host-side annotation the prompt builder attaches to each image block::
+#:
+#:     {"path": <the path as written>, "spans": [[s, e], ...]}
+#:
+#: ``path`` is what the degraded marker names so a tool-capable agent can still
+#: open the file. ``spans`` are the ``[start, end)`` offsets, in the prompt's
+#: first text block, of every marker the builder wrote for THIS block -- the
+#: substitutions it performed, not a search for their text -- so the layer
+#: rewrites exactly those characters when it drops the block and never a
+#: neighbour's marker, nor a bracketed string the user happened to type.
+#: Stripped -- with every other ``_``-prefixed key -- before the list is
+#: returned, so it never reaches the wire. A block without the annotation is
+#: still deduped and budgeted; its dropped image is reported with a generic note
+#: appended to the text instead.
 IMAGE_BLOCK_SOURCE_KEY = "_source"
 
-#: Marker written where ``[image: <name>]`` stood when the payload was already
-#: inlined earlier in this session. Carries no path on purpose: the picture IS
-#: in the conversation the model sees, so nothing needs opening.
-SENT_EARLIER_MARKER = "[image: {name}, sent earlier]"
-
-#: Marker written where ``[image: <name>]`` stood when the block would cross a
-#: budget. The path comes back so a tool-capable agent can still open the file
-#: -- the same fallback the builder uses for an image it cannot inline.
-OVER_BUDGET_MARKER = "[image: {name}, not inlined: over the image budget; file: {path}]"
-
-#: The over-budget marker for a block whose annotation carries no path.
-OVER_BUDGET_MARKER_NO_PATH = "[image: {name}, not inlined: over the image budget]"
-
-#: Notes appended to the text for a degraded block that carries no name, so the
-#: model is told an image was dropped even when no marker can be rewritten.
+#: Notes appended to the text for a degraded block whose marker cannot be
+#: rewritten in place, so the model is told an image was dropped regardless.
 UNNAMED_SENT_EARLIER_NOTE = "[image omitted: sent earlier in this session]"
 UNNAMED_OVER_BUDGET_NOTE = "[image omitted: over the image budget]"
 
@@ -138,9 +139,9 @@ def set_image_ledger_store(store: ImageLedgerStore | None) -> None:
     _STORE = store
 
 
-def empty_ledger() -> dict[str, Any]:
-    """A ledger that has inlined nothing."""
-    return {"hashes": [], "b64_bytes": 0}
+def empty_ledger(sid: str = "") -> dict[str, Any]:
+    """A ledger for native conversation *sid* that has inlined nothing."""
+    return {"sid": sid, "hashes": [], "b64_bytes": 0}
 
 
 def normalize_ledger(raw: object) -> dict[str, Any]:
@@ -150,32 +151,47 @@ def normalize_ledger(raw: object) -> dict[str, Any]:
     session record and again before one is stored -- so a hand-edited or
     corrupt record can neither grow the list past :data:`MAX_LEDGER_HASHES`
     nor retain a string that is not a digest. Anything malformed reads as an
-    empty ledger, which only ever costs a re-inline.
+    empty ledger, which only ever costs a re-inline. The ``sid`` is kept as
+    given (or ``""``); the session record bounds its length at retention with
+    the one ACP-session-id bound the map already applies to every sid it holds.
     """
     if not isinstance(raw, dict):
         return empty_ledger()
     hashes_raw = raw.get("hashes")
     hashes = (
-        [h for h in hashes_raw if isinstance(h, str) and len(h) == _DIGEST_HEX_LEN]
+        [h for h in hashes_raw if isinstance(h, str) and _DIGEST_RE.fullmatch(h)]
         if isinstance(hashes_raw, list)
         else []
     )
     b64_raw = raw.get("b64_bytes")
     b64_bytes = b64_raw if isinstance(b64_raw, int) and not isinstance(b64_raw, bool) else 0
-    return {"hashes": hashes[-MAX_LEDGER_HASHES:], "b64_bytes": max(0, b64_bytes)}
+    sid_raw = raw.get("sid")
+    return {
+        "sid": sid_raw if isinstance(sid_raw, str) else "",
+        "hashes": hashes[-MAX_LEDGER_HASHES:],
+        "b64_bytes": max(0, b64_bytes),
+    }
 
 
-def load_image_ledger(session_key: str) -> dict[str, Any] | None:
-    """The durable ledger for *session_key*, or ``None`` when it has no durable record.
+def load_image_ledger(session_key: str, session_id: str) -> dict[str, Any] | None:
+    """The durable ledger for *session_key*'s conversation *session_id*, or ``None``.
 
-    ``None`` is the signal to fall back to an in-memory ledger; an empty dict is
-    a durable record that has inlined nothing yet.
+    ``None`` means the session has no durable record and the caller must fall
+    back to an in-memory ledger. A record that describes a DIFFERENT native
+    conversation -- the entry still carries the previous sid's ledger because a
+    fresh session's sid promotion is deferred behind a history replay, or the
+    record predates the sid -- reads as an empty ledger for *session_id*: the
+    new conversation carries none of the old images, and treating it otherwise
+    would drop a picture attached to a conversation that never received it.
     """
     store = _STORE
     if not session_key or store is None:
         return None
     raw = store.get_image_ledger(session_key)
-    return None if raw is None else normalize_ledger(raw)
+    if raw is None:
+        return None
+    ledger = normalize_ledger(raw)
+    return ledger if ledger["sid"] == session_id else empty_ledger(session_id)
 
 
 def store_image_ledger(session_key: str, ledger: dict[str, Any]) -> bool:
@@ -239,26 +255,23 @@ class ImageBudgetResult:
 
 
 def apply_image_budget(
-    blocks: list[dict[str, Any]],
-    ledger: dict[str, Any] | None,
-    *,
-    max_prompt_images: int = MAX_PROMPT_IMAGE_BLOCKS,
-    max_prompt_b64_bytes: int = MAX_PROMPT_IMAGE_B64_BYTES,
-    max_session_b64_bytes: int = MAX_SESSION_IMAGE_B64_BYTES,
+    blocks: list[dict[str, Any]], ledger: dict[str, Any] | None
 ) -> ImageBudgetResult:
     """Dedup and budget the image blocks in *blocks* against *ledger*.
 
-    A pure function over the finished block list and the session's ledger, so it
-    composes with any producer: it reads only ``type``, ``data`` and the
-    optional :data:`IMAGE_BLOCK_SOURCE_KEY` annotation. Blocks are judged in
+    A pure function over the finished block list and the session's ledger: it
+    reads only ``type``, ``data`` and the optional
+    :data:`IMAGE_BLOCK_SOURCE_KEY` annotation the builder writes. Blocks are judged in
     order. An image whose digest the ledger already holds -- or that an earlier
     block of this same prompt already inlined -- is dropped and its marker
-    rewritten to :data:`SENT_EARLIER_MARKER`. Otherwise the block is kept only
-    while the prompt stays within *max_prompt_images* and *max_prompt_b64_bytes*
-    and the session total stays within *max_session_b64_bytes*; a block that
-    would cross any of them is dropped and its marker rewritten to
-    :data:`OVER_BUDGET_MARKER`. Only KEPT blocks enter the ledger: a block the
-    budget refused was never sent, so a later prompt may still inline it.
+    rewritten to ``[image: <name>, sent earlier; file: <path>]``. Otherwise the
+    block is kept only while the prompt stays within :data:`MAX_PROMPT_IMAGE_BLOCKS`
+    and :data:`MAX_PROMPT_IMAGE_B64_BYTES` and the session total stays within
+    :data:`MAX_SESSION_IMAGE_B64_BYTES`; a block that would cross any of them is dropped and
+    its marker rewritten to ``[image: <name>, not inlined: over the image
+    budget; file: <path>]``. Only KEPT blocks enter the ledger: a block the
+    budget refused was never sent, so a later prompt may still inline it. The
+    returned ledger keeps the input ledger's ``sid``.
 
     Returns fresh objects and mutates neither input. Kept image blocks come back
     without any ``_``-prefixed key, and non-image blocks pass through unchanged
@@ -289,9 +302,9 @@ def apply_image_budget(
             continue
         size = len(data)
         if (
-            inlined + 1 > max_prompt_images
-            or prompt_bytes + size > max_prompt_b64_bytes
-            or session_bytes + size > max_session_b64_bytes
+            inlined + 1 > MAX_PROMPT_IMAGE_BLOCKS
+            or prompt_bytes + size > MAX_PROMPT_IMAGE_B64_BYTES
+            or session_bytes + size > MAX_SESSION_IMAGE_B64_BYTES
         ):
             over_budget += 1
             degraded.append((annotation, _REASON_OVER_BUDGET))
@@ -308,7 +321,11 @@ def apply_image_budget(
     evicted = max(0, len(hashes) - MAX_LEDGER_HASHES)
     return ImageBudgetResult(
         blocks=out,
-        ledger={"hashes": hashes[-MAX_LEDGER_HASHES:], "b64_bytes": session_bytes},
+        ledger={
+            "sid": state["sid"],
+            "hashes": hashes[-MAX_LEDGER_HASHES:],
+            "b64_bytes": session_bytes,
+        },
         inlined=inlined,
         sent_earlier=sent_earlier,
         over_budget=over_budget,
@@ -316,54 +333,66 @@ def apply_image_budget(
     )
 
 
-def _degraded_marker(annotation: dict[str, Any], reason: str) -> tuple[str | None, str]:
-    """``(marker to find, replacement)`` for a degraded block; the marker is None when unnamed."""
-    name = annotation.get("name")
-    if not isinstance(name, str) or not name:
-        return None, (
-            UNNAMED_SENT_EARLIER_NOTE
-            if reason == _REASON_SENT_EARLIER
-            else UNNAMED_OVER_BUDGET_NOTE
-        )
-    if reason == _REASON_SENT_EARLIER:
-        return f"[image: {name}]", SENT_EARLIER_MARKER.format(name=name)
+def _degraded_text(marker: str, annotation: dict[str, Any], reason: str) -> str:
+    """The text that replaces *marker* (the producer's own ``[image: ...]``) for a dropped block.
+
+    Keeps the marker's bracketed text and appends the reason -- and the file
+    path, when the annotation carries one. The path rides along even for a
+    repeat: a native compaction inside one conversation does not reset the
+    ledger, so after one the picture may be out of the model's context, and the
+    path keeps the file reachable to a tool-capable agent. For a block over the
+    budget the path is the builder's own fallback for an image it cannot inline.
+    """
     path = annotation.get("path")
-    if isinstance(path, str) and path:
-        return f"[image: {name}]", OVER_BUDGET_MARKER.format(name=name, path=path)
-    return f"[image: {name}]", OVER_BUDGET_MARKER_NO_PATH.format(name=name)
+    has_path = isinstance(path, str) and bool(path)
+    if reason == _REASON_SENT_EARLIER:
+        suffix = f", sent earlier; file: {path}]" if has_path else ", sent earlier]"
+    else:
+        suffix = (
+            f", not inlined: over the image budget; file: {path}]"
+            if has_path
+            else ", not inlined: over the image budget]"
+        )
+    return marker[:-1] + suffix
 
 
 def _rewrite_markers(
     blocks: list[dict[str, Any]], degraded: list[tuple[dict[str, Any], str]]
 ) -> list[dict[str, Any]]:
-    """Rewrite each degraded image's ``[image: <name>]`` marker in the text blocks.
+    """Rewrite each degraded image's own markers, at the offsets its producer recorded.
 
-    The first occurrence of the marker across the text blocks, in order, is
-    replaced; a degraded block whose annotation carries no name, or whose marker
-    is not in the text, is reported with a generic note appended to the last
-    text block (or a new text block when there is none). Text blocks are copied
-    before they are edited, so the caller's list is never mutated.
+    Only the characters the builder substituted are touched -- the spans the
+    annotation carries, applied right to left so earlier offsets stay valid --
+    never a search for the marker's text, which would also rewrite a bracketed
+    string the user typed or a neighbour's identical marker. The spans are the
+    builder's own substitution record for the prompt's first text block, computed
+    in the same pass that wrote the markers, so they are used as given. A degraded
+    block that carries no annotation is reported with a generic note appended to
+    the last text block (or a new text block when there is none). Text blocks are
+    copied before they are edited, so the caller's list is never mutated.
     """
     out = [dict(b) if _is_text_block(b) else b for b in blocks]
     text_indexes = [i for i, b in enumerate(out) if _is_text_block(b)]
+    first = text_indexes[0] if text_indexes else None
+    edits: list[tuple[int, int, str]] = []
     notes: list[str] = []
     for annotation, reason in degraded:
-        marker, replacement = _degraded_marker(annotation, reason)
-        placed = False
-        if marker is not None:
-            for i in text_indexes:
-                text = out[i]["text"]
-                at = text.find(marker)
-                if at >= 0:
-                    out[i]["text"] = text[:at] + replacement + text[at + len(marker) :]
-                    placed = True
-                    break
-        if not placed:
+        spans = annotation.get("spans") if first is not None else None
+        if first is None or not spans:
             notes.append(
                 UNNAMED_SENT_EARLIER_NOTE
                 if reason == _REASON_SENT_EARLIER
                 else UNNAMED_OVER_BUDGET_NOTE
             )
+            continue
+        text = out[first]["text"]
+        for start, end in spans:
+            edits.append((start, end, _degraded_text(text[start:end], annotation, reason)))
+    if edits and first is not None:
+        text = out[first]["text"]
+        for start, end, replacement in sorted(edits, reverse=True):
+            text = text[:start] + replacement + text[end:]
+        out[first]["text"] = text
     if notes:
         note_text = "\n".join(notes)
         if text_indexes:
@@ -379,38 +408,52 @@ class SessionImageBudget:
     """The layer bound to one runtime session: applies the budget and keeps its ledger.
 
     Owned by the object that sends ``session/prompt`` for a session (the ACP
-    session handle, the direct client). *session_key* is read on every call
-    because a pooled handle is rebound to its owning session on claim. The
-    durable ledger is used whenever the session has a durable record; otherwise
-    the ledger lives here, for as long as the owner does.
+    session handle, the direct client). *session_key* and *session_id* are read
+    on every call: a pooled handle is rebound to its owning session on claim,
+    and the direct client's native sid changes on a reset. The durable ledger
+    is used whenever the session has a durable record and describes this sid;
+    otherwise the ledger lives here, for as long as the owner does.
+
+    The ledger moves in two steps. :meth:`apply` judges the blocks and STAGES the
+    recomputed ledger; :meth:`commit` records it once the prompt has actually
+    been written to the runtime, and :meth:`discard` drops it when the write
+    never happened. Charging at build time instead would record an image the
+    conversation never received: a runtime that dies between the build and the
+    write makes the caller re-queue the same message, and the retry would then
+    read the undelivered image as "sent earlier" and drop it.
     """
 
-    def __init__(self, session_key: Callable[[], str]) -> None:
+    def __init__(self, session_key: Callable[[], str], session_id: Callable[[], str]) -> None:
         self._session_key = session_key
+        self._session_id = session_id
         self._local: dict[str, Any] = empty_ledger()
+        # ``(session key, ledger is durable, ledger)`` staged by ``apply`` for the
+        # prompt being built; ``None`` when nothing is owed.
+        self._pending: tuple[str, bool, dict[str, Any]] | None = None
 
     async def apply(self, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """*blocks* with this session's dedup and budget applied.
+        """*blocks* with this session's dedup and budget applied; stages the ledger.
 
         A list without image blocks is returned as is, without touching the
         ledger. Hashing is offloaded: a prompt can carry several multi-megabyte
         payloads, and digesting them on the event loop would pause every other
-        session's streaming for the duration.
+        session's streaming for the duration. A stage left over from a build
+        that was never written is replaced, not accumulated.
         """
+        self._pending = None
         if not has_image_blocks(blocks):
             return blocks
         key = self._session_key() or ""
-        durable = load_image_ledger(key)
+        sid = self._session_id() or ""
+        durable = load_image_ledger(key, sid)
+        if durable is None and self._local["sid"] != sid:
+            # The in-memory ledger describes the conversation it was built in;
+            # a new native conversation on this owner starts from nothing.
+            self._local = empty_ledger(sid)
         ledger = durable if durable is not None else self._local
         result = await asyncio.to_thread(apply_image_budget, blocks, ledger)
         if result.ledger != ledger:
-            if durable is not None:
-                # SessionMap's on-loop mutation marks the map dirty and defers
-                # the file write to its worker thread (its own threading
-                # contract); nothing here waits on disk.
-                store_image_ledger(key, result.ledger)
-            else:
-                self._local = result.ledger
+            self._pending = (key, durable is not None, result.ledger)
         if result.sent_earlier or result.over_budget or result.evicted:
             # Content-free counts only, like the structure summary logged
             # beside it: never a name, a path or a byte of an image.
@@ -423,3 +466,41 @@ class SessionImageBudget:
                 result.evicted,
             )
         return result.blocks
+
+    def commit(self) -> None:
+        """Record the staged ledger: the prompt it describes reached the runtime.
+
+        Called right after the ``session/prompt`` write succeeds. A no-op when
+        nothing was staged (a text-only prompt, a command turn).
+        """
+        pending, self._pending = self._pending, None
+        if pending is None:
+            return
+        key, durable, ledger = pending
+        if durable:
+            # SessionMap's on-loop mutation marks the map dirty and defers the
+            # file write to its worker thread (its own threading contract);
+            # nothing here waits on disk.
+            store_image_ledger(key, ledger)
+        else:
+            self._local = ledger
+
+    def discard(self) -> None:
+        """Drop the staged ledger: the prompt it describes was never written."""
+        self._pending = None
+
+    def reset(self) -> None:
+        """Forget every inlined image: the native conversation was emptied.
+
+        A confirmed native clear keeps the session's ``sid`` while dropping its
+        whole history, so nothing the ledger names is in the conversation any
+        more and a picture attached again must be inlined again. Clears the
+        durable record when the session has one, the in-memory ledger otherwise,
+        and any stage in flight.
+        """
+        self._pending = None
+        sid = self._session_id() or ""
+        self._local = empty_ledger(sid)
+        key = self._session_key() or ""
+        if load_image_ledger(key, sid) is not None:
+            store_image_ledger(key, empty_ledger(sid))

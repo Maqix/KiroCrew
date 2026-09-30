@@ -1285,15 +1285,19 @@ class SessionMap:
     def set(self, key: str, sid: str, *, provider: str = "", cwd: str = "") -> None:
         """Save mapping and persist to disk, preserving existing slack fields.
 
-        A DIFFERENT ``sid`` names a different native conversation, which
-        carries none of the images the previous one did, so the inline-image
-        ledger (:meth:`set_image_ledger`) goes with the old sid; re-saving the
-        same sid keeps it.
+        The inline-image ledger (:meth:`set_image_ledger`) names the native
+        conversation it describes, and a ledger describing a conversation other
+        than *sid* goes: that conversation's images are not in this one. The
+        comparison is against the LEDGER's sid, not the entry's previous one,
+        because a fresh session whose promotion is deferred behind a history
+        replay writes its own ledger under the new sid before this method
+        records that sid -- and that ledger must survive the promotion.
         """
         key = canonical_key(key)
         existing = self._data.get(key)
         if existing:
-            if existing.get("sid") != sid:
+            ledger = existing.get(_IMAGE_LEDGER_FIELD)
+            if not isinstance(ledger, dict) or ledger.get("sid") != sid:
                 existing.pop(_IMAGE_LEDGER_FIELD, None)
             existing["sid"] = sid
             if provider:
@@ -2502,15 +2506,18 @@ class SessionMap:
         none by design and keeps its ledger in memory, and writing one here
         would accrete a row per such session. The ledger is normalized at this
         point of retention -- digest list bounded, each digest shape-checked,
-        byte count a non-negative int -- so a caller cannot grow the record
-        past what :mod:`kiro_crew.image_ledger` bounds. An empty ledger removes
-        the field so empty state does not accrete on disk. Returns whether the
-        entry took the write.
+        byte count a non-negative int, the sid it names held to the map's one
+        ACP-session-id bound -- so a caller cannot grow the record past what
+        :mod:`kiro_crew.image_ledger` bounds. An empty ledger removes the field
+        so empty state does not accrete on disk. Returns whether the entry took
+        the write.
         """
         entry = self._data.get(canonical_key(key))
         if entry is None:
             return False
         clean = normalize_image_ledger(ledger)
+        # The one ACP-session-id bound every sid this map retains goes through.
+        clean["sid"] = bounded_session_id(clean.get("sid")) or ""
         if not clean["hashes"] and not clean["b64_bytes"]:
             if _IMAGE_LEDGER_FIELD in entry:
                 entry.pop(_IMAGE_LEDGER_FIELD, None)

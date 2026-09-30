@@ -5928,7 +5928,9 @@ class AcpClient:
         # Per-session image dedup + budget over the built prompt blocks; the
         # same layer AcpSessionHandle applies, so neither prompt path can
         # re-send a payload the conversation already carries.
-        self._image_budget = SessionImageBudget(lambda: self._session_key or "")
+        self._image_budget = SessionImageBudget(
+            lambda: self._session_key or "", lambda: self._session_id or ""
+        )
         # When set, this client emits a per-tool-call SEL audit from the ACP
         # dispatch loop. Used by app/worker-pool clients (e.g. code-review-sage,
         # knowledge llm_pool) that have no external audit loop. Left None for
@@ -13246,6 +13248,11 @@ class AcpClient:
                     summary = compaction_failure_detail(params)
                 yield AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=summary)
             elif action == "clear":
+                # The conversation was emptied under the SAME sid, so the
+                # sid-scoped ledger would otherwise still apply: forget every
+                # inlined image, or a picture attached again is dropped as
+                # "sent earlier" from a conversation that holds nothing.
+                self._image_budget.reset()
                 yield AcpEvent(kind=EVENT_CLEAR_STATUS)
             elif action == "subagent_list":
                 params = msg.params or {}
@@ -13836,10 +13843,21 @@ class AcpClient:
         # the builder's host-side annotations), exactly as the handle does.
         blocks = await asyncio.to_thread(build_prompt_blocks, message)
         blocks = await self._image_budget.apply(blocks)
-        return await self._send_request(
-            METHOD_PROMPT,
-            {"sessionId": self._session_id, "prompt": blocks},
-        )
+        try:
+            req_id = await self._send_request(
+                METHOD_PROMPT,
+                {"sessionId": self._session_id, "prompt": blocks},
+            )
+        except BaseException:
+            # Never written, so nothing entered the conversation: a ledger
+            # charged now would drop the image from the caller's retry.
+            self._image_budget.discard()
+            raise
+        # Records the staged ledger -- or, for a ``/clear`` sent as text, the
+        # empty one (the harnesses that notify instead are reset from the
+        # clear branch of ``_dispatch_events``).
+        self._image_budget.commit()
+        return req_id
 
     async def _read_prompt_response(self, req_id: int, timeout: float) -> str:
         output: list[str] = []

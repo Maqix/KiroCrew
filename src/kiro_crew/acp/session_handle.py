@@ -951,8 +951,9 @@ class AcpSessionHandle:
         self._session_key = session_key
         # Per-session image dedup + budget over the built prompt blocks. Reads
         # the session key at call time because ``bind_session_key`` rebinds a
-        # pooled handle to its owner on claim.
-        self._image_budget = SessionImageBudget(lambda: self._session_key)
+        # pooled handle to its owner on claim; the ACP session id names the
+        # native conversation the ledger describes.
+        self._image_budget = SessionImageBudget(lambda: self._session_key, lambda: self._session_id)
         self._listed_hooks = kas_wire.ListedHookStore()
         # Strong references to in-flight hook executions: the loop holds only a
         # weak one, and a collected task would leave its request unanswered.
@@ -1865,7 +1866,14 @@ class AcpSessionHandle:
                 _mark(self._session_id, True)
             req_id = await self._runtime.send_request(_method, _params)
             self._prompt_written = True
+            # The prompt reached the runtime: the images it inlined are now
+            # part of the conversation, so their digests may be recorded.
+            # Before this point a died runtime makes the caller re-queue the
+            # same message, and a ledger charged at build time would then
+            # read the undelivered image as already sent.
+            self._image_budget.commit()
         except BaseException:
+            self._image_budget.discard()
             self._turn_done.set()
             _mark = getattr(self._runtime, "mark_turn_active", None)
             if _mark is not None:
@@ -4789,6 +4797,14 @@ class AcpSessionHandle:
                     # Same provenance as the compaction notice: one that named
                     # no session and was fanned out to co-tenants is not this
                     # session's own.
+                    if not msg.fanout_no_owner:
+                        # A confirmed native clear empties the conversation
+                        # under the SAME sid, so the sid-change reset on the
+                        # session record never fires for it: forget every
+                        # inlined image here, or a picture attached again
+                        # would be dropped as "sent earlier" from a
+                        # conversation that holds nothing.
+                        self._image_budget.reset()
                     yield AcpEvent(kind=EVENT_CLEAR_STATUS, runtime_global=msg.fanout_no_owner)
                 elif action == "agent_switched":
                     saw_agent_switch = True
