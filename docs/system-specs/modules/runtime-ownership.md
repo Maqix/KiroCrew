@@ -303,6 +303,15 @@ reading that cannot be taken, and a registry that cannot be read, each refuse th
 entire pass rather than acting on the half that answered. An incomplete active-pid
 union does the same.
 
+The registry is every record on this data home, because the slice is scoped to the
+data home too: the manager's live-pid union, the MCP backend pidfile, both tracked
+pid files across every gateway pid, and the app-backend record
+`app_backends.pids.json`. An app backend runs in the slice and is none of the
+others. `apps.backend.recorded_backend_pids` reads its record, leaves out only a row
+whose process is proven gone (the pid is DEAD, or both start identities are readable
+and differ), and raises on a file it cannot read, so a damaged record refuses the
+pass instead of presenting every backend as unowned.
+
 ### Why an unowned process is counted before it is killed
 
 Absence from the record is evidence that something is unclaimed, not evidence that
@@ -367,8 +376,9 @@ an unsignalable pid is an unknown, not an absence.
 
 Retraction is three-valued (`retracted` / `failed` / `not-mine`) rather than a
 bool. A row owned by a concurrent CLI or a predecessor gateway is a real dead
-record this pass cannot remove, and a pid known only to the MCP backend pidfile or
-the manager's in-memory union has no row in either tracking file. Folding those
+record this pass cannot remove, and a pid known only to the MCP backend pidfile, the
+app-backend record or the manager's in-memory union has no row in either tracking
+file. Folding those
 into the same `False` a real failure gets would publish one WARNING per stale pid
 per tick for the gateway's life — a steady state reported as a fault.
 
@@ -535,12 +545,12 @@ recover.
 - **`cap` is not open.** Raising `CHAT_RUNTIME_CAP` needs eligibility rules that
   decide which sessions may share a process, and a flag to stage it. Neither
   exists, so every runtime serves one session.
-- **Membership is narrower than the slice it is compared against.** An app
-  backend's pid record (`app_backends.pids.json`) and a long-lived sandboxed
-  subprocess are in none of the sources `recorded()` reads, so both are unowned by
-  construction on every pass, and what keeps them unsignalled is the argv
-  condition rather than an ownership record. Issue #15019 carries the membership
-  source that would close it.
+- **Membership is narrower than the slice it is compared against.** A long-lived
+  subprocess from the sandbox spawn chokepoint (`sandbox.sandboxed_spawn_argv`)
+  carries the spawn marker and lands in the slice, but is in none of the sources
+  `recorded()` reads, so once it outlives the age floor it is unowned on every pass,
+  and what keeps it unsignalled is the argv condition rather than an ownership
+  record. Tracked in issue #15371.
 - **[session.md](session.md)'s sweep contract does not describe the gate**
   (issue #14726). The reconciler is specified here; the sentences in that spec that
   still describe an ungated sweep are corrected by the change that owns it.

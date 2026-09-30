@@ -1449,12 +1449,14 @@ if _typing.TYPE_CHECKING:
     from kiro_crew.apps.backend_runtime.pidfile import (  # noqa: F401
         _forget_app_pid,
         _forget_app_pid_if,
+        _load_pidfile,
         _pidfile_lock,
         _pidfile_path,
         _read_pidfile,
         _write_pidfile,
         atomic_write,
         json,
+        recorded_backend_pids,
         retire_windows_app_tracking,
     )
     from kiro_crew.apps.backend_runtime.ports import (  # noqa: F401

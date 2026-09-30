@@ -47,6 +47,7 @@ format, and the lease seam against the real ownership table.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -58,6 +59,7 @@ import pytest
 
 from kiro_crew import runtime_ownership as ro
 from kiro_crew import runtime_reconcile as rr
+from kiro_crew.apps import backend as bmod
 
 # ── the reconciler core ───────────────────────────────────────────────────────
 
@@ -558,6 +560,178 @@ def test_an_absent_backend_pidfile_is_an_empty_set_not_a_refusal(
     unreadable.mkdir()
     with pytest.raises(OSError):
         rr._mcp_backend_pids()
+
+
+# ── the app-backend record ────────────────────────────────────────────────────
+
+
+def _app_pidfile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rows: dict[str, Any] | str
+) -> Path:
+    """Write ``app_backends.pids.json`` in the product's own row shape and point the reader at it.
+
+    Patched through the facade, the backend's one patch surface: the write reaches the
+    owner that reads it, so the reader under test is the shipped one.
+    """
+    path = tmp_path / "app_backends.pids.json"
+    path.write_text(rows if isinstance(rows, str) else json.dumps(rows), encoding="utf-8")
+    monkeypatch.setattr(bmod, "_pidfile_path", lambda: path)
+    return path
+
+
+def test_a_pid_only_the_app_backend_record_claims_is_owned_and_never_reaches_the_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MUTATION TARGET: the app-backend record is part of membership.
+
+    An app backend runs inside the agent slice, carries the spawn marker and is
+    long-lived by design, yet it is not a session, not a pooled MCP backend and in
+    neither tracked pid file. Its own record is the one thing that claims it; without
+    it every backend is unowned on every pass and collects a gate allow, and a kill
+    attribution naming it, whenever the argv check does not happen to decline it.
+
+    The membership read is the REAL wiring's; every other seam is faked past its
+    condition, so the only thing standing between the backend and the gate is the
+    record. The unrecorded neighbour is the positive control: it reaches the gate,
+    which proves the arm is armed rather than inert.
+    """
+    from kiro_crew import platform_compat, session_pid
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(session_pid, "config_dir", lambda: home)
+    monkeypatch.setattr(rr, "_mcp_backend_pids", lambda: set())
+    _app_pidfile(
+        tmp_path,
+        monkeypatch,
+        {"dev-fleet": {"pid": 5401, "start_time": "ST-5401", "port": 9100}},
+    )
+    monkeypatch.setattr(bmod, "_proc_start_time", lambda pid: f"ST-{pid}")
+    monkeypatch.setattr(
+        "kiro_crew.platform_compat.pid_liveness", lambda pid: platform_compat.PID_ALIVE
+    )
+
+    wired = rr.build_reconciler(active_pids=lambda: set(), notify_dead=lambda pid: None)
+    asked: list[int] = []
+    killed: list[int] = []
+    rec = rr.RuntimeReconciler(
+        slice_pids=lambda: {5401, 5402},
+        recorded_pids=wired._recorded_pids,
+        is_alive=lambda pid: True,
+        identity_of=lambda pid: f"id-{pid}",
+        is_ours=lambda pid: True,
+        is_managed=lambda pid: True,
+        leases_on=lambda pid: 0,
+        claims_on=lambda pid: 0,
+        authorize=lambda pid, reason: asked.append(pid) is None,
+        kill_tree=lambda pid, expected=None: killed.append(pid) or 1,
+        forget=lambda pid: "not-mine",
+        notify_dead=lambda pid: None,
+        age_secs=lambda pid: 10_000.0,
+        audit=lambda pid, outcome, why: None,
+    )
+    first = rec.run_once()
+    rec.run_once()
+
+    assert first.supported, first.reason
+    assert first.unowned_alive == 1, "only the unrecorded neighbour is unowned"
+    assert first.owned_alive == 1, "the backend its record names is counted as owned"
+    assert asked == [5402], f"the recorded backend never reaches the gate; got {asked}"
+    assert killed == [5402], f"and is never signalled; got {killed}"
+
+
+def test_the_app_backend_record_leaves_out_only_a_row_whose_process_is_proven_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MUTATION TARGET: which rows the record still vouches for.
+
+    Leaving a pid out makes it a kill candidate and keeping one only spares it, so a
+    row is dropped only on proof: the pid is DEAD, or both start identities read and
+    differ, which means the number now names somebody else. A row whose identity
+    cannot be confirmed, or an unsignalable pid, is an unknown and stays claimed. A
+    row that names no usable pid claims nothing.
+    """
+    from kiro_crew import platform_compat
+
+    _app_pidfile(
+        tmp_path,
+        monkeypatch,
+        {
+            "live": {"pid": 5501, "start_time": "ST-A", "port": 9101},
+            "recycled": {"pid": 5502, "start_time": "ST-OLD", "port": 9102},
+            "dead": {"pid": 5503, "start_time": "ST-C", "port": 9103},
+            "identity-unreadable": {"pid": 5504, "start_time": "ST-D", "port": 9104},
+            "no-baseline": {"pid": 5505, "start_time": None, "port": 9105},
+            "unsignalable": {"pid": 5506, "start_time": "ST-F", "port": 9106},
+            "string-pid": {"pid": "5507", "start_time": "ST-G"},
+            "init": {"pid": 1, "start_time": "ST-H"},
+            "not-a-row": ["5508"],
+        },
+    )
+    live_starts = {5501: "ST-A", 5502: "ST-NEW", 5504: None, 5505: "ST-E", 5506: "ST-F"}
+    monkeypatch.setattr(bmod, "_proc_start_time", lambda pid: live_starts.get(pid))
+    liveness = {5503: platform_compat.PID_DEAD, 5506: platform_compat.PID_UNSIGNALABLE}
+    monkeypatch.setattr(
+        "kiro_crew.platform_compat.pid_liveness",
+        lambda pid: liveness.get(pid, platform_compat.PID_ALIVE),
+    )
+
+    assert bmod.recorded_backend_pids() == {5501, 5504, 5505, 5506}
+
+
+def test_an_absent_app_backend_record_claims_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No file is a real answer: no backend was ever spawned on this data home."""
+    monkeypatch.setattr(bmod, "_pidfile_path", lambda: tmp_path / "app_backends.pids.json")
+    assert bmod.recorded_backend_pids() == set()
+
+
+@pytest.mark.parametrize("contents", ["{not json", "[]", None], ids=["corrupt", "list", "dir"])
+def test_an_unreadable_app_backend_record_refuses_the_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    contents: str | None,
+) -> None:
+    """MUTATION TARGET: a damaged record refuses the pass instead of claiming nothing.
+
+    Read as empty, a file that exists and cannot be parsed presents every live app
+    backend as unowned -- the one input that makes a pass dangerous, and the reason
+    the MCP pidfile and the tracked-pid snapshot refuse the same way. The spawn, stop
+    and reap paths keep their lenient read of the same file.
+
+    The refusal is said at WARNING by the reader: the pass reports it only at debug,
+    and nothing but a spawn or stop rewrites the file, so a silent refusal would leave
+    the reconciler inert with no visible cause.
+    """
+    from kiro_crew import session_pid
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(session_pid, "config_dir", lambda: home)
+    monkeypatch.setattr(rr, "_mcp_backend_pids", lambda: set())
+    monkeypatch.setattr(rr, "instance_slice_pids", lambda: {5601})
+    if contents is None:
+        path = tmp_path / "app_backends.pids.json"
+        path.mkdir()
+        monkeypatch.setattr(bmod, "_pidfile_path", lambda: path)
+    else:
+        _app_pidfile(tmp_path, monkeypatch, contents)
+
+    reading = rr.build_reconciler(
+        active_pids=lambda: set(), notify_dead=lambda pid: None
+    ).run_once()
+
+    assert reading.supported is False
+    assert "registry" in reading.reason, reading.reason
+    assert any(
+        record.levelno == logging.WARNING
+        and "App-backend pidfile unreadable" in record.getMessage()
+        and "runtime reconcile refused" in record.getMessage()
+        for record in caplog.records
+    ), [record.getMessage() for record in caplog.records]
+    assert bmod._read_pidfile() == {}, "the spawn and reap paths still read it as empty"
 
 
 def test_a_recycled_pid_does_not_inherit_the_previous_passs_confirmation() -> None:
