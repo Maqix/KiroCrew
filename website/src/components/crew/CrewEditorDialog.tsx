@@ -93,8 +93,8 @@ export default function CrewEditorDialog({ ctl }: { ctl: CrewEditorController })
             >
               <CrewStateAvatar seed={editing} avatar={editAvatar ?? undefined} size={28} onImageError={onAvatarImageError} />
             </CrewAvatarButton>
-            <DialogTitle className="flex-1 font-mono">
-              {displayName.trim() || editing}
+            <DialogTitle className="flex-1">
+              <span className="font-mono">{displayName.trim() || editing}</span>
             </DialogTitle>
             {editingAgent?.source && <SourceBadge source={editingAgent.source} />}
           </div>
@@ -110,7 +110,11 @@ export default function CrewEditorDialog({ ctl }: { ctl: CrewEditorController })
           </div>
         </DialogHeader>
 
-        <DialogBody className="flex flex-col overflow-hidden p-0 sm:flex-row">
+        {/* The editor body is a plain scroll region rather than <DialogBody>:
+            the rail and pane own their padding, so the body must sit flush
+            (no px-5 py-4). Carries the primitive's scroll defaults
+            (min-h-0 flex-1 overflow) plus the two-column layout. */}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden sm:flex-row">
           <fieldset
             disabled={sheetBusy}
             aria-busy={sheetBusy}
@@ -342,7 +346,7 @@ export default function CrewEditorDialog({ ctl }: { ctl: CrewEditorController })
               )}
             </div>
           </fieldset>
-        </DialogBody>
+        </div>
 
         {!templatePaneActive && pane !== 'capabilities' && (
           <DialogFooter>

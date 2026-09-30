@@ -536,7 +536,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
         if (templateSwitchInflight.current === commit) templateSwitchInflight.current = null
       })
     },
-    [editing, refetchAgents, refetchWorkspaces],
+    [editing, refetchAgents, queryClient],
   )
 
   // ── Save ──
