@@ -3097,8 +3097,7 @@ export default function App() {
   // on a harness that does not resolve to kiro-cli. Whether this surface EXISTS
   // is the HARNESS's verdict; the reading only decides what it shows -- so a read
   // that produced nothing must not resurrect a segment the harness has already
-  // ruled out. An unloaded config counts as not-kiro here (`isKiroBackend`
-  // answers false for `undefined`): nothing Kiro-only renders on a guess.
+  // ruled out.
   //
   // `failed` belongs here with `none`, and leaving it out was the defect. On a
   // non-kiro harness the read fails BY CONSTRUCTION:
@@ -3114,12 +3113,19 @@ export default function App() {
   // `config-unreadable` is deliberately NOT one of these: it means the config
   // read itself failed, so "not the kiro harness" was never established, and a
   // failed read must not be shown as a verdict.
-  const kiroUsageHasNoReading = kiroUsageState === 'none' || kiroUsageState === 'failed'
-  // ONE derivation for the segment, read by the render below and by both the
-  // phone entry and the modal-close effect -- the old code re-stated the rule
-  // inline as `=== 'none' && kiroCreditSurface`, which is how `failed` came to
-  // be missing from it.
-  const usageSegmentHidden = kiroUsageHasNoReading && !kiroCreditSurface
+  //
+  // The two no-reading states need DIFFERENT evidence, which is why this is not
+  // one `||`. `none` is a payload the gateway sent, so an unloaded config already
+  // hides it (nothing Kiro-only renders on a guess, and `isKiroBackend(undefined)`
+  // is false). `failed` is the absence of an answer, so hiding it demands a
+  // SETTLED verdict: while the config is unread, "not the kiro harness" is not
+  // established, and a dash the user can open is better than silently dropping
+  // the only surface that reports the failure.
+  const usageSegmentHidden = kiroUsageState === 'none'
+    ? !kiroCreditSurface
+    : kiroUsageState === 'failed'
+      ? kirocrewCfgLoaded && !kiroCreditSurface
+      : false
   // The modal only CLOSES on a settled verdict. A modal opened while the cache
   // was warming would otherwise be left over a pill that has just disappeared,
   // with nothing under it to refresh -- but an unloaded config is a pending
@@ -3134,10 +3140,10 @@ export default function App() {
   // phone (docs/narrow-viewport.md). On the Kiro backend it is always there
   // (the modal's Refresh is how an empty reading gets filled). On any other
   // harness it appears only for a reading the desktop segment would show
-  // (`usageSegmentHidden` is that segment's own derivation) and never for the
-  // warming `null` -- the desktop paints a spinner there and takes it back if the
-  // cache settles on `none`, which for a nav row would be a row blinking in and out.
-  const kiroAccountEntry = kiroCreditSurface || (kiroUsageState !== null && !usageSegmentHidden)
+  // (`pillHidden` is the segment's own derivation) and never for the warming
+  // `null` -- the desktop paints a spinner there and takes it back if the cache
+  // settles on `none`, which for a nav row would be a row blinking in and out.
+  const kiroAccountEntry = kiroCreditSurface || (kiroUsageState !== null && !pillHidden)
   const [metricsOpen, setMetricsOpen] = useState(() => localStorage.getItem('mc-topbar-metrics') === '1')
   // The inline metric readings are dropped by a CSS container-query rung when
   // the actions group runs out of room (the ladder in index.css, whose rungs
