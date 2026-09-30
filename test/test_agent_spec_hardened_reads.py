@@ -1021,10 +1021,13 @@ class TestProjectFilesDenialAttribution:
 # Forwarding helpers are pinned as forwarding rather than forced to use a fixed
 # literal that would erase the caller's attribution.
 _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
-    # One read: the launch loop reads each authored spec to project it. Alias
-    # reclaim is keyed on lease liveness and reads no authored source.
+    # Two reads: the launch loop reads each authored spec to project it, and
+    # set_mode's authored fallback re-reads one agent's spec to judge whether its
+    # grants changed since spawn. Alias reclaim is keyed on lease liveness and
+    # reads no authored source.
     "kiro_crew/acp/skill_projection.py": [
         ("native_skill_projection", "acp"),
+        ("skill_view_authored_identity", "acp"),
     ],
     # Two reads, deliberately labelled apart: the session-MCP translation resolves
     # the PROJECT checkout first (kiro-cli resolves --agent there before the user

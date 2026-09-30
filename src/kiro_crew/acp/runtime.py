@@ -86,6 +86,7 @@ from kiro_crew.acp.mcp_session_report import (
 )
 from kiro_crew.acp.session_handle import (
     NATIVE_CHILD_ROSTER_CAP,
+    AcpModeNotFound,
     AcpRequestTimeout,
     AcpRuntimeDead,
     AcpRuntimeError,
@@ -144,6 +145,7 @@ from kiro_crew.metrics.events import (
     CHILD_PERMISSION_DENIED,
     CHILD_PERMISSION_ROUTED,
     DROPPED_FRAMES,
+    SKILL_VIEW_FALLBACKS,
     emit_counter,
 )
 from kiro_crew.providers.mirrors.registry import has_mirror, mirror_for
@@ -984,6 +986,31 @@ def _format_runtime_rpc_error(error: object) -> str:
                 f"then restart the gateway."
             )
     return f"RPC error: {error}"
+
+
+def _runtime_rpc_exception(error: object) -> AcpRuntimeError:
+    """The exception an awaited request fails with; :func:`_format_runtime_rpc_error`'s text.
+
+    A missing mode is an :class:`AcpModeNotFound` carrying the name, so the
+    ``set_mode`` path can recover from a skill-view alias the host has not
+    loaded yet without parsing the sentence it would show a user.
+    """
+    message = _format_runtime_rpc_error(error)
+    if isinstance(error, dict):
+        match = _MODE_NOT_FOUND_RE.search(str(error.get("data", "") or ""))
+        if match:
+            return AcpModeNotFound(message, match.group("name"))
+    return AcpRuntimeError(message)
+
+
+# After a skill-view alias is published, how long ``session/set_mode`` waits
+# before each retry of a "not found" answer. kiro-cli reloads its agents
+# directory 500 ms after the last data write to it (a trailing debounce, then a
+# full rescan; measured selectable 0.7-1.5 s after publication) and never on a
+# rename, and a miss does not trigger a reload itself. Short even steps land
+# soon after a reload; the total (3 s) stays well inside the set_mode budget, and
+# after it the session falls back to the authored agent rather than failing.
+_PROJECTED_MODE_RETRY_DELAYS_SECS: tuple[float, ...] = (0.5, 0.5, 0.5, 0.5, 1.0)
 
 
 # ── Unroutable-frame drop accounting ──
@@ -2520,6 +2547,12 @@ class AcpRuntime:
                 self._native_skill_projection = await asyncio.to_thread(
                     prepare_native_skill_projection, self._work_dir
                 )
+                # Held for the process's life: the aliases kiro-cli listed at
+                # startup are ones it is guaranteed to have loaded, so later
+                # projections keep translating them in inbound frames
+                # (_activate_mode_bracketed), and holding the object keeps its
+                # lease -- and them -- out of the prune.
+                self._spawn_skill_projection = self._native_skill_projection
                 if self._native_skill_projection is not None:
                     argv = list(argv)
                     agent_position = argv.index("--agent") + 1
@@ -4291,9 +4324,7 @@ class AcpRuntime:
                     future = self._pending_requests.pop(req_id, None)
                     if future and not future.done():
                         if msg.error:
-                            future.set_exception(
-                                AcpRuntimeError(_format_runtime_rpc_error(msg.error))
-                            )
+                            future.set_exception(_runtime_rpc_exception(msg.error))
                         else:
                             future.set_result(msg.result or {})
                         continue
@@ -5721,23 +5752,137 @@ class AcpRuntime:
                 await self.terminate_session(session_id)
                 raise AcpRuntimeError(str(exc)) from exc
         try:
-            if getattr(self, "_native_skill_projection", None) is not None:
+            # Whether set_mode names the projected alias at all; ``False`` sends the
+            # authored agent as given (see the loop below).
+            translate = True
+            # Why the session ended on the authored agent, once it has.
+            authored_reason: str | None = None
+            prepared = None
+            previous = getattr(self, "_native_skill_projection", None)
+            if previous is not None:
                 from kiro_crew.acp.skill_projection import prepare_native_skill_projection
 
                 # Keep the transport mode selected at spawn for this process.
                 # The rollback environment switch takes effect after restart.
-                self._native_skill_projection = await asyncio.to_thread(
+                prepared = await asyncio.to_thread(
                     prepare_native_skill_projection, self._work_dir, enabled=True
                 )
+                if prepared is None:
+                    # No view could be prepared (lock unavailable), so nothing
+                    # proves the alias this process last used still says what the
+                    # agent's spec says now -- an edit may have removed a server or
+                    # an auto-approval since. Run the authored agent for this
+                    # session; the projection stays for inbound frames.
+                    translate = False
+                    authored_reason = "authored_unprepared"
+                    await self._refuse_a_changed_authored_spec(mode_agent, None)
+                else:
+                    # set_mode always names the FRESH alias, never an older one: an
+                    # alias the host loaded at spawn may hold a generation of the
+                    # spec an edit has since revoked grants from. Inbound frames keep
+                    # translating every alias this process published before
+                    # (``recognise``), so an agent the host still lists under its
+                    # spawn alias stays selectable. Holding ``_spawn_skill_projection``
+                    # keeps those aliases -- and so the host's view of them -- out of
+                    # the prune.
+                    spawn = getattr(self, "_spawn_skill_projection", None)
+                    if spawn is not None:
+                        prepared.recognise(spawn)
+                    prepared.recognise(previous)
+                    self._native_skill_projection = prepared
             # set_mode is a handshake request: switching to an agent boots THAT
             # agent's MCP servers, the same server (re-)initialization that gives
             # session/new and session/load their 90s budget. A switched-to server
             # pending OAuth holds the response for its full 30s wait, so the generic
             # _REQUEST_TIMEOUT would turn set_mode into the SAME race the
             # session-start floor exists to prevent (see _SESSION_NEW_TIMEOUT).
-            await self._send_and_await(
-                METHOD_SET_MODE, set_mode_params(session_id, mode_agent), timeout=budget
-            )
+            #
+            # A skill-view alias is an optimisation over the authored agent, never a
+            # requirement, so a projection miss must not brick the session. kiro-cli
+            # 2.25/2.26 does not reload its agents directory on the rename that
+            # publishes an alias, so a fresh one can answer ``Mode '<alias>' not
+            # found`` while the file is on disk. A miss for the alias this projection
+            # translated *mode_agent* to -- and for nothing else -- is retried after
+            # _PROJECTED_MODE_RETRY_DELAYS_SECS, and then the session is switched to
+            # the AUTHORED agent, untranslated: the spec the rollback switch
+            # KIROCREW_NATIVE_SKILL_PROJECTION=0 would run, which this bracket gates
+            # the same way. Every other error, and a miss on the authored name
+            # itself, propagates as before. Each outcome is counted once the
+            # set_mode it describes has succeeded.
+            params = set_mode_params(session_id, mode_agent)
+            # Translated ONCE, from the projection this bracket just adopted, and
+            # sent as fixed wire params on every attempt: the retry sleeps, and a
+            # concurrent session start may replace ``_native_skill_projection``
+            # meanwhile with an older preparation whose alias still carries grants
+            # a spec edit removed. ``translate`` is passed only when a projection
+            # exists, so the send is the same call as before for every caller
+            # without one.
+            projection_now = getattr(self, "_native_skill_projection", None)
+            wire = params
+            sent_alias: str | None = None
+            if projection_now is not None:
+                if translate:
+                    sent_alias = projection_now.agent(mode_agent)
+                    wire = {**params, "modeId": sent_alias}
+                untranslated: dict[str, Any] = {"translate": False}
+            else:
+                untranslated = {}
+            retries = iter(_PROJECTED_MODE_RETRY_DELAYS_SECS)
+            missed: str | None = None
+            while True:
+                try:
+                    await self._send_and_await(
+                        METHOD_SET_MODE, wire, timeout=budget, **untranslated
+                    )
+                except AcpModeNotFound as exc:
+                    if sent_alias is None or exc.mode_id != sent_alias:
+                        raise
+                    missed = exc.mode_id
+                    delay = next(retries, None)
+                    if delay is not None:
+                        # kiro-cli reloads on a data write, never on the rename that
+                        # published the alias, and a miss triggers no reload: rewrite
+                        # the alias's own bytes in place so it rescans, then retry.
+                        from kiro_crew.acp.skill_projection import announce_alias
+
+                        await asyncio.to_thread(announce_alias, exc.mode_id)
+                        await asyncio.sleep(delay)
+                        continue
+                    await self._refuse_a_changed_authored_spec(mode_agent, prepared)
+                    wire, sent_alias = params, None
+                    authored_reason = "authored_agent"
+                    continue
+                break
+            if authored_reason is not None:
+                # And after the send: a revocation landing while kiro-cli activated
+                # the authored copy leaves it running grants the spec has since dropped.
+                await self._refuse_a_changed_authored_spec(mode_agent, prepared)
+            if authored_reason == "authored_agent":
+                emit_counter(SKILL_VIEW_FALLBACKS, {"outcome": "authored_agent"})
+                logger.warning(
+                    "AcpRuntime set_mode: kiro-cli has not loaded skill view %s for "
+                    "agent=%s after %d attempt(s); this session runs the authored agent "
+                    "instead, with native skill discovery unbounded",
+                    missed,
+                    mode_agent,
+                    1 + len(_PROJECTED_MODE_RETRY_DELAYS_SECS),
+                )
+            elif authored_reason == "authored_unprepared":
+                emit_counter(SKILL_VIEW_FALLBACKS, {"outcome": "authored_unprepared"})
+                logger.warning(
+                    "skill projection: re-preparation unavailable at set_mode; agent %r "
+                    "runs its authored spec for this session, with native skill "
+                    "discovery unbounded",
+                    mode_agent,
+                )
+            elif missed is not None:
+                emit_counter(SKILL_VIEW_FALLBACKS, {"outcome": "loaded_after_retry"})
+                logger.info(
+                    "AcpRuntime set_mode: kiro-cli loaded skill view %s for agent=%s "
+                    "after a retry",
+                    missed,
+                    mode_agent,
+                )
         except Exception:
             await self.terminate_session(session_id)
             raise
@@ -5746,6 +5891,41 @@ class AcpRuntime:
         except DerivedSpecStale as exc:
             await self.terminate_session(session_id)
             raise AcpRuntimeError(str(exc)) from exc
+
+    async def _refuse_a_changed_authored_spec(self, mode_agent: str, prepared: Any) -> None:
+        """Raise instead of falling back to *mode_agent*'s authored spec when it changed.
+
+        The fallback runs the authored agent as kiro-cli holds it, and kiro-cli
+        2.25/2.26 does not reload a spec replaced by rename either. When what the
+        authored spec GRANTS changed since this process spawned
+        (:func:`~kiro_crew.acp.skill_projection.authored_grant_identity`), that copy
+        may still carry a server or an auto-approval the change removed, so the start
+        fails, naming the fix. An agent the spawn projection did not know has no
+        baseline and is refused too, as is a spec that is unreadable now.
+        """
+        spawn = getattr(self, "_spawn_skill_projection", None)
+        at_spawn = spawn.authored.get(mode_agent) if spawn is not None else None
+        # Read from disk NOW, never from a preparation's record: the retries sleep,
+        # and a revocation can land between that preparation and this fallback.
+        from kiro_crew.acp.skill_projection import authored_identity_now
+
+        now = await asyncio.to_thread(authored_identity_now, self._work_dir, mode_agent)
+        # No baseline (an agent added after spawn) is no proof either: kiro-cli may
+        # hold whatever copy it loaded since, so that is refused like a change.
+        if at_spawn is not None and now == at_spawn:
+            return
+        emit_counter(SKILL_VIEW_FALLBACKS, {"outcome": "refused_changed_spec"})
+        logger.warning(
+            "AcpRuntime set_mode: agent=%s changed since kiro-cli started and kiro-cli has "
+            "not loaded its new skill view; refusing its authored spec as possibly stale",
+            mode_agent,
+        )
+        raise AcpRuntimeError(
+            f"Agent {mode_agent!r} changed (or was added) since this kiro-cli process started, "
+            "and kiro-cli has not loaded the change: its copy of the agent may still carry "
+            "permissions the change removed, so this session was not started on it. Restart "
+            "the gateway to load the change."
+        )
 
     async def _handshake_client_capabilities(self) -> dict[str, Any]:
         """The ``clientCapabilities`` this spawn sends, with the settings channel filled.
@@ -7611,7 +7791,12 @@ class AcpRuntime:
             raise
 
     async def _send_and_await(
-        self, method: str, params: dict[str, Any], timeout: float = _REQUEST_TIMEOUT
+        self,
+        method: str,
+        params: dict[str, Any],
+        timeout: float = _REQUEST_TIMEOUT,
+        *,
+        translate: bool = True,
     ) -> dict[str, Any]:
         """Send a JSON-RPC request and await the response via _pending_requests.
 
@@ -7619,7 +7804,9 @@ class AcpRuntime:
         where we need the response immediately rather than routing it to a
         session queue. ``timeout`` bounds the wait — teardown paths pass a
         tighter value than the default so an unresponsive runtime can't stall
-        session eviction.
+        session eviction. ``translate=False`` sends *params* as given, past the
+        skill projection's name translation: the one caller is the ``set_mode``
+        fallback onto the authored agent (:meth:`_activate_mode_bracketed`).
         """
         if not self._process or not self._process.stdin:
             raise AcpRuntimeDead("process not running")
@@ -7630,7 +7817,7 @@ class AcpRuntime:
         self._next_id += 1
 
         projection = getattr(self, "_native_skill_projection", None)
-        if projection is not None:
+        if projection is not None and translate:
             params = projection.request(method, params)
         req = JsonRpcRequest(method=method, params=params, id=req_id)
         data = json.dumps(req.to_dict()) + "\n"

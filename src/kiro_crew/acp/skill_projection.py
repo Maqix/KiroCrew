@@ -35,6 +35,7 @@ from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_agents_dir, kiro_home, project_agents_dir
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
+from kiro_crew.validation import is_registered_agent_name
 from kiro_crew.workspace_cli_settings import workspace_cli_settings_lock
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,21 @@ _MANAGED_SOURCE = "x-kirocrew-source"
 _MANAGED_ALIAS_SHA256 = "x-kirocrew-alias-sha256"
 
 
+def _admissible_source_agent(agent_name: object) -> bool:
+    """Whether *agent_name* may be retained as the agent an alias projects: the
+    registered agent-name grammar (bounded length, no control character), and
+    never another view name."""
+    return is_registered_agent_name(agent_name) and not (
+        isinstance(agent_name, str) and agent_name.startswith(NATIVE_SKILL_ALIAS_PREFIX)
+    )
+
+
+# How many earlier aliases one projection keeps translating inbound. A process
+# publishes a new alias only when an agent's view changes, so this is far above
+# any real run; it bounds a process whose specs are edited without end.
+_RECOGNISED_ALIASES_MAX = 1024
+
+
 @dataclass
 class NativeSkillProjection:
     """Translate transport identities while Crew keeps the authored agent name."""
@@ -166,6 +182,34 @@ class NativeSkillProjection:
     errors: dict[str, str] = field(default_factory=dict)
     search_agents: set[str] = field(default_factory=set)
     _lease_finalizer: Any = field(default=None, repr=False, compare=False)
+    # Aliases an EARLIER projection of this process published, alias -> agent. The
+    # host may still hold them (every alias it loaded at spawn, say), so inbound
+    # frames keep translating them back even after this projection renamed the
+    # agent; only outbound requests use ``aliases``.
+    _recognised: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
+    # Agent -> :func:`authored_grant_identity` of its AUTHORED spec when this
+    # projection was prepared: what the host could have loaded for that name then.
+    authored: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
+
+    def recognise(self, earlier: "NativeSkillProjection") -> None:
+        """Keep translating the aliases *earlier* knew in inbound frames, up to a bound.
+
+        Called with the spawn projection FIRST, so its aliases -- the ones the host
+        is guaranteed to hold -- are the last to be refused once the bound is met.
+        Only alias-shaped names mapped to admissible agent names are kept, so the
+        count bound bounds the memory too.
+        """
+        for alias, name in (
+            *((a, n) for n, a in earlier.aliases.items()),
+            *earlier._recognised.items(),
+        ):
+            if len(self._recognised) >= _RECOGNISED_ALIASES_MAX:
+                return
+            # The registered agent-name grammar bounds each retained name and admits
+            # no control character; an alias is a fixed-length digest name.
+            if not _admissible_source_agent(name) or not _LEGACY_ALIAS_NAME_RE.fullmatch(alias):
+                continue
+            self._recognised.setdefault(alias, name)
 
     def agent(self, name: str) -> str:
         if name not in self.aliases:
@@ -194,18 +238,32 @@ class NativeSkillProjection:
         return params
 
     def frame(self, frame: dict[str, Any]) -> dict[str, Any]:
-        reverse = {alias: name for name, alias in self.aliases.items()}
+        reverse = {**self._recognised, **{alias: name for name, alias in self.aliases.items()}}
 
         def visit(value: Any, field: str = "") -> Any:
             if isinstance(value, dict):
                 return {key: visit(item, key) for key, item in value.items()}
             if isinstance(value, list):
                 if field == "availableModes":
-                    value = [
-                        item
-                        for item in value
-                        if isinstance(item, dict) and item.get("id") in reverse
-                    ]
+                    # A mode stays listed when the host advertises ANY name this
+                    # process can switch the agent through: one of its aliases, or
+                    # the authored id of a projected agent (what ``set_mode`` falls
+                    # back to when the host never loaded the alias). Each agent is
+                    # listed once; unprojected host agents stay hidden.
+                    kept: list[Any] = []
+                    listed: set[str] = set()
+                    for item in value:
+                        if not isinstance(item, dict):
+                            continue
+                        mode_id = item.get("id")
+                        name = reverse.get(mode_id) if isinstance(mode_id, str) else None
+                        if name is None and mode_id in self.aliases:
+                            name = mode_id
+                        if name is None or name in listed:
+                            continue
+                        listed.add(name)
+                        kept.append(item)
+                    value = kept
                 return [visit(item) for item in value]
             if field in {"id", "name", "agentName", "modeId", "currentModeId"} and isinstance(
                 value, str
@@ -1463,6 +1521,179 @@ def _is_current_publication(
     return managed is not None and managed[0].get(_MANAGED_CREW_HOME) == crew_home_id
 
 
+def _alias_identity(view: dict[str, Any]) -> dict[str, Any]:
+    """The part of *view* an alias is named by: the view minus volatile env values.
+
+    A launcher that re-injects a per-launch nonce into each agent file's server
+    env (a fresh id every sandbox start) changes the view on every spawn, and
+    naming the alias by it mints a new file per spawn without bound. So the values
+    of :func:`volatile_env_keys` are left out; every other env value is in, as a
+    digest. A rotated credential therefore names a NEW alias -- one kiro-cli has
+    not loaded, so ``set_mode`` never activates a copy still carrying the old
+    credential -- and two launch contexts with different credentials never share
+    one. Keys stay in too: adding or removing a variable names a new alias.
+    """
+    servers = view.get("mcpServers")
+    if not isinstance(servers, dict):
+        return view
+    volatile = volatile_env_keys()
+    identity = dict(view)
+    identity["mcpServers"] = {
+        name: (
+            {**entry, "env": _env_identity(entry["env"], volatile)}
+            if isinstance(entry, dict) and isinstance(entry.get("env"), dict)
+            else entry
+        )
+        for name, entry in servers.items()
+    }
+    return identity
+
+
+def _announce_publication(path: Path, data: bytes) -> None:
+    """Make a watcher that ignores renames notice the alias just published at *path*.
+
+    ``atomic_write`` publishes by rename, and kiro-cli (every release since its
+    agent-config hot reload landed in 2.10.0, 2.26.0 included) does not act on
+    one: its watcher reloads only on a create, a DATA modification or a remove of
+    a ``*.json`` in the agents directory, so the rename (a name modification) is
+    dropped, and so are the temp file's own events (not ``*.json``), an attribute
+    change and a close without a write. ``session/set_mode`` then looks only in
+    what was loaded. A NEW alias renamed in after the process started therefore
+    stays ``Mode ... not found`` indefinitely, and a KNOWN alias renamed over
+    keeps serving its old content. Rewriting the same bytes in place is
+    a data write, so it triggers a full rescan after a 500 ms quiet window
+    (measured: visible ~0.7 s later); and because every byte written equals the
+    byte already there and nothing is truncated, a reader racing it can never
+    see a torn file. Best effort: the file must still hold exactly *data*, and
+    any failure leaves it as published.
+    """
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        logger.debug("skill projection: cannot reopen %s to announce it", path.name, exc_info=True)
+        return
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size != len(data):
+            return
+        current = b""
+        while len(current) < len(data):
+            chunk = os.read(fd, len(data) - len(current))
+            if not chunk:
+                break
+            current += chunk
+        if current != data:
+            return
+        os.lseek(fd, 0, os.SEEK_SET)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view) :]
+    except OSError:
+        logger.debug("skill projection: cannot announce %s", path.name, exc_info=True)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            # A deferred write error (network filesystems report one at close) is
+            # no reason to fail a best-effort nudge, or the session start behind it.
+            logger.debug("skill projection: close after announcing %s", path.name, exc_info=True)
+
+
+def announce_alias(alias: str) -> None:
+    """Rewrite published alias *alias* in place, byte for byte, so the host rescans.
+
+    The recovery ``session/set_mode`` takes on a ``Mode ... not found`` for a
+    fresh alias before it retries: see :func:`_announce_publication`. Only a name
+    of the shape this module mints is touched. Blocking; best effort.
+    """
+    if not _LEGACY_ALIAS_NAME_RE.fullmatch(alias):
+        return
+    path = kiro_agents_dir() / f"{alias}.json"
+    try:
+        data = safe_read_file_bytes(str(path))
+    except (OSError, ValueError, FileTooLargeError):
+        return
+    if data:
+        _announce_publication(path, data)
+
+
+# MCP env keys whose VALUE a launcher re-stamps on every launch (a per-launch
+# nonce, not a credential the agent's grants depend on), so a changed value is no
+# change. Every other env value counts: a rotated credential is a different grant.
+# Extended, never narrowed, by ``KIROCREW_SKILL_VIEW_VOLATILE_ENV`` (comma-separated
+# key names), for a launcher this list does not know yet.
+_VOLATILE_ENV_KEYS_DEFAULT = frozenset({"AIM_CREDS_AGENT_INJECTION"})
+_VOLATILE_ENV_VAR = "KIROCREW_SKILL_VIEW_VOLATILE_ENV"
+
+
+def volatile_env_keys() -> frozenset[str]:
+    """The MCP env keys whose values identity digests ignore (see above)."""
+    extra = os.environ.get(_VOLATILE_ENV_VAR, "")
+    return _VOLATILE_ENV_KEYS_DEFAULT | {k.strip() for k in extra.split(",") if k.strip()}
+
+
+def _env_identity(env: dict[Any, Any], volatile: frozenset[str]) -> dict[str, str | None]:
+    """*env* as identity: every key, and a digest of each value but the volatile ones."""
+    return {
+        str(key): (
+            None
+            if str(key) in volatile
+            else hashlib.sha256(str(value).encode("utf-8", "replace")).hexdigest()
+        )
+        for key, value in env.items()
+    }
+
+
+def authored_grant_identity(spec: dict[str, Any]) -> str:
+    """A digest of what an authored spec GRANTS, for telling whether it changed.
+
+    Everything kiro-cli acts on counts -- tools, allowed tools, MCP servers with
+    their commands and env, settings, prompt, resources -- except display text and
+    the values of :func:`volatile_env_keys`. A launcher that re-stamps a per-launch
+    nonce into every spec therefore does not read as a change, while removing a
+    server, a tool or an auto-approval, or rotating a credential, does.
+    """
+    volatile = volatile_env_keys()
+    identity = {k: v for k, v in spec.items() if k not in ("name", "description", "welcomeMessage")}
+    servers = identity.get("mcpServers")
+    if isinstance(servers, dict):
+        identity["mcpServers"] = {
+            name: (
+                {**entry, "env": _env_identity(entry["env"], volatile)}
+                if isinstance(entry, dict) and isinstance(entry.get("env"), dict)
+                else entry
+            )
+            for name, entry in servers.items()
+        }
+    return hashlib.sha256(
+        json.dumps(
+            identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+        ).encode()
+    ).hexdigest()
+
+
+def authored_identity_now(work_dir: Path, agent_name: str) -> str | None:
+    """:func:`authored_grant_identity` of *agent_name*'s authored spec as it is on
+    disk now, or ``None`` when it cannot be found or read. Read-only; takes no lock.
+    Blocking: an event-loop caller runs it in a thread."""
+    try:
+        directory = kiro_agents_dir()
+        for agent in list_agents(project_dir=str(work_dir)):
+            if agent.name != agent_name or not agent.filename:
+                continue
+            source_dir = (
+                project_agents_dir(str(work_dir)) if agent.scope == SCOPE_PROJECT else directory
+            )
+            spec = _read_agent_spec(
+                source_dir / agent.filename, operation="skill_view_authored_identity", source="acp"
+            )
+            return authored_grant_identity(spec) if isinstance(spec, dict) else None
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return None
+
+
 def prepare_native_skill_projection(
     work_dir: Path, *, enabled: bool | None = None, per_session_element: bool = True
 ) -> NativeSkillProjection | None:
@@ -1519,6 +1750,7 @@ def prepare_native_skill_projection(
     sources: dict[str, str] = {}
     errors: dict[str, str] = {}
     search_agents: set[str] = set()
+    authored_ids: dict[str, str] = {}
     for agent in list_agents(project_dir=str(work_dir)):
         if not agent.filename:
             continue
@@ -1529,6 +1761,7 @@ def prepare_native_skill_projection(
         spec = _read_agent_spec(source, operation="native_skill_projection", source="acp")
         if spec is None:
             continue
+        authored_ids[agent.name] = authored_grant_identity(spec)
         view = copy.deepcopy(spec)
         resources = view.get("resources", [])
         resources = resources if isinstance(resources, list) else []
@@ -1682,13 +1915,24 @@ def prepare_native_skill_projection(
                 # workspace. The agent name is hashed too, so two agents with
                 # identical specs still get distinct aliases, and so is the Crew
                 # data home, so two homes sharing one agents directory never
-                # contend for (and re-own) the same file.
+                # contend for (and re-own) the same file. MCP server env VALUES
+                # are left out of the name (see _alias_identity): a tool that
+                # rewrites a fresh per-write value into every agent file would
+                # otherwise mint a new alias on every spawn. The source spec's
+                # path is in the name instead, so two agent files that differ
+                # only in env values -- the same project agent copied into two
+                # workspaces with its own token each -- never share one alias.
                 ownership: dict[str, dict[str, Any]] = {}
                 for agent_name, view in list(specs.items()):
                     view.pop("name", None)
                     digest = hashlib.sha256(
                         json.dumps(
-                            {"agent": agent_name, "home": crew_home_id, "view": view},
+                            {
+                                "agent": agent_name,
+                                "home": crew_home_id,
+                                "source": sources[agent_name],
+                                "view": _alias_identity(view),
+                            },
                             ensure_ascii=False,
                             sort_keys=True,
                             separators=(",", ":"),
@@ -1729,7 +1973,9 @@ def prepare_native_skill_projection(
                     local[_INHERIT_SOURCE] = preference_source
                     local[_INHERIT_SETTING] = True
                     atomic_write(locked_settings, json.dumps(local, indent=2))
-                    prepared = NativeSkillProjection(aliases, specs, errors, search_agents)
+                    prepared = NativeSkillProjection(
+                        aliases, specs, errors, search_agents, authored=authored_ids
+                    )
                     prepared._lease_finalizer = weakref.finalize(prepared, lease_stack.close)
                 except BaseException:
                     lease_stack.close()

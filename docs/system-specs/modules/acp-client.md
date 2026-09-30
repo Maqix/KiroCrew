@@ -149,7 +149,18 @@ in this process holds them and no held lease in any process names them. An
 alias is named by a 24-hex digest of the agent name, the owning Crew data home
 and the view content, so every spawn from that home that derives the same view
 -- any run folder, any session -- publishes the same file, and publication skips
-an existing alias whose bytes already match. Views can still differ per
+an existing alias whose bytes already match. Each MCP server env value is in that
+digest as a digest of its own, except the values of `volatile_env_keys()`: keys a
+launcher re-stamps with a per-launch nonce (default `AIM_CREDS_AGENT_INJECTION`,
+extended by `KIROCREW_SKILL_VIEW_VOLATILE_ENV`). Leaving those in would name a new
+alias on every spawn, so a changed volatile value reuses the alias and publication
+rewrites it with the full view. Every other value counts: a rotated credential
+names a NEW alias, one kiro-cli has not loaded, so `set_mode` never activates a
+copy still carrying the old credential, and two launch contexts with different
+credentials never share an alias. The env keys and the source spec's path are in
+the digest too, so two agent files differing only in env values never share an
+alias.
+Views can still differ per
 workspace: a SCOPE_PROJECT agent's prompt path and workspace-local inheritance
 shape the view, so those agents get
 one alias per workspace. A run's work directory is reclaimed separately (`session_work_dir`),
@@ -303,6 +314,48 @@ it stands for; only `EACCES`, `EPERM` and `EROFS` are diagnosed as an unwritable
 directory, and any other errno (`ENOENT` from a concurrent prune elsewhere,
 `EMFILE`) is reported by name with no such diagnosis. Every other `False`
 from the unlink is a deliberate keep and stays at debug.
+
+`session/set_mode` never fails a turn over a projection miss, and never sends an
+alias older than the one just prepared. kiro-cli (2.25.0 and 2.26.0) does not
+reload its agents directory on the rename that publishes an alias, so a NEW alias
+published after the process started can answer `Mode '<alias>' not found` while
+the file is on disk. The bracket re-prepares before `set_mode` and always sends
+the FRESH alias: an alias the host loaded earlier, the spawn one included, may
+hold a generation of the spec an edit has since removed a server or an
+auto-approval from. A `Mode ... not found` naming that alias -- and nothing else
+-- is retried after `_PROJECTED_MODE_RETRY_DELAYS_SECS` (3 s in total), each retry
+preceded by `announce_alias`: a same-bytes in-place rewrite of that alias, a data
+write kiro-cli's watcher DOES reload on (a miss triggers no reload by itself).
+Then the session is switched to the AUTHORED agent, untranslated: the spec the rollback
+switch `KIROCREW_NATIVE_SKILL_PROJECTION=0` would run, inside the same
+derived-spec bracket. A re-preparation that could not run (lock unavailable)
+also runs the authored agent, since nothing proves the last alias still matches
+the spec. The authored fallback is itself refused when what the authored spec
+GRANTS changed since the process spawned (`authored_grant_identity`: the spec
+minus display text, with each MCP `env` value digested except the keys in
+`volatile_env_keys()`, recorded per agent on each projection as `authored`), read from disk immediately before the
+fallback and again after its `set_mode` returns. The
+volatile set holds keys a launcher re-stamps with a per-launch nonce (default
+`AIM_CREDS_AGENT_INJECTION`); `KIROCREW_SKILL_VIEW_VOLATILE_ENV` (comma-separated)
+adds to it and never removes from it. A rotated credential therefore counts as a
+change. kiro-cli does not reload a spec replaced
+by rename either, so its authored copy may still carry a server or an
+auto-approval the change removed. The session start then fails with an error
+that says to restart the gateway, counted as `refused_changed_spec`. An agent with
+no baseline (added after spawn) is refused the same way, since nothing proves the
+copy kiro-cli holds is current. A launcher
+re-stamping a volatile key does not count as a change. The adopted projection keeps translating, in inbound frames, every
+alias an earlier projection of the process published (`recognise`: alias-shaped
+names mapped to admissible agent names only, spawn aliases first, at most
+`_RECOGNISED_ALIASES_MAX`), and the
+projection the process spawned with is held for its life as
+`_spawn_skill_projection` so those aliases stay out of the prune. In
+`availableModes` a projected agent stays listed when the host advertises any of
+its aliases OR its authored id, once, so an agent never vanishes from later
+session starts because its alias changed or its session fell back. Every
+fallback outcome logs a warning and counts `kirocrew.acp.skill_view.fallback`
+once its `set_mode` succeeded; any other error, and a miss on the authored name
+itself, propagates as before.
 
 Projected agent JSON contains only fields accepted by Kiro's strict
 schema; lifecycle ownership lives in the non-spec

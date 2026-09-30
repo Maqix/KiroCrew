@@ -511,6 +511,62 @@ def _metadata_file(agents, prepared, name="custom"):
     return agents / projection._PROJECTION_METADATA_DIR_NAME / f"{prepared.agent(name)}.json"
 
 
+def _spec_with_injected_env(value, extra=None):
+    # The launcher's per-launch nonce key, which volatile_env_keys() names.
+    env = {"AIM_CREDS_AGENT_INJECTION": value, **(extra or {})}
+    return json.dumps(
+        {"name": "custom", "mcpServers": {"injected": {"command": "helper", "env": env}}}
+    )
+
+
+def test_a_rewritten_env_value_reuses_the_alias(native_tree):
+    home, agents, project = native_tree
+    source = agents / "custom.json"
+    source.write_text(_spec_with_injected_env("first-write"), encoding="utf-8")
+    first = projection.prepare_native_skill_projection(project).agent("custom")
+    source.write_text(_spec_with_injected_env("second-write"), encoding="utf-8")
+    prepared = projection.prepare_native_skill_projection(project)
+    assert prepared.agent("custom") == first
+    view = json.loads(_alias_file(agents, prepared).read_text(encoding="utf-8"))
+    assert view["mcpServers"]["injected"]["env"]["AIM_CREDS_AGENT_INJECTION"] == "second-write"
+    aliases = [
+        p for p in agents.iterdir() if p.name.startswith(projection.NATIVE_SKILL_ALIAS_PREFIX)
+    ]
+    assert aliases == [agents / f"{first}.json"]
+
+
+def test_an_added_env_key_names_a_new_alias(native_tree):
+    home, agents, project = native_tree
+    source = agents / "custom.json"
+    source.write_text(_spec_with_injected_env("same"), encoding="utf-8")
+    first = projection.prepare_native_skill_projection(project).agent("custom")
+    source.write_text(_spec_with_injected_env("same", {"NEW_VAR": "1"}), encoding="utf-8")
+    assert projection.prepare_native_skill_projection(project).agent("custom") != first
+
+
+def test_project_agents_differing_only_in_env_values_never_share_an_alias(
+    native_tree, tmp_path, monkeypatch
+):
+    home, agents, project = native_tree
+    monkeypatch.setattr(
+        projection,
+        "list_agents",
+        lambda **kw: [SimpleNamespace(name="custom", filename="custom.json", scope="project")],
+    )
+    views = {}
+    for name, token in (("one", "token-one"), ("two", "token-two")):
+        work = tmp_path / name
+        (work / ".kiro" / "agents").mkdir(parents=True)
+        (work / ".kiro" / "agents" / "custom.json").write_text(
+            _spec_with_injected_env(token), encoding="utf-8"
+        )
+        prepared = projection.prepare_native_skill_projection(work)
+        views[name] = (prepared.agent("custom"), _alias_file(agents, prepared))
+    assert views["one"][0] != views["two"][0]
+    first = json.loads(views["one"][1].read_text(encoding="utf-8"))
+    assert first["mcpServers"]["injected"]["env"]["AIM_CREDS_AGENT_INJECTION"] == "token-one"
+
+
 def test_generated_view_keeps_lifecycle_ownership_out_of_the_agent_spec(native_tree):
     home, agents, project = native_tree
     (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
@@ -3406,3 +3462,192 @@ def test_reader_follows_a_live_global_preference_under_the_overlay(native_tree):
     assert projection.inherits_default_resources(project) is False
     settings.write_text('{"chat.disableInheritingDefaultResources":false}', encoding="utf-8")
     assert projection.inherits_default_resources(project) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refreshed_alias", ["same", "changed", None])
+async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
+    monkeypatch, tmp_path, refreshed_alias
+):
+    """``set_mode`` names the alias just prepared, never an older one.
+
+    The alias kiro-cli loaded at spawn may hold a generation of the spec an edit
+    has since revoked grants from, so a changed view sends the FRESH alias (the
+    retry and authored fallback for a host that has not loaded it are pinned in
+    test_acp_set_mode_projection_fallback.py). A re-preparation that could not run
+    (``None``) sends the authored agent untranslated and keeps the current view.
+    Either way the adopted projection still recognises the spawn alias inbound.
+    """
+    import types
+
+    SPAWN_ALIAS = projection.NATIVE_SKILL_ALIAS_PREFIX + "1" * 24
+    CHANGED_ALIAS = projection.NATIVE_SKILL_ALIAS_PREFIX + "2" * 24
+    OTHER_ALIAS = projection.NATIVE_SKILL_ALIAS_PREFIX + "3" * 24
+
+    import kiro_crew.agent as agent_module
+    from kiro_crew.acp import runtime as runtime_module
+
+    spawn = projection.NativeSkillProjection({"crew": SPAWN_ALIAS}, authored={"crew": "grants"})
+    monkeypatch.setattr(projection, "authored_identity_now", lambda _wd, _agent: "grants")
+    if refreshed_alias == "same":
+        fresh = projection.NativeSkillProjection({"crew": SPAWN_ALIAS, "other": OTHER_ALIAS})
+    elif refreshed_alias == "changed":
+        fresh = projection.NativeSkillProjection({"crew": CHANGED_ALIAS})
+    else:
+        fresh = None
+    monkeypatch.setattr(projection, "prepare_native_skill_projection", lambda *a, **k: fresh)
+    monkeypatch.setattr(agent_module, "require_fresh_derived_spec", lambda *a, **k: None)
+    monkeypatch.setattr(agent_module, "require_unchanged_derived_spec", lambda *a, **k: None)
+
+    sent: list[dict] = []
+    terminated: list[str] = []
+
+    class Stub:
+        _native_skill_projection = spawn
+        _spawn_skill_projection = spawn
+        _work_dir = tmp_path
+        _refuse_a_changed_authored_spec = runtime_module.AcpRuntime._refuse_a_changed_authored_spec
+
+        async def terminate_session(self, sid):
+            terminated.append(sid)
+
+        async def _send_and_await(self, method, params, timeout=None, *, translate=True):
+            sent.append(
+                self._native_skill_projection.request(method, params) if translate else params
+            )
+            return {}
+
+    stub = Stub()
+    activate = types.MethodType(runtime_module.AcpRuntime._activate_mode_bracketed, stub)
+    await activate("sid", "crew", budget=5.0, payload_snapshot=None, wire_registered=False)
+
+    assert not terminated
+    if fresh is None:
+        assert sent[0]["modeId"] == "crew"
+        assert stub._native_skill_projection is spawn
+    else:
+        assert sent[0]["modeId"] == fresh.aliases["crew"]
+        assert stub._native_skill_projection is fresh
+        listed = fresh.frame({"availableModes": [{"id": SPAWN_ALIAS}]})
+        assert listed["availableModes"] == [{"id": "crew"}]
+
+
+def test_the_authored_grant_identity_ignores_relaunch_noise_but_not_a_revoked_grant():
+    base = {
+        "name": "ops",
+        "description": "d",
+        "tools": ["read", "@srv"],
+        "allowedTools": ["@srv/list"],
+        "mcpServers": {"srv": {"command": "srv", "env": {"NONCE": "1", "URL": "u"}}},
+    }
+    same = projection.authored_grant_identity(base)
+    relaunched = {**base, "description": "other", "welcomeMessage": "hi"}
+    relaunched["mcpServers"] = {"srv": {"command": "srv", "env": {"NONCE": "1", "URL": "u"}}}
+    assert projection.authored_grant_identity(relaunched) == same
+    assert projection.authored_grant_identity({**base, "allowedTools": []}) != same
+    assert projection.authored_grant_identity({**base, "mcpServers": {}}) != same
+    renamed_env = {**base, "mcpServers": {"srv": {"command": "srv", "env": {"TOKEN": "1"}}}}
+    assert projection.authored_grant_identity(renamed_env) != same
+
+
+def _broker_spec(**env):
+    return {"name": "ops", "mcpServers": {"b": {"command": "b", "env": env}}}
+
+
+def test_the_authored_identity_counts_credentials_but_not_the_launch_nonce(monkeypatch):
+    """A rotated credential is a different grant; a per-launch nonce in the
+    volatile set is not, and the set can be extended but not narrowed."""
+    monkeypatch.delenv("KIROCREW_SKILL_VIEW_VOLATILE_ENV", raising=False)
+    ident = projection.authored_grant_identity
+    one = ident(_broker_spec(AIM_CREDS_AGENT_INJECTION="n1", TOKEN="t1"))
+    assert ident(_broker_spec(AIM_CREDS_AGENT_INJECTION="n2", TOKEN="t1")) == one
+    assert ident(_broker_spec(AIM_CREDS_AGENT_INJECTION="n1", TOKEN="t2")) != one
+
+    monkeypatch.setenv("KIROCREW_SKILL_VIEW_VOLATILE_ENV", " LAUNCH_ID , ")
+    assert "AIM_CREDS_AGENT_INJECTION" in projection.volatile_env_keys()
+    assert ident(_broker_spec(LAUNCH_ID="a")) == ident(_broker_spec(LAUNCH_ID="b"))
+
+
+def test_announce_alias_rewrites_the_same_bytes_in_place(native_tree, monkeypatch):
+    """The rescan nudge is a data write to the published inode that leaves its
+    bytes unchanged, never a rename, and never touches a name this module does
+    not mint or bytes that moved under it."""
+    _home, agents, _project = native_tree
+    alias = projection.NATIVE_SKILL_ALIAS_PREFIX + "c" * 24
+    path = agents / f"{alias}.json"
+    path.write_bytes(b'{"name": "x"}')
+    inode = path.stat().st_ino
+    writes: list[int] = []
+    real_write = os.write
+    monkeypatch.setattr(
+        projection.os, "write", lambda fd, data: writes.append(len(data)) or real_write(fd, data)
+    )
+
+    projection.announce_alias(alias)
+    assert path.read_bytes() == b'{"name": "x"}' and path.stat().st_ino == inode
+    assert writes == [len(b'{"name": "x"}')]
+
+    writes.clear()
+    projection.announce_alias("not-an-alias")
+    projection.announce_alias(projection.NATIVE_SKILL_ALIAS_PREFIX + "d" * 24)  # absent
+    assert writes == []
+
+
+def test_announce_alias_never_raises_on_a_failing_close(native_tree, monkeypatch):
+    """A network filesystem can report a deferred write error at close; the
+    rescan nudge is best effort and must not fail the session start behind it."""
+    _home, agents, _project = native_tree
+    alias = projection.NATIVE_SKILL_ALIAS_PREFIX + "e" * 24
+    (agents / f"{alias}.json").write_bytes(b'{"name": "x"}')
+    real_close = os.close
+
+    def failing_close(fd):
+        real_close(fd)
+        raise OSError(5, "deferred write error")
+
+    monkeypatch.setattr(projection.os, "close", failing_close)
+    projection.announce_alias(alias)
+
+
+def _credential_spec(token, nonce):
+    return {
+        "name": "custom",
+        "tools": ["@broker"],
+        "mcpServers": {
+            "broker": {
+                "command": "broker",
+                "env": {"TOKEN": token, "AIM_CREDS_AGENT_INJECTION": nonce},
+            }
+        },
+    }
+
+
+def test_a_rotated_credential_names_a_new_alias_but_a_launch_nonce_does_not(
+    native_tree, monkeypatch
+):
+    """A rotated credential must name an alias kiro-cli has not loaded -- the old
+    name would activate its loaded copy, old credential and all -- and two launch
+    contexts never share one; only the volatile nonce changing reuses the alias."""
+    monkeypatch.delenv("KIROCREW_SKILL_VIEW_VOLATILE_ENV", raising=False)
+    _home, agents, project = native_tree
+    source = agents / "custom.json"
+    source.write_text(json.dumps(_credential_spec("t1", "n1")), encoding="utf-8")
+    first = projection.prepare_native_skill_projection(project).agent("custom")
+    source.write_text(json.dumps(_credential_spec("t1", "n2")), encoding="utf-8")
+    assert projection.prepare_native_skill_projection(project).agent("custom") == first
+    source.write_text(json.dumps(_credential_spec("t2", "n2")), encoding="utf-8")
+    assert projection.prepare_native_skill_projection(project).agent("custom") != first
+
+
+def test_recognise_admits_only_alias_names_and_registered_agent_names():
+    earlier = projection.NativeSkillProjection({})
+    earlier._recognised.update(
+        {
+            projection.NATIVE_SKILL_ALIAS_PREFIX + "a" * 24: "ops",
+            projection.NATIVE_SKILL_ALIAS_PREFIX + "b" * 24: "evil\x1b]0;x\x07" + "y" * 5000,
+            "not-an-alias": "ops",
+        }
+    )
+    current = projection.NativeSkillProjection({})
+    current.recognise(earlier)
+    assert current._recognised == {projection.NATIVE_SKILL_ALIAS_PREFIX + "a" * 24: "ops"}
