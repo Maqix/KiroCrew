@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import importlib.util
+import inspect
 import json
 import logging
 import math
@@ -119,6 +120,7 @@ from kiro_crew.subagent import (
     parent_spawn_allowlists,
     stage_boundary_owner_for_run,
 )
+from kiro_crew.subagent_manager.admission.types import QueuedRun
 from kiro_crew.subagent_persistence import (
     DISMISSAL_FAILED,
     DISMISSAL_NO_FOLDER,
@@ -435,6 +437,67 @@ def _run_belongs_to_caller(caller: str, run_id: str, parent: object) -> bool:
     return parent_key == caller
 
 
+async def _queued_run(state: DashboardState, run_id: str) -> QueuedRun | None:
+    """The accepted spawn *run_id* when it has no run yet, else None.
+
+    A spawn the gate deferred, or one waiting for a slot, exists only as a queue
+    entry or a task-store row, so the registry and the run folders cannot name
+    it. Without this read a caller that was just told "queued" is then told the
+    run does not exist.
+
+    Tolerant of a registry without the read (a pre-queue manager or a test
+    double), and of a read that fails: both answer None, which leaves the
+    caller where it was before this lookup existed.
+    """
+    entry = getattr(state.subagents, "queued_run_async", None)
+    if not inspect.iscoroutinefunction(entry):
+        return None
+    try:
+        found = await entry(run_id)
+    except Exception:
+        logger.debug("Queued-run lookup failed for %s", run_id, exc_info=True)
+        return None
+    return found if isinstance(found, QueuedRun) else None
+
+
+async def _queued_runs(state: DashboardState, parent: str | None) -> list[QueuedRun]:
+    """:func:`_queued_run` for a listing: every queued spawn of *parent* (None = all)."""
+    entry = getattr(state.subagents, "queued_runs_async", None)
+    if not inspect.iscoroutinefunction(entry):
+        return []
+    try:
+        found = await entry(parent)
+    except Exception:
+        logger.debug("Queued-run listing failed", exc_info=True)
+        return []
+    return [q for q in found if isinstance(q, QueuedRun)] if isinstance(found, list) else []
+
+
+def _queued_run_payload(queued: QueuedRun) -> dict[str, object]:
+    """The wire shape of a queued spawn, shared by the status and list routes.
+
+    ``done: false`` with ``queued: true`` and no transcript: the run has not
+    started, so there are no turns and no partial text. ``reason`` and
+    ``reason_detail`` are present only when known, the same fields the accept
+    answer (``POST /api/spawn``) carries for a deferred spawn.
+    """
+    data: dict[str, object] = {
+        "id": queued.id,
+        "task": _redact(queued.task),
+        "done": False,
+        "queued": True,
+        "agent": _redact(queued.agent),
+    }
+    if queued.accepted_at > 0:
+        data["started"] = queued.accepted_at
+        data["elapsed"] = max(0, round(time.time() - queued.accepted_at))
+    if queued.reason:
+        data["reason"] = queued.reason
+    if queued.reason_detail:
+        data["reason_detail"] = _redact(queued.reason_detail)
+    return data
+
+
 async def _spawn_scope_refusal(
     request: web.Request, *, claimed_session: str | None = None
 ) -> web.Response | None:
@@ -461,10 +524,20 @@ async def _spawn_scope_refusal(
     state = request.app["state"]
     run_id = request.match_info["agent_id"]
     info = state.subagents.get(run_id) if state.subagents else None
-    record = None if info is not None else await asyncio.to_thread(read_state, run_id)
+    queued = await _queued_run(state, run_id) if info is None and state.subagents else None
+    record = (
+        None
+        if info is not None or queued is not None
+        else await asyncio.to_thread(read_state, run_id)
+    )
     parent: object
     if info is not None:
         parent = info.parent_session_key
+    elif queued is not None:
+        # A spawn the gate is still holding has no run folder yet; its row's
+        # session key is the originating session, the field the live branch
+        # reads from ``info``.
+        parent = queued.parent_session_key
     elif record is not None:
         # The persisted record spells the field ``parent_session``
         # (``subagent_persistence.write_state``). A record that lacks it is an
@@ -1254,6 +1327,12 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     agent_id = request.match_info["agent_id"]
     info = state.subagents.get(agent_id)
     if not info:
+        # Accepted but not started: the gate deferred it, or it waits for a
+        # slot. It has no run folder, so the persistence fallback below would
+        # answer 404 for a spawn the caller was just told is queued.
+        queued = await _queued_run(state, agent_id)
+        if queued is not None:
+            return web.json_response(_queued_run_payload(queued))
         # Fall back to persistence layer (orphaned/recovered agents)
         try:
             disk_state = read_state(agent_id)
@@ -1582,6 +1661,24 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             }
         )
     payload: dict[str, object] = {"agents": agents}
+    # Accepted spawns with no run yet: deferred by the memory gate, or waiting
+    # for a slot. They have no registry entry and no run folder, so neither half
+    # above can name them. They go under their own key rather than into
+    # ``agents``, whose readers (the dashboard's reconcile and agent strip, the
+    # CLI list) take a not-done entry for a run in progress. Same bounds as the
+    # halves above: an internal caller sees only its own, and an app caller
+    # only its app's.
+    queued_entries: list[dict[str, object]] = []
+    for queued in await _queued_runs(state, caller if internal else None):
+        if caller_is_app and queued.app != caller_app:
+            continue
+        if internal and not _run_belongs_to_caller(caller, queued.id, queued.parent_session_key):
+            continue
+        queued_entry = _queued_run_payload(queued)
+        queued_entry["parent"] = queued.parent_session_key
+        queued_entries.append(queued_entry)
+    if queued_entries:
+        payload["queued"] = queued_entries
     if persisted.overflow or persisted.overflow_is_lower_bound:
         # Said out loud once per listing, to the operator rather than the client:
         # a listing of 50 of 51 eligible runs otherwise reads exactly like a

@@ -2625,9 +2625,12 @@ class TestSubagentFinalSummaryDirective:
                 orch._init_subagents()
                 return mock_sm.call_args.kwargs["on_done"]
 
-    async def _done_slot(self, running_agents_for_return):
+    async def _done_slot(self, running_agents_for_return, queued: int = 0):
         """Fire the on_done callback through a chat-mode dashboard slot and return
-        the slot so the caller can inspect _pending_synthesis."""
+        the slot so the caller can inspect _pending_synthesis.
+
+        *queued* is the parent's count of children the spawn gate still holds,
+        which ``running_agents_for`` does not include."""
         from kiro_crew.subagent import SubagentInfo
 
         orch = _make_orchestrator()
@@ -2646,6 +2649,7 @@ class TestSubagentFinalSummaryDirective:
         orch.dashboard_state = ds
         on_done = self._capture_on_done(orch)
         orch.subagent_mgr.running_agents_for = MagicMock(return_value=running_agents_for_return)
+        orch.subagent_mgr.queued_count_for_async = AsyncMock(return_value=queued)
 
         info = SubagentInfo(id="a1", task="do X", parent_session_key="dashboard:s1")
         with patch("kiro_crew.slack.gateway._run_chat", new=AsyncMock()):
@@ -2665,6 +2669,27 @@ class TestSubagentFinalSummaryDirective:
     async def test_pending_completion_does_not_arm(self):
         """Another sub-agent still running → synthesis is not armed yet."""
         slot = await self._done_slot([{"id": "a2"}])
+        assert slot._pending_synthesis is False
+
+    @pytest.mark.asyncio
+    async def test_a_sibling_the_gate_still_holds_keeps_synthesis_disarmed(self):
+        """Nothing running, but a sibling the spawn gate deferred is still queued:
+        it is absent from the running set yet will start and report later, so
+        "all sub-agents completed" would be premature. Its own completion arms."""
+        slot = await self._done_slot([], queued=1)
+        assert slot._pending_synthesis is False
+        assert slot._subagent_deliveries_inflight == 0
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_queued_count_keeps_synthesis_disarmed(self):
+        """A queued-count probe that raises is unknown children, not none."""
+        slot = await self._done_slot([], queued=0)
+        assert slot._pending_synthesis is True  # control: the same slot arms at 0
+        with patch(
+            "kiro_crew.slack.gateway._subagent_queued_count",
+            AsyncMock(side_effect=RuntimeError("store gone")),
+        ):
+            slot = await self._done_slot([])
         assert slot._pending_synthesis is False
 
 

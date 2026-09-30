@@ -2759,6 +2759,19 @@ class TestStartNextQueuedTurn:
         assert slot2._deferred_notes == [], "control: the note should flush off-plan"
 
 
+def _no_children() -> MagicMock:
+    """A registry with no child attached: none running and none queued.
+
+    The synthesis checks ask the teardown guards' predicate, which also counts
+    children the spawn gate still holds; a bare MagicMock would answer that
+    count with a truthy mock and read as a queued child.
+    """
+    return MagicMock(
+        running_agents_for=MagicMock(return_value=[]),
+        queued_count_for_async=AsyncMock(return_value=0),
+    )
+
+
 class TestRunPendingSynthesis:
     @pytest.mark.asyncio
     async def test_unarmed_synthesis_just_finishes_the_cycle(self, tmp_path):
@@ -2799,11 +2812,34 @@ class TestRunPendingSynthesis:
         assert slot._pending_synthesis is True
 
     @pytest.mark.asyncio
+    async def test_a_child_the_gate_still_holds_defers_synthesis(self, tmp_path):
+        """Nothing running, but a deferred sibling is still queued: it is absent
+        from the running set and WILL start, so "all sub-agents completed" now
+        would be false. The arm stays set for the cycle after it settles."""
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_synthesis = True
+        state.subagents = MagicMock(
+            running_agents_for=MagicMock(return_value=[]),
+            queued_count_for_async=AsyncMock(return_value=1),
+        )
+
+        with (
+            patch.object(chat_runner, "_finish_queue_cycle") as finish,
+            patch.object(chat_runner, "spawn_guarded_turn") as spawn,
+        ):
+            await chat_runner._run_pending_synthesis(state, slot)
+
+        finish.assert_called_once()
+        spawn.assert_not_called()
+        assert slot._pending_synthesis is True
+        state.subagents.queued_count_for_async.assert_awaited_once_with(f"dashboard:{slot.key}")
+
+    @pytest.mark.asyncio
     async def test_synthesis_timeout_is_swallowed(self, tmp_path):
         """The ceiling already rendered a card; re-raising would go unretrieved."""
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state.subagents = _no_children()
 
         async def _boom():
             raise asyncio.TimeoutError
@@ -2831,7 +2867,7 @@ class TestRunPendingSynthesis:
         """
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state.subagents = _no_children()
 
         async def _ok():
             return None
@@ -2911,7 +2947,7 @@ class TestFinishQueueCycle:
         state, slot = _state(tmp_path), _slot()
         state._slots[slot.key] = slot  # a live slot is registered
         slot._pending_synthesis = True
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state.subagents = _no_children()
 
         with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
             await chat_runner._finish_queue_cycle(state, slot)
@@ -2921,6 +2957,26 @@ class TestFinishQueueCycle:
         assert not any(m.get("role") == "done" for m in slot.messages)
         if slot.task is not None:
             slot.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_child_the_gate_still_holds_keeps_the_cycle_idle(self, tmp_path):
+        """The eligibility check behind the arm counts a queued child too: the
+        cycle goes idle with the arm kept, and no synthesis task starts."""
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot  # a live slot is registered
+        slot._pending_synthesis = True
+        state.subagents = MagicMock(
+            running_agents_for=MagicMock(return_value=[]),
+            queued_count_for_async=AsyncMock(return_value=1),
+        )
+
+        with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()) as synth:
+            await chat_runner._finish_queue_cycle(state, slot)
+            await asyncio.sleep(0)
+
+        synth.assert_not_called()
+        assert slot._synthesis_inflight is False
+        assert slot._pending_synthesis is True
 
     @pytest.mark.asyncio
     async def test_a_held_note_is_withheld_from_an_automatic_synthesis_turn(self, tmp_path):
@@ -2933,7 +2989,7 @@ class TestFinishQueueCycle:
         state, slot = _state(tmp_path), _slot()
         state._slots[slot.key] = slot  # a live slot is registered
         slot._pending_synthesis = True
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state.subagents = _no_children()
 
         with (
             patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush,
@@ -2960,7 +3016,7 @@ class TestFinishQueueCycle:
         state, slot = _state(tmp_path), _slot()
         state._slots[slot.key] = slot
         slot._in_stage_execution = True
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state.subagents = _no_children()
 
         with patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush:
             await chat_runner._finish_queue_cycle(state, slot)
@@ -2973,7 +3029,7 @@ class TestFinishQueueCycle:
         # assertion above cannot pass for some reason unrelated to the stage.
         state2, slot2 = _state(tmp_path), _slot()
         state2._slots[slot2.key] = slot2
-        state2.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state2.subagents = _no_children()
 
         with patch.object(type(slot2), "flush_deferred_notes", return_value=0) as flush2:
             await chat_runner._finish_queue_cycle(state2, slot2)
@@ -2991,7 +3047,7 @@ class TestFinishQueueCycle:
         torn down, so withholding there discards the note the POST acknowledged.
         """
         state, slot = _state(tmp_path), _slot()
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state.subagents = _no_children()
         slot._pending_synthesis = True
         slot._deferred_notes.append({"content": "held across the close", "cls": "reconcile-note"})
         # The teardown already dropped it from the registry.

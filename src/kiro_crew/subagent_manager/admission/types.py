@@ -133,6 +133,33 @@ class DeferPoint:
 
 
 @dataclass(frozen=True)
+class QueuedRun:
+    """An accepted spawn that has no run yet.
+
+    It waits in the dispatch window or only as a task-store row: deferred by the
+    memory gate, queued behind capacity, or claimed and not yet registered. The
+    registry (``SubagentManager.get`` / ``all_agents``) cannot name it, so this is
+    what ``GET /api/spawn/{id}`` and ``GET /api/spawn`` report for it instead of
+    "not found".
+
+    ``reason`` is the parent's current wait label (a ``QUEUED_REASON_*`` kind).
+    It is per parent, last writer wins, like the ``subagent_queued`` event it
+    comes from (``_emit_queue_depth``). ``reason_detail`` is the gate's own
+    sentence from the row's latest ``deferred`` event, and is present only
+    while that deferral is still in force.
+    """
+
+    id: str
+    task: str
+    parent_session_key: str
+    agent: str = ""
+    app: str = ""
+    accepted_at: float = 0.0
+    reason: str = ""
+    reason_detail: str = ""
+
+
+@dataclass(frozen=True)
 class CapacityView:
     """One reading of the execution cap as the dispatcher sees it.
 

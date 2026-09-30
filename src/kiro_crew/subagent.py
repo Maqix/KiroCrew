@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from kiro_crew.execution_context import ExecutionContext
     from kiro_crew.acp.runtime import AcpRuntime
     from kiro_crew.providers.base import LLMProvider
+    from kiro_crew.subagent_manager.admission.types import QueuedRun
 
 from kiro_crew import name_grant, platform_compat
 from kiro_crew.agent_discovery import (
@@ -5431,6 +5432,24 @@ class SubagentManager:
 
     async def queued_count_for_async(self, parent_session_key: str) -> int:
         return await self._run_events.queued_count_for_async_impl(parent_session_key)
+
+    async def queued_run_async(self, agent_id: str) -> "QueuedRun | None":
+        """The accepted, not yet registered spawn *agent_id*, or None.
+
+        For a reader that must not answer "not found" for a spawn the gate is
+        holding (``GET /api/spawn/{id}`` and its ownership check). None also
+        for a registered id: :meth:`get` answers that one.
+        """
+        found = await self._admission.taskq_queued_runs_async(agent_id=agent_id)
+        return found[0] if found else None
+
+    async def queued_runs_async(self, parent_session_key: str | None = None) -> "list[QueuedRun]":
+        """Every accepted spawn with no registered run, for one parent or all.
+
+        The rows :attr:`all_agents` cannot list: gate-deferred rows, rows
+        waiting for a slot, and window entries (``GET /api/spawn``).
+        """
+        return await self._admission.taskq_queued_runs_async(parent_session_key)
 
     def has_pending_work_for(self, parent_session_key: str) -> bool:
         return self._run_events.has_pending_work_for_impl(parent_session_key)
