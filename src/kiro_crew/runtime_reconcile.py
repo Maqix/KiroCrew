@@ -83,10 +83,16 @@ row is the one thing bridging the two, and a row that was never written reads he
 as an abandoned process carrying our marker. On such a host the unowned population
 ran 250-504 per pass against 4 genuine strays in 6.5 hours.
 
-Membership is narrower than the slice even for this install's own spawns: a
-long-lived sandboxed subprocess is in no record, so it reads as unowned on every
-pass once it outlives the age floor. Turning the budget to 0 is how an operator on
-such a host takes the reading without the signal until that is fixed.
+Membership is narrower than the slice even for this install's own spawns, and one
+such spawn is handled by identity rather than by a record: a long-lived sandboxed
+tool subprocess (a build, an npx install, a provisioning run routed through the
+sandbox chokepoint) is in no membership source, so it would read as unowned on
+every pass once it outlives the age floor. It is EXCLUDED from the candidate
+population by the distinct ``KIROCREW_SANDBOX_TOOL`` marker the chokepoint stamps
+on its whole tree, read back from the exec-time environment -- evidence stronger
+than the argv0 basename that used to be the only thing sparing it. Turning the
+budget to 0 remains how an operator on a shared-data-home host takes the reading
+without the signal.
 
 Why the dead direction acts immediately
 ---------------------------------------
@@ -464,6 +470,30 @@ def process_is_ours(pid: int, *, proc_root: Path | None = None) -> bool:
     return _read_env_has_kirocrew_marker(pid, proc_root) is True
 
 
+def process_is_sandbox_tool_subprocess(pid: int, *, proc_root: Path | None = None) -> bool:
+    """Whether *pid* is a sandboxed TOOL subprocess this install spawned.
+
+    The "something stronger than argv0" the sandbox chokepoint half of the leak
+    needs. A tree spawned through :func:`sandbox.sandboxed_spawn_argv` -- a build,
+    an npx install, a provisioning run -- lands in this install's agent slice
+    carrying our inherited spawn marker but with no membership record, so once it
+    outlives the age floor it reads as unowned on every pass and was previously
+    spared ONLY by its argv0 basename. This reads the distinct
+    ``KIROCREW_SANDBOX_TOOL`` marker the chokepoint stamps back out of the
+    kernel's exec-time environment, which a same-uid process cannot forge on
+    another process's tree, so the reconciler can exclude such a tree from its
+    candidate population by identity rather than by name.
+
+    Fail-closed through :func:`session_pid._env_is_sandbox_tool_subprocess`'s
+    tri-state answer: only a POSITIVE read excludes. ``None`` (unreadable environ,
+    or a platform with no environ oracle) and ``False`` do NOT exclude, so a pid
+    whose marker cannot be established stays in the candidate population and the
+    existing argv/marker/age conditions still govern it. The exclusion is never
+    widened on doubt.
+    """
+    return session_pid._env_is_sandbox_tool_subprocess(pid, proc_root) is True
+
+
 def process_age_secs(pid: int, *, proc_root: Path = Path("/proc")) -> float:
     """Seconds since *pid*'s process started, or ``0.0`` when unreadable.
 
@@ -503,6 +533,7 @@ class RuntimeReconciler:
         was_recycled: Callable[[int], bool] = lambda _pid: False,
         is_ours: Callable[[int], bool] = process_is_ours,
         is_managed: Callable[[int], bool] = process_is_a_managed_agent,
+        is_sandbox_tool: Callable[[int], bool] = process_is_sandbox_tool_subprocess,
         leases_on: Callable[[int], int] = _leases_on_pid,
         claims_on: Callable[[int], int] = _claims_on_pid,
         authorize: Callable[[int, str], bool] | None = None,
@@ -524,6 +555,7 @@ class RuntimeReconciler:
         self._was_recycled = was_recycled
         self._is_ours = is_ours
         self._is_managed = is_managed
+        self._is_sandbox_tool = is_sandbox_tool
         self._leases_on = leases_on
         self._claims_on = claims_on
         self._authorize = authorize or _default_authorize
@@ -781,6 +813,24 @@ class RuntimeReconciler:
                 # unreadable one means claimed: this list decides a kill, so the
                 # fail-closed answer is the only safe one.
                 continue
+            try:
+                if self._is_sandbox_tool(pid):
+                    # A sandboxed tool subprocess this install spawned through the
+                    # sandbox chokepoint (a build, an npx install, a provisioning
+                    # run). It carries no membership record and reads as unowned on
+                    # every pass once it outlives the age floor, but it is not an
+                    # agent runtime and was previously spared only by its argv0.
+                    # Its chokepoint marker is exec-time evidence stronger than a
+                    # name, so it is excluded from the candidate population here:
+                    # excluded in _unowned it is never counted in unowned_alive and
+                    # never reaches _why_not_yet or the gate.
+                    continue
+            except Exception:
+                # Unlike the claimed check, an unreadable answer here does NOT
+                # exclude: the exclusion is an extra sparing, so failing toward
+                # NOT-excluded leaves the pid to the existing argv/marker/age
+                # conditions rather than widening what escapes them on doubt.
+                pass
             out.append(pid)
         return out
 

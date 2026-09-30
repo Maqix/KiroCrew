@@ -26,6 +26,8 @@ from kiro_crew.agent_sdk.backends import agent_process_markers, node_adapter_ent
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import (
+    KIROCREW_SANDBOX_TOOL_ENV,
+    KIROCREW_SANDBOX_TOOL_VALUE,
     KIROCREW_SPAWN_INSTANCE_ENV,
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
@@ -3940,6 +3942,44 @@ def _env_spawn_instance(pid: int, proc_root: Path | None = None) -> str | None:
             value = entry[len(prefix) :]
             return value.decode("ascii", "replace") if value else None
     return None
+
+
+def _env_is_sandbox_tool_subprocess(pid: int, proc_root: Path | None = None) -> bool | None:
+    """Tri-state read of *pid*'s ``KIROCREW_SANDBOX_TOOL`` environment marker.
+
+    The marker ``sandbox.sandboxed_spawn_argv`` stamps on every tree it spawns --
+    a build, an npx install, a provisioning run -- and inherited by that tree, so
+    it answers ``True`` for a descendant the spawn never recorded. Structured
+    identically to :func:`_read_env_has_kirocrew_marker`, with the same platform
+    arms and the same fail-closed posture:
+
+    * Linux reads ``/proc/<pid>/environ``.
+    * macOS reads the exec-time environment out of ``sysctl KERN_PROCARGS2``
+      (:func:`platform_compat.darwin_process_environ`).
+    * every other platform has no same-uid environ oracle and returns ``None``.
+
+    ``None`` distinguishes an unreadable environment from a readable one lacking
+    the marker, so a caller can refuse to act on doubt rather than guess. This is
+    the exec-time evidence a same-uid process cannot forge on ANOTHER process's
+    tree -- it can set its own argv or write any file, but not alter a running
+    process's environment -- which is what makes it stronger than the argv0 check
+    the runtime reconciler previously leaned on to spare a sandboxed tool
+    subprocess. *proc_root* is the fixture seam that always takes the ``/proc``
+    path so a test's verdict never depends on the host it runs on.
+    """
+    needle = f"{KIROCREW_SANDBOX_TOOL_ENV}={KIROCREW_SANDBOX_TOOL_VALUE}".encode()
+    if proc_root is None:
+        if sys.platform == "darwin":
+            entries = platform_compat.darwin_process_environ(pid)
+            return None if entries is None else needle in entries
+        if sys.platform != "linux":
+            return None
+    root = proc_root if proc_root is not None else Path("/proc")
+    try:
+        environ = (root / str(pid) / "environ").read_bytes()
+    except OSError:
+        return None
+    return needle in environ.split(b"\x00")
 
 
 def _env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool:

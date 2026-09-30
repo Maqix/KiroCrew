@@ -27,6 +27,22 @@ KIROCREW_SPAWNED_VALUE = "1"
 # the root's own tree from a fresh spawn that took the root's recycled pid.
 KIROCREW_SPAWN_INSTANCE_ENV = "KIROCREW_SPAWN_INSTANCE"
 
+# Set on every tree spawned through ``sandbox.sandboxed_spawn_argv`` -- a build,
+# an npx install, a provisioning run -- and inherited by its whole tree, exactly
+# like KIROCREW_SPAWNED. It says something KIROCREW_SPAWNED does not: this is a
+# sandboxed TOOL subprocess, not an agent-runtime session leader. The runtime
+# reconciler reads it back from ``/proc/<pid>/environ`` to EXCLUDE such a tree
+# from its kill-candidate population, because a long-lived tool subprocess (a
+# LaTeX build outliving the age floor) lands in the agent slice with no
+# membership record and was previously spared only by its argv0 basename. An
+# exec-time marker a same-uid process cannot forge on another process is the
+# "something stronger than argv0" the exclusion needs. Kept DISTINCT from
+# KIROCREW_SPAWNED on purpose: that marker is the reconciler's kill-ENABLING
+# ``_is_ours`` condition, so the exclusion must be orthogonal to ownership rather
+# than overloaded onto the same flag.
+KIROCREW_SANDBOX_TOOL_ENV = "KIROCREW_SANDBOX_TOOL"
+KIROCREW_SANDBOX_TOOL_VALUE = "1"
+
 # Canonical truthy set for boolean environment variables (KIROCREW_NO_JAIL,
 # KIROCREW_DEV_MODE, …).  Use ``env_flag_enabled`` rather than ``bool(os.environ
 # .get(...))`` — a bare bool() treats ``"0"``/``"false"`` as truthy, which for a

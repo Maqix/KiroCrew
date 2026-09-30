@@ -312,6 +312,16 @@ whose process is proven gone (the pid is DEAD, or both start identities are read
 and differ), and raises on a file it cannot read, so a damaged record refuses the
 pass instead of presenting every backend as unowned.
 
+One membership shape is not a record at all but an identity. A long-lived
+subprocess from the sandbox spawn chokepoint (`sandbox.sandboxed_spawn_argv`) is a
+tool subprocess, not an agent runtime, and appears in none of the sources above, so
+it would read as unowned once it outlives the age floor. The chokepoint stamps a
+distinct `KIROCREW_SANDBOX_TOOL` marker on its whole tree, and `_unowned` excludes
+any slice pid that positively carries it (`process_is_sandbox_tool_subprocess`, read
+from the exec-time environment). It is a positive exclusion by identity rather than
+an ownership record, and separate from the spawn marker so it stays orthogonal to
+the kill-enabling `_is_ours` condition.
+
 ### Why an unowned process is counted before it is killed
 
 Absence from the record is evidence that something is unclaimed, not evidence that
@@ -545,12 +555,6 @@ recover.
 - **`cap` is not open.** Raising `CHAT_RUNTIME_CAP` needs eligibility rules that
   decide which sessions may share a process, and a flag to stage it. Neither
   exists, so every runtime serves one session.
-- **Membership is narrower than the slice it is compared against.** A long-lived
-  subprocess from the sandbox spawn chokepoint (`sandbox.sandboxed_spawn_argv`)
-  carries the spawn marker and lands in the slice, but is in none of the sources
-  `recorded()` reads, so once it outlives the age floor it is unowned on every pass,
-  and what keeps it unsignalled is the argv condition rather than an ownership
-  record. Tracked in issue #15371.
 - **[session.md](session.md)'s sweep contract does not describe the gate**
   (issue #14726). The reconciler is specified here; the sentences in that spec that
   still describe an ungated sweep are corrected by the change that owns it.

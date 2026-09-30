@@ -58,7 +58,12 @@ from typing import TYPE_CHECKING, Literal, NamedTuple
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import fsync_dir, refuse_linked_parent
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
-from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
+from kiro_crew.constants import (
+    KIROCREW_SANDBOX_TOOL_ENV,
+    KIROCREW_SANDBOX_TOOL_VALUE,
+    KIROCREW_SPAWNED_ENV,
+    KIROCREW_SPAWNED_VALUE,
+)
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform import current_context
@@ -14877,6 +14882,20 @@ def sandboxed_spawn_argv(
     # as KiroCrew-spawned even when its cmdline carries no KiroCrew fingerprint
     # (e.g. ``npx @playwright/mcp``).
     scrubbed[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+    # Every tree spawned through this chokepoint is a tool subprocess (a build,
+    # an npx install, a git/gh read, a provisioning run), not an agent-runtime
+    # session leader: those set KIROCREW_SPAWN_INSTANCE on their own root and do
+    # not route their leader env through here. This distinct marker is what lets
+    # the runtime reconciler EXCLUDE such a tree from its kill-candidate
+    # population by exec-time identity rather than by its argv0 basename, so a
+    # long-lived tool subprocess that outlives the age floor is no longer spared
+    # only by the name check. It is kept separate from KIROCREW_SPAWNED because
+    # that marker is the reconciler's kill-ENABLING ``_is_ours`` condition; the
+    # exclusion must be orthogonal to ownership. Were an agent runtime's argv ever
+    # wrapped through here too, the exclusion would still be correct: a genuine
+    # runtime is normally in a membership record, so excluding it would only ever
+    # spare one already spared.
+    scrubbed[KIROCREW_SANDBOX_TOOL_ENV] = KIROCREW_SANDBOX_TOOL_VALUE
     return wrapped, scrubbed, cleanup
 
 
