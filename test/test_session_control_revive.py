@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -52,6 +53,15 @@ def _archive(state, caller, peer, *, messages=2, title="") -> str:
     The transcript is written first so the revive has something to bring back;
     the close is the production one, so the metadata line carries exactly what a
     ✕ leaves behind (``closed``, ``closed_at``, title, workspace, creator).
+
+    Returns only once the wall clock has moved past the close's ``closed_at``,
+    so a revive the test issues next starts in a LATER clock reading. Without
+    that, a revive in the same reading ties with the close, and the resume's
+    compare-and-clear keeps a tied marker on purpose
+    (``test_a_revive_in_the_close_clock_reading_keeps_the_marker``). On Linux the
+    clock moves every microsecond, so this returns at once; on Windows CPython
+    3.12 ``time.time()`` moves every ~15.6 ms, so a close-then-revive often
+    lands in one reading and the revive is refused.
     """
     for i in range(messages):
         peer.messages.append({"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"})
@@ -62,8 +72,25 @@ def _archive(state, caller, peer, *, messages=2, title="") -> str:
     key = peer.key
     asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=key))
     assert key not in state._slots
-    assert state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
+    meta = state.conversation_log.get_metadata(f"dashboard:{key}")
+    assert meta.get("closed")
+    _wait_for_the_clock_to_pass(float(meta["closed_at"]))
     return key
+
+
+def _wait_for_the_clock_to_pass(stamp: float) -> None:
+    """Return once ``time.time()`` reads later than *stamp*.
+
+    It checks the clock itself, not a guessed delay, so it waits about one clock
+    step at most and never waits on a fine-grained clock. Each check that finds
+    the clock unmoved yields the CPU for a millisecond instead of spinning. The
+    deadline turns a clock that never moves into a failure that names it, not a
+    hung worker.
+    """
+    deadline = time.monotonic() + 5.0
+    while time.time() <= stamp:
+        assert time.monotonic() < deadline, f"the wall clock did not pass {stamp!r} within 5 s"
+        time.sleep(0.001)
 
 
 def _revive(state, caller, target: str, **kwargs):
@@ -93,6 +120,42 @@ def test_revive_brings_a_closed_peer_back_with_its_transcript(tmp_path):
     assert live.running is False
     # The reopen is durable: the closed flag is cleared so a restart restores it.
     assert not state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
+
+
+def test_a_revive_in_the_close_clock_reading_keeps_the_marker(tmp_path, monkeypatch):
+    """A revive that starts in the same clock reading as the close is refused,
+    and the session stays archived.
+
+    The resume's compare-and-clear keeps any ``closed`` stamped at or after the
+    moment the resume started. Inside one clock reading it cannot tell the close
+    it read from a new close that landed just after, so keeping the marker is
+    the safe answer. The clock is frozen here so the tie happens on every OS. On
+    Windows CPython 3.12 it happens by itself whenever close and revive fall in
+    one ~15.6 ms clock step, which is why ``_archive`` waits for the clock to
+    pass the close before it returns."""
+    frozen = [time.time()]
+    monkeypatch.setattr(time, "time", lambda: frozen[0])
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    peer.messages.append({"role": "user", "content": "m0"})
+    peer._dirty = True
+    key = peer.key
+    hk = f"dashboard:{key}"
+    asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=key))
+    assert state.conversation_log.get_metadata(hk).get("closed_at") == frozen[0]
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, key)
+
+    assert exc.value.code == "resume_conflict"
+    assert key not in state._slots and key not in state._slots_under_construction
+    assert state.conversation_log.get_metadata(hk).get("closed") is True
+
+    # One clock step later the same revive lands and clears the marker.
+    frozen[0] += 1.0
+    assert _revive(state, caller, key)["target"] == key
+    assert "closed" not in state.conversation_log.get_metadata(hk)
 
 
 @pytest.mark.parametrize(
@@ -1923,8 +1986,6 @@ def test_a_session_recreated_during_the_hook_is_refused_not_published(tmp_path):
     the old transcript under the new file's identity, and every later save would
     take the delete-won arm and drop its rows. The barrier is re-run after the
     hook's last await with the same ``resume_session_deleted`` answer."""
-    import time
-
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
@@ -2010,8 +2071,6 @@ def test_the_rollback_never_archives_a_replacement_transcript(tmp_path, monkeypa
     refuses, and the rollback must NOT put the old ``closed`` marker onto the
     replacement: both its write guard and its confirmation read compare the
     stamp against the one this resume read."""
-    import time
-
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
