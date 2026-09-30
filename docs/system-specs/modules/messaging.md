@@ -101,8 +101,9 @@ Channel-neutral inbound/outbound contract. A new channel = implement this interf
 - **Tier-1 core (abstract)**: `send_message(conversation_id, content, thread_id=None) -> str` (returns a platform message id), `resolve_conversation(user_id) -> str` (the `open_dm` equivalent), `fetch_history(conversation_id, thread_id=None) -> list[InboundMessage]`.
 - **Lifecycle (default no-op, override as needed)**: `connect()` (lazy-import client libs HERE), `maintain()` (poll/heartbeat), `disconnect()`.
 - **Inbound adapter (abstract)**: `receive(raw_envelope)` (ack → filter → authorize → normalize → dispatch) and `authorize(msg) -> bool`. `authorize` MUST be **deny-by-default** — an unconfigured transport authorizes nobody.
-- **Outbound authorization**: `may_send_to(conversation_id, thread_id=None, *, principal="") -> bool` re-decides recipient authorization for a **proactive** send. `authorize` gates a turn the user drove; this gates the messages nobody asked for (a cron result, a compaction notice, a subagent completion), which resolve their destination from a *persisted* `ChannelLink`. A link records a conversation but **not the principal that authorized it**, so without this a recipient removed from a channel's allow-list kept receiving proactive traffic after a restart: the roster changed and nothing re-read it. Only the transport can answer, because the roster holds principals while the link holds a conversation id and whether those are the same string is a per-platform fact. `principal` carries the peer's platform id when the session key names one, which is what lets a transport with an opaque conversation id (Discord, Webex) reach its roster at all; empty means the key names no single person (a room route, a unified bucket), NOT that nobody is authorized. MUST stay **synchronous and in-memory**, because it runs on every proactive send: a network round trip there is unbounded work on the send path, and a check that can time out is a check that fails open under load. See § Proactive sends for where it is enforced and which channels answer how.
+- **Outbound authorization**: `may_send_to(conversation_id, thread_id=None, *, principal="") -> bool` re-decides recipient authorization for a **proactive** send. `authorize` gates a turn the user drove; this gates the messages nobody asked for (a cron result, a compaction notice, a subagent completion), which resolve their destination from a *persisted* `ChannelLink`. A link records a conversation but **does not re-check the roster that admitted it**, so without this a recipient removed from a channel's allow-list kept receiving proactive traffic after a restart: the roster changed and nothing re-read it. Only the transport can answer, because the roster holds principals while the link holds a conversation id and whether those are the same string is a per-platform fact. `principal` carries the peer's platform id when the session key names one, or — when the key names nobody — the peer the gateway admitted on the link (`ChannelLink.principal`), handed in only when the row's gateway-minted admission verifies (`ChannelLink.admission`, § Proactive sends) and the transport's own record of the conversation (`direct_peer_of`, below), if it has one, agrees; that is what lets a transport with an opaque conversation id (Discord, Webex) reach its roster at all. Empty means nothing names a single person the gateway or the transport can vouch for (a room route, a unified bucket bound in-channel, an unsigned or rewritten row), NOT that nobody is authorized. MUST stay **synchronous and in-memory**, because it runs on every proactive send: a network round trip there is unbounded work on the send path, and a check that can time out is a check that fails open under load. See § Proactive sends for where it is enforced and which channels answer how.
 - **Resume-target authorization**: `may_resume_from(conversation_id, thread_id=None) -> bool` applies target- and roster-specific ownership after `supports_session_resume` proves the transport has a correct inbound resolver. The default follows the capability. Telegram narrows it to exactly one configured operator's private DM, so a multi-user allow-list can still receive an outbound dashboard mirror without granting either user inbound control of that dashboard session. The dashboard asks this once after resolving the configured target and threads the answer unchanged through both its occupancy precheck and binding write. It is synchronous and in-memory for the same reason as `may_send_to`.
+- **DM peer attestation**: `direct_peer_of(conversation_id) -> str` names the ONE human in a conversation when the transport can attest **from its own state** that it is a 1:1 direct conversation and whose — the DM it opened for that person (`resolve_conversation`) or one an authorized message arrived from — and answers `""` for a room, a thread, a group, an id this process never placed, or a transport that keeps no such record. Default `""`, which is the fail-closed answer: a transport that does not override it confirms nothing. Its reader is the per-send recipient leg of the cross-surface send ladder (`chat_runner._recipient_principal`, § Proactive sends), as defense in depth over the gateway-admitted record: a persisted mirror `ChannelLink` records a conversation id and, when its writer could name one, the peer it was admitted for (`ChannelLink.principal`) under a MAC only the gateway can mint (`ChannelLink.admission`), and the ladder hands `may_send_to` that peer only when the MAC verifies AND this hook, if it names anyone for the conversation, names the same person. The hook names the peer and decides nothing about authorization; the roster does. Discord answers from the `create_dm_channel` / inbound-DM / button-press pairing its client records (`cached_dm_recipient`, the same record the mid-send re-check decides on, so a DM opened before a restart reads `""` until re-opened or written into — which the ladder treats as no contradiction of the admitted record, so the recipient leg admits the mirror across a restart; only the REST ladder's own mid-send re-check, which reads the pairing alone, can still refuse a send that WAITS before the pairing is re-learned). Telegram inherits the default: its `may_send_to` decides a DM from the conversation id, which IS the user id, so no attestation changes its answer. Synchronous and in-memory like the two hooks above, because it runs inside gates that must not suspend.
 
 #### Authorization across a send's own waits
 
@@ -115,7 +116,7 @@ Channel-neutral inbound/outbound contract. A new channel = implement this interf
 
 Every outcome is audited, allow as well as refusal. The decision is taken on an already-composed, user-visible message and the ladder's result carries it no further than its caller, so the SEL row naming the deciding authority is the record it leaves. Only a route that actually waited reaches the check, so the rows are paced by rate limits rather than by traffic.
 
-The predicate retains exactly one thing, the DM pairing, and it is bounded: both ids must fit a snowflake's length and the store carries a named cap and evicts least-recently-used, with a read refreshing recency so a pairing in active use does not age out and then be refused. Reaching that cap is counted and audited with the id it forgot, and a later refusal of that id says it was the cap rather than a roster edit, because the two are indistinguishable to whoever is reading the log and only one of them is a policy change. That accounting record is itself capped, far below the pairing store, and decides no send - it selects an audit reason. Nothing else is retained, because a refusing final arm answers every id a roster and a pairing cannot place, and a record of what was once admitted would reach that same refusal by a longer route.
+The predicate retains exactly one thing, the DM pairing, and it is bounded: both ids must fit a snowflake's length and the store carries a named cap and evicts least-recently-used, with a read refreshing recency so a pairing in active use does not age out and then be refused. Reaching that cap is counted and audited with the id it forgot, and a later refusal of that id says it was the cap rather than a roster edit, because the two are indistinguishable to whoever is reading the log and only one of them is a policy change. That accounting record is itself capped, far below the pairing store, and decides no send - it selects an audit reason. Nothing else is retained, because a refusing final arm answers every id a roster and a pairing cannot place, and a record of what was once admitted would reach that same refusal by a longer route. The pairing has one other reader, `DiscordTransport.direct_peer_of` (the contract hook above), which the cross-surface ladder's per-send recipient leg reads as defense in depth over the gateway-admitted record of a dashboard-born session's DM mirror; it reads the same store and inherits the same bounds, and an eviction there withdraws a contradiction rather than a delivery, since a pairing that is not on record leaves the verified record standing.
 
 The route is classified before either authority is read, but only to settle **which id names the destination**: a route naming a channel in its path uses that, a route naming none uses the destination its **caller supplies** (a button press's own reply carries its destination in an opaque token, so the path cannot yield it while the dispatcher holds it directly), and a route naming neither reads nothing. When both name one the **path wins**, because that is where the bytes go; re-checking the caller's id instead would authorize one channel and write to another. Both authorities then apply to whichever id was settled on, and the **roster is read last**: the governance read is an `await`, so a roster reading taken before it describes a destination that may already have been withdrawn, which would rebuild this very defect one layer up. **Only an attempt that actually waited pays for any of this**, so a send that never blocks costs nothing.
 
@@ -1232,36 +1233,110 @@ Four properties are load-bearing:
   registered before `connect` starts the warm-up, so denying in that window would
   refuse a send the transport can complete from a route already on disk.
 
-  The **principal** covers the rest. `chat_runner._session_principal` recovers the
-  peer's platform id from the session key, whose canonical grammar is
-  `{surface}:{agent}:{chat_type}:{scope…}` with the scope of a 1:1 DM being exactly
-  that peer, using `messaging.link.parse_session_key` because that module is the
-  one canonical address parser. This is what makes **Discord** (a DM link persists
-  a channel id unrelated to the user snowflake, and re-deriving it is a POST a
-  synchronous seam cannot make) and **Webex** (binds a `room_id` while the roster
-  holds emails) able to reach their rosters at all, so a revoked DM recipient is
-  now refused on those channels too. Both are the principal answer for their **DM**
-  route only: each also owns a room-audience roster — Discord's `_allowed_threads`,
-  Webex's `_allowed_rooms` — and answers that route from it instead, because a room
-  route has no principal to name (see below).
+  The **principal** covers the rest. `chat_runner._recipient_principal` reads the
+  session KEY first (`_session_principal`), recovering the peer's platform id from
+  a key whose canonical grammar is `{surface}:{agent}:{chat_type}:{scope…}` with
+  the scope of a 1:1 DM being exactly that peer, using
+  `messaging.link.parse_session_key` because that module is the one canonical
+  address parser. This is what makes **Discord** (a DM link persists a channel id
+  unrelated to the user snowflake, and re-deriving it is a POST a synchronous seam
+  cannot make) and **Webex** (binds a `room_id` while the roster holds emails) able
+  to reach their rosters at all, so a revoked DM recipient is refused on those
+  channels too. Both are the principal answer for their **DM** route only: each
+  also owns a room-audience roster — Discord's `_allowed_threads`, Webex's
+  `_allowed_rooms` — and answers that route from it instead, because a room route
+  has no principal to name (see below).
 
-  It is deliberately empty rather than wrong whenever the key names no single
+  The key is deliberately empty rather than wrong whenever it names no single
   person: a forum/group route scopes to `(chat_id, thread_id)` so its audience is a
-  room, a `unified` DM bucket drops channel and user out of the key by design, and
-  a legacy key does not parse. Empty means "the key does not name one principal",
-  never "nobody is authorized".
+  room, a `unified` DM bucket drops channel and user out of the key by design, a
+  legacy key does not parse, and a **dashboard-born** key (`dashboard:chat-<n>-<ts>`)
+  names no channel peer at all. Empty means "the key does not name one
+  principal", never "nobody is authorized".
 
-  **It is derived from the KEY alone, and that is a security property rather than a
-  convenience.** Two other records name a peer and neither is usable, because a
-  principal only authorizes anything if it describes the conversation the link
-  points at. The session's stored channel value (`{namespace}:{user_id}`) is written
-  ONCE at session creation while the origin/mirror link is rewritten on later turns,
-  so under a `unified` bucket, which collapses several peers' DMs into one session on
+  **The key is read alone, and that is a security property rather than a
+  convenience.** Two records of a peer are NOT consulted, because a principal only
+  authorizes anything if it describes the conversation the link points at. The
+  session's stored channel value (`{namespace}:{user_id}`) is written ONCE at
+  session creation while the origin/mirror link is rewritten on later turns, so
+  under a `unified` bucket, which collapses several peers' DMs into one session on
   purpose, the two drift: the attribution can name the peer who created the session
   while the link points at a different peer's conversation. Authorizing against it
   would check the wrong person and **pass**, which is worse than declining to name
   one. A forum scope's `scope[0]` is a supergroup id, and its stored value is the
   last sender rather than the audience, for the same reason.
+
+  **One further source IS consulted, when the key names nobody: the record the
+  GATEWAY wrote when it admitted the mirror.** The link carries the peer it was
+  admitted for (`ChannelLink.principal`) together with an admission
+  (`ChannelLink.admission`): HMAC-SHA256 over the canonical session key and the whole
+  location — channel type, conversation id, thread id, peer — under a key derived from
+  `token_signing.key` with a purpose label of its own (`kiro_crew.mirror_admission`).
+  That key is masked from every agent plane by the sandbox and already certifies the
+  tag-grant store's key (`dashboard.chat_tag_grants._key_cert`), so this is the
+  repository's established way to make an agent-writable record unforgeable — no new
+  seal, no widening of what the sandbox masks. **Exactly two paths mint an admission**
+  (pinned by AST), the two that authorize a peer for a conversation: the dashboard's
+  mirror-link handler (`chat_mirror.api_chat_slot_mirror_link`), which resolves a
+  `user:<id>` target into exactly this conversation, admits it through
+  `_authorize_recipient` and signs the link before writing; and the resume
+  controller's pick commit (`SessionResumeController.choose`, reached from a Discord
+  `!sessions` press that arrives in the owner's own DM and is refused for anyone but
+  the single configured owner), which signs the link for the chosen session as it
+  claims the binding. `SessionMap.set_mirror_link` NEVER mints: it stores the
+  caller's admission bytes verbatim, because a generic writer that signed whatever it
+  was handed would launder a forged row into a trusted one the moment any path re-set
+  it. Every rollback that re-sets a row it read back — the failed-flush `!unlink`
+  restore, the pick commit's rollback of the chosen and displaced rows, the dashboard
+  handler's release after a failed link — goes through
+  `mirror_admission.restorable_link`: a peer is restored only under an admission that
+  still verifies for that session and location, otherwise the binding goes back as its
+  location alone, audited (`channel.mirror_admission` / `stripped_on_restore`) and
+  logged once, and the send stays refused. An origin bind, a room or thread target, and
+  an in-channel `/link` record no peer and are not signed; their recipient decision is
+  unchanged. The ladder (`chat_runner._recipient_principal`) hands the roster the
+  recorded peer only when the admission verifies for THIS session and THIS location
+  (`hmac.compare_digest`), and only when the transport's own record of the
+  conversation — `direct_peer_of` (Layer 1), for Discord the `dm_channel_id ->
+  user_id` pairing its client learns when it opens a DM or an authorized message or
+  press arrives in one — does not name someone else. **The session map is writable by
+  in-sandbox code, which is why the record is signed rather than trusted:** a row
+  rewritten to name an allow-listed user for a revoked user's DM, a row rewritten
+  consistently to another allow-listed user's DM, a row copied onto another session,
+  and a row that names a peer with no admission at all fail verification and are
+  refused, audited (`channel.mirror_admission` / `unverified`) and logged once, with
+  the remedy named — re-link the session, which mints a fresh record. Both audits
+  (this one and the rollback's `stripped_on_restore`) put in-tree constants in the two
+  SEL fields the log stores verbatim (`caller`, `source`) and carry the row's own ids
+  only in the redacted `resources` field, because those ids come from the same
+  agent-writable file and a credential planted in one must not reach the append-only
+  log unredacted. The transport's
+  pairing is defense in depth over that: a disagreement refuses (`contradicted`), and a
+  transport that knows nothing — the ordinary state right after a restart, before the
+  peer has written into the DM — contradicts nothing, so the verified record stands
+  and **the recipient leg admits the mirror across a gateway restart with no inbound
+  message**; the gap closes for rows that carry an admitted peer and stays fail-closed
+  for rows without one. One residual is unchanged by this and documented above
+  (§ Authorization across a send's own waits): a Discord send that hits one of the
+  REST ladder's own waits before the pairing is learned again is refused by the
+  mid-send re-check as unattributable, because that re-check reads the pairing store
+  alone; a send that never waits — the ordinary single reply — is delivered, and the
+  peer's first message or press re-learns the pairing. **A token-key rotation
+  invalidates every admission at once**, and such
+  mirrors are refused until they are re-linked. The roster still decides per send
+  whether the admitted peer is allow-listed, so revocation lands exactly as it does
+  for a key-named peer. This is what serves the common shape of the mirror feature —
+  a dashboard-born session mirrored to a Discord DM from the dashboard menu or from
+  `!sessions` — whose key names nobody and whose DM channel id cannot be tested
+  against a user roster: with only the key, the handler's own post-claim ladder
+  recheck and every later dashboard-driven reply into that DM were refused and
+  dropped, while the same link on Telegram delivered because there the conversation
+  id IS the user id. The key outranks the record wherever it names a peer, so every
+  key-named session keeps its established reading; the `channel_id` a key-named row
+  stores is not covered by an admission, which is the pre-existing class tracked
+  separately. `ChannelLink` equality excludes both fields: a binding's identity is its
+  location, and `find_mirror_sessions`, the occupancy check, the nonce and the resume
+  rollbacks all match by value.
 
   **A transport with more than one audience dispatches on the route rather than
   testing one id against the wrong roster.** Discord has two: a **thread** route
@@ -1291,17 +1366,22 @@ Four properties are load-bearing:
   principal, because a session binds `room_id` while that roster holds emails and
   nothing in the process maps one back to the other.
 
-  A DM route with no principal, which means a `unified` bucket, is **refused** on
-  those two transports: neither roster can be consulted, and an unidentifiable
-  recipient at a network egress boundary must not be posted to. That costs an
-  unattended notice on unified-scope Discord and Webex sessions, and it is the
-  correct trade rather than a regression to accept, because that bucket deliberately
+  A DM route with no principal from either source is **refused** on those two
+  transports: neither roster can be consulted, and an unidentifiable recipient at a
+  network egress boundary must not be posted to. What reaches that refusal is a
+  `unified` bucket bound from inside the channel (its key names no peer by design
+  and its in-channel binding records none), a DM link written before the peer was
+  recorded, a row whose admission does not verify (unsigned, rewritten, moved to
+  another session, or signed under a rotated key — re-linking mints a fresh one),
+  and a row the transport's own pairing contradicts. That costs an unattended
+  notice on such unified-scope Discord and Webex sessions, and it is the correct
+  trade rather than a regression to accept, because that bucket deliberately
   collapses several peers and nothing available to this seam establishes which one
   the link currently points at. Sessions under the default `per-channel-peer` scope
-  carry their peer in the key and are unaffected. Serving it needs a persisted
-  `conversation -> principal` binding written at authorization time, which is a
-  per-channel schema change. Every refusal is audited, so this is visible rather
-  than silent.
+  carry their peer in the key, and a mirror made from the dashboard or from
+  `!sessions` is served from the gateway-admitted record on the link, so both are
+  served — across a restart, with no inbound message. Every refusal is audited, so
+  this is visible rather than silent.
 
   **Slack** never reaches here at all, because the ladder returns early for
   `SLACK_NAMESPACE`: its proactive traffic uses the gateway's own client.

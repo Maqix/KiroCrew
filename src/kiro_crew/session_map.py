@@ -1771,6 +1771,24 @@ class SessionMap:
         another location, or to the same one as outbound-only, both end a session
         resume as thoroughly as an unlink does.
 
+        The link's ``principal`` -- the peer the writer authorized this location
+        for, when it could name one -- is stored inside the ``mirror`` row and
+        REPLACED with it: a rewrite that names no peer stores none, so a recorded
+        peer never outlives the write that vouched for it. It is not part of the
+        binding's identity (see :class:`ChannelLink`), so it neither mints a nonce
+        nor decides the occupancy check below. Nor is it trusted on its own by its
+        reader: this file is writable by in-sandbox code, so the per-send recipient
+        check hands the roster that peer only under a valid ``admission`` -- a MAC
+        the gateway alone can mint over the session key and the whole location
+        (:mod:`kiro_crew.mirror_admission`). This method NEVER mints one. The two
+        paths that authorize a peer for a conversation (the dashboard link handler,
+        the resume controller's pick commit) sign the link before handing it here,
+        and everything else this method stores -- a rollback, a restore, any generic
+        set -- carries the caller's ``admission`` bytes through verbatim: a generic
+        writer that signed whatever it was handed would launder a forged row into a
+        trusted one the moment any path re-set it. A restore that cannot vouch for a
+        row strips the peer first (``mirror_admission.restorable_link``).
+
         Raises :class:`ConversationOwnershipConflict` when another session already
         holds this exact location AND the conversation is inbound-committed —
         either this claim is inbound-capable, or an occupant already is. See
@@ -1793,12 +1811,20 @@ class SessionMap:
             )
         entry = self._ensure_entry(key)
         displaced = self._inbound_binding(entry)
+        # Verbatim, admission included when the caller carried one: see the
+        # docstring for why this writer never mints or repairs an admission.
         stored = link.to_dict()
         # Identity travels with the TARGET: a rewrite of the same coordinates
         # (the dispatcher rebinds a channel-born session's own conversation on
         # every inbound turn) is the same binding and keeps its nonce; a new
-        # target, or a binding where none stood, is a new binding.
-        if entry.get("mirror") != stored or not entry.get("mirror_nonce"):
+        # target, or a binding where none stood, is a new binding. Compared as
+        # links, not as stored dicts: ``ChannelLink`` equality is its location,
+        # so a rewrite that adds or drops the recorded ``principal`` -- which
+        # rides inside ``mirror`` but describes who the location was admitted
+        # for, not where it is -- is still the same binding.
+        previous = entry.get("mirror")
+        same_target = isinstance(previous, dict) and ChannelLink.from_dict(previous) == link
+        if not same_target or not entry.get("mirror_nonce"):
             entry["mirror_nonce"] = self._new_binding_nonce()
         entry["mirror"] = stored
         if accepts_inbound:

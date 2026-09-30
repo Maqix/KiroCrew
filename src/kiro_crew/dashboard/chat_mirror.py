@@ -18,6 +18,7 @@ back to normal dashboard-token + CSRF auth. They must NOT be added to the strict
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import json
 import logging
@@ -52,6 +53,7 @@ from kiro_crew.messaging.link import (
     is_channel_session_key,
 )
 from kiro_crew.messaging.split import bounded_for_delivery, split_markdown_safe
+from kiro_crew.mirror_admission import restorable_link, sign_mirror_admission
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform.governance_profiles import vet_and_audit
 from kiro_crew.sel import sel
@@ -344,11 +346,28 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
             {"error": "channel is not permitted", "code": "channel_not_permitted"}, status=403
         )
 
+    # The link records the peer it was just authorized for. A ``chat-*`` key
+    # names no principal, so on every later dashboard-driven delivery into a DM
+    # whose conversation id cannot be tested against a user roster -- Discord's
+    # -- the per-send ladder (``chat_runner._recipient_principal``) reads this
+    # record instead. This handler is one of the two paths that may MINT its
+    # admission: a MAC only the gateway can compute, over this session and this
+    # whole location, signed HERE right after the admission above and in the same
+    # object as the conversation id, so it can only ever describe this
+    # conversation; the map stores it verbatim and never re-signs, so a row
+    # rewritten by in-sandbox code (the session map is writable there) fails to
+    # verify and is refused. The transport's own record of the DM -- the pairing
+    # the ``resolve_configured_target`` call above just left when it opened it --
+    # must agree whenever it exists. Empty for a room or thread target, which
+    # names nobody and is not signed.
     link = ChannelLink(
         channel_type=channel_type,
         channel_id=conversation_id,
         thread_id=thread_id,
+        principal=recipient_principal or None,
     )
+    if link.principal:
+        link = dataclasses.replace(link, admission=sign_mirror_admission(session_key, link))
     accepts_inbound = _resumes_inbound(transport, conversation_id, thread_id)
 
     # Refuse an occupied conversation BEFORE anything is posted into it. The
@@ -484,9 +503,14 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
             if previous_link is None:
                 state.sessions.clear_mirror_link(session_key, reason=UNBIND_REASON_DASHBOARD_UNLINK)
             else:
+                # The prior row came back from the store, which in-sandbox code can
+                # write, so it is restored as a rollback may restore it: its peer
+                # rides along only under an admission that still verifies for this
+                # session; otherwise the binding goes back without one and the
+                # recipient check refuses it until the session is re-linked.
                 state.sessions.set_mirror_link(
                     session_key,
-                    previous_link,
+                    restorable_link(session_key, previous_link),
                     accepts_inbound=previous_inbound,
                     reason=UNBIND_REASON_DASHBOARD_UNLINK,
                 )
@@ -547,7 +571,10 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
 
     try:
         # Recheck at the actual send boundary as well: target resolution can
-        # yield while governance is updated.
+        # yield while governance is updated. ``link`` is what the map stored -- this
+        # handler signed its admission above, and the map stores bytes verbatim --
+        # so the recipient leg judges the same record it will judge on every later
+        # delivery.
         governed = await asyncio.to_thread(_resolve_channel_target, state, session_key, link)
         if governed is None:
             await _release_after_failure()

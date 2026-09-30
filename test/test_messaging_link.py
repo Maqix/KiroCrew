@@ -523,3 +523,49 @@ class TestUnbindReasonVocabulary:
             "unbind reasons must come from messaging.link's UNBIND_REASON_* "
             f"constants, not bare literals: {offenders}"
         )
+
+
+class TestChannelLinkPrincipal:
+    """``ChannelLink.principal``: recorded beside the location, never part of it."""
+
+    def test_equality_is_the_location_alone(self) -> None:
+        """Every binding match in the map and the resume paths compares links by
+        value, so a recorded peer must not make one location read as two."""
+        bare = ChannelLink("discord", channel_id="dm-9")
+        recorded = ChannelLink("discord", channel_id="dm-9", principal="42")
+        other_peer = ChannelLink("discord", channel_id="dm-9", principal="77")
+        assert bare == recorded == other_peer
+        assert recorded != ChannelLink("discord", channel_id="dm-8", principal="42")
+
+    def test_the_record_serializes_only_when_present(self) -> None:
+        bare = ChannelLink("discord", channel_id="dm-9")
+        assert bare.to_dict() == {
+            "channel_type": "discord",
+            "channel_id": "dm-9",
+            "thread_id": None,
+        }
+        recorded = ChannelLink("discord", channel_id="dm-9", principal="42")
+        assert recorded.to_dict()["principal"] == "42"
+
+    def test_the_record_survives_a_round_trip(self) -> None:
+        recorded = ChannelLink("discord", channel_id="dm-9", principal="42")
+        back = ChannelLink.from_dict(recorded.to_dict())
+        assert back == recorded and back.principal == "42"
+
+    def test_a_row_written_without_the_field_reads_as_naming_nobody(self) -> None:
+        legacy = {"channel_type": "discord", "channel_id": "dm-9", "thread_id": None}
+        assert ChannelLink.from_dict(legacy).principal is None
+        # An empty string stored by any writer is the same absence, not a peer.
+        assert ChannelLink.from_dict({**legacy, "principal": ""}).principal is None
+
+    def test_the_admission_rides_with_the_record_and_outside_equality(self) -> None:
+        """The gateway's MAC over the row travels like the principal: emitted only
+        when set, read back verbatim, and never part of the location's identity."""
+        bare = ChannelLink("discord", channel_id="dm-9")
+        assert "admission" not in bare.to_dict()
+        signed = ChannelLink("discord", channel_id="dm-9", principal="42", admission="ab" * 32)
+        assert signed.to_dict()["admission"] == "ab" * 32
+        back = ChannelLink.from_dict(signed.to_dict())
+        assert back.admission == "ab" * 32 and back.principal == "42"
+        assert back == bare
+        assert ChannelLink.from_dict({**bare.to_dict(), "admission": ""}).admission is None

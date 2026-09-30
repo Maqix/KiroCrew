@@ -14,7 +14,7 @@ import hashlib
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 # ``SLACK_NAMESPACE`` and ``CHANNEL_SESSION_NAMESPACES`` are RE-EXPORTED from
@@ -206,18 +206,53 @@ class ChannelLink:
 
     Distinct from the dashboard->Slack *mirror* binding, which stays behind
     ``SessionMap.get/set_slack_link`` and is NOT modeled here (guardrail G3).
+
+    ``principal`` is the platform user id of the peer this conversation was
+    authorized FOR, recorded by the writer that authorized it -- the dashboard's
+    mirror-link handler, which resolves a ``user:<id>`` target into this very
+    conversation, and a Discord ``!sessions`` pick, whose press arrives in the
+    peer's own DM. ``None`` is "the writer could not name one" (an origin bind, a
+    thread or room target), never an authorization of nobody. It exists for the
+    per-send recipient check: a transport whose conversation id is unrelated to
+    its roster identity (a Discord DM channel id against a user snowflake) can
+    reach its roster only through a principal, and a dashboard-born session key
+    names no peer to supply one.
+
+    A HINT on its own, and an admission once signed. The session map this rides
+    in is writable by in-sandbox code, so the per-send recipient check hands a
+    principal to the roster only when ``admission`` -- a MAC the gateway alone can
+    mint over this session and this whole location, see
+    :mod:`kiro_crew.mirror_admission` -- verifies for the row; a rewritten, moved
+    or unsigned row is refused. The transport's own record of the conversation
+    (``MessagingTransport.direct_peer_of``), when it has one, must agree as well.
+
+    Both fields are excluded from equality on purpose. A link's identity is its
+    LOCATION -- ``find_mirror_sessions``, the occupancy check and the resume
+    rollbacks all match a binding by value -- and the principal describes who that
+    location was admitted for, not where it is. Two links to one conversation are
+    the same binding whether or not one of them recorded the peer.
     """
 
     channel_type: str
     channel_id: str | None = None
     thread_id: str | None = None
+    principal: str | None = field(default=None, compare=False)
+    admission: str | None = field(default=None, compare=False, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "channel_type": self.channel_type,
             "channel_id": self.channel_id,
             "thread_id": self.thread_id,
         }
+        # Emitted only when recorded, so a link that names no peer serializes
+        # exactly as one always has and a stored row is not rewritten for it. An
+        # admission is only ever meaningful beside the peer it admits.
+        if self.principal:
+            d["principal"] = self.principal
+            if self.admission:
+                d["admission"] = self.admission
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ChannelLink":
@@ -225,6 +260,8 @@ class ChannelLink:
             channel_type=d.get("channel_type", ""),
             channel_id=d.get("channel_id"),
             thread_id=d.get("thread_id"),
+            principal=d.get("principal") or None,
+            admission=d.get("admission") or None,
         )
 
 

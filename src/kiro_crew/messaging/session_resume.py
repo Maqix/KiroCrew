@@ -28,6 +28,7 @@ Dependency direction is ``<channel> -> messaging`` (never the reverse).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass
@@ -51,6 +52,7 @@ from kiro_crew.messaging.resume_expectation import (
     ResumeExpectation,
     ResumeExpectations,
 )
+from kiro_crew.mirror_admission import restorable_link, sign_mirror_admission
 from kiro_crew.sel import sel
 from kiro_crew.session_map import ConversationOwnershipConflict
 
@@ -773,6 +775,7 @@ class SessionBinder:
             seen = self.resolve_inbound(link)
             releasing = seen.key is not None or seen.ambiguous
             cleared: list[str] = []
+            links_before: dict[str, ChannelLink] = {}
             if releasing:
                 # Evidence BEFORE mutation, for the reason in the docstring.
                 try:
@@ -791,6 +794,21 @@ class SessionBinder:
                 # granting inbound to a mirror that never had it would let this
                 # conversation drive a session it was only observing.
                 inbound_before = set(self.sessions.find_mirror_sessions(link, inbound_only=True))
+                # Each occupant's OWN link, for the same reason: the location argument
+                # matches these rows by value, but a row can carry more than its
+                # location -- the peer it was admitted for (``ChannelLink.principal``)
+                # and the gateway's admission over it. Restoring the bare argument
+                # would put the binding back without that record, and every later
+                # dashboard reply into the DM would be refused until it was re-linked.
+                # The rows go back through ``restorable_link``: a rollback re-sets
+                # rows it read from a store in-sandbox code can write, so a peer is
+                # restored only under an admission that still verifies, and the
+                # location alone otherwise. A row the store cannot read back is
+                # restored from the argument, which carries the location alone.
+                links_before = {
+                    key: self.sessions.get_mirror_link(key) or link
+                    for key in self.sessions.find_mirror_sessions(link)
+                }
                 # Free every co-located occupant, so unlink cannot leave an ambiguous
                 # owner behind.
                 cleared = self.sessions.clear_mirror_links_at(
@@ -808,7 +826,7 @@ class SessionBinder:
                     try:
                         self.sessions.set_mirror_link(
                             key,
-                            link,
+                            restorable_link(key, links_before.get(key, link)),
                             accepts_inbound=key in inbound_before,
                             reason=UNBIND_REASON_USER_UNLINK,
                         )
@@ -1105,6 +1123,10 @@ class SessionResumeController:
             selected_original: ChannelLink | None = None
             selected_was_inbound = False
             late_conflict: str | None = None
+            # Each displaced occupant's OWN row, captured before it is cleared, so a
+            # rollback puts back what stood there -- recorded peer and admission
+            # verbatim, as ``restorable_link`` allows -- rather than this pick's link.
+            displaced_before: dict[str, ChannelLink | None] = {}
 
             # Both batches run in a WORKER THREAD. ``batched_save`` holds
             # ``session_map._MAP_LOCK`` across the block and rewrites the whole map
@@ -1136,11 +1158,25 @@ class SessionResumeController:
                         link, inbound_only=True
                     )
                     for displaced_key in displaced_now:
+                        displaced_before[displaced_key] = self.sessions.get_mirror_link(
+                            displaced_key
+                        )
                         if self.sessions.clear_mirror_link(
                             displaced_key, reason=UNBIND_REASON_ORIGIN_REBIND
                         ):
                             cleared.append(displaced_key)
-                    self.sessions.set_mirror_link(choice.key, link, accepts_inbound=True)
+                    # This commit is one of the two paths that may MINT a mirror
+                    # admission (the dashboard link handler is the other): the pick
+                    # was made by the conversation's authorized owner and binds this
+                    # one session to this one location, so the link's recorded peer
+                    # is signed for exactly that pair here, and the map stores the
+                    # bytes verbatim. A link naming no peer is stored unsigned.
+                    admitted = link
+                    if link.principal:
+                        admitted = dataclasses.replace(
+                            link, admission=sign_mirror_admission(choice.key, link)
+                        )
+                    self.sessions.set_mirror_link(choice.key, admitted, accepts_inbound=True)
                     claimed = True
 
             def rollback_binding() -> None:
@@ -1148,23 +1184,34 @@ class SessionResumeController:
                 # in a SECOND critical section, so between the two a rebind may have
                 # taken either row. Undo only what still looks like this
                 # transaction's own work; anything newer is deliberate state.
+                #
+                # Every row put back goes through ``restorable_link``: a rollback
+                # re-sets rows it read from a store in-sandbox code can write, so it
+                # must never be the path that turns an unverified peer into a trusted
+                # one. A row whose admission verifies is restored verbatim; one that
+                # does not is restored without its peer, refused at send.
                 with self.sessions.batched_save():
                     if claimed and self.sessions.get_mirror_link(choice.key) == link:
                         self.sessions.clear_mirror_link(
                             choice.key, reason=UNBIND_REASON_ORIGIN_REBIND
                         )
-                        if selected_original == link:
+                        if selected_original is not None and selected_original == link:
                             self.sessions.set_mirror_link(
                                 choice.key,
-                                link,
+                                restorable_link(choice.key, selected_original),
                                 accepts_inbound=selected_was_inbound,
                                 reason=UNBIND_REASON_ORIGIN_REBIND,
                             )
                     for displaced_key in cleared:
                         if self.sessions.get_mirror_link(displaced_key) is None:
+                            original = displaced_before.get(displaced_key) or ChannelLink(
+                                link.channel_type,
+                                channel_id=link.channel_id,
+                                thread_id=link.thread_id,
+                            )
                             self.sessions.set_mirror_link(
                                 displaced_key,
-                                link,
+                                restorable_link(displaced_key, original),
                                 accepts_inbound=False,
                                 reason=UNBIND_REASON_ORIGIN_REBIND,
                             )
