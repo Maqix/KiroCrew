@@ -157,6 +157,8 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub "kirocrew-ec2-${StackTag}"
+      # Must equal cloud/iam.py ROLE_PATH: CreateRole and PassRole are scoped to it.
+      Path: /kirocrew-ec2/
       PermissionsBoundary: !Ref PermissionsBoundaryArn
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
