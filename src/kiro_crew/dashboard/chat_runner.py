@@ -13095,6 +13095,8 @@ async def _run_chat(
         if state.slack_client and not is_slash and not slack_mirror_is_paused(state, session_key):
             _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
             if _mirror_thread and _mirror_chan:
+                # Mark this generation live-mirrored so late linking does not replay it.
+                slot._slack_mirrored_generation = slot._turn_generation
                 try:
                     if not _is_synthetic:
                         _mirror_msg = _prepare_mirror_msg(_user_msg_for_mirror)
