@@ -2381,6 +2381,43 @@ and restore path to share one mutation protocol with in-memory dashboard state.
 The request path chooses the smaller fail-safe rule instead: stale sidecars are
 reversible, while deleting a successor's state is not.
 
+### Inline-image ledger on the entry
+
+The prompt path's per-session image dedup and aggregate budget
+([acp-client](acp-client.md#image-support), "Per-session dedup and aggregate
+budget") keeps its ledger — the SHA-256 digests of every image inlined into the
+native conversation, bounded at `image_ledger.MAX_LEDGER_HASHES`, plus the
+running base64 total — on the session's map entry, under the `image_ledger`
+field, through `SessionMap.get_image_ledger` / `set_image_ledger`. It sits
+there for the same reason the per-conversation flags and overrides do: the
+entry is the durable per-session record, so the ledger survives a gateway
+restart and is pruned with the entry. Three rules shape it:
+
+- **Scoped to the native conversation, not the key.** `SessionMap.set` drops
+  the field whenever it stores a DIFFERENT `sid` for the entry (`/new`, a
+  discarded conversation, a provider switch), because the new native
+  conversation carries none of the images the old one did; re-saving the same
+  sid keeps it. A compaction inside one native conversation does not reset it
+  — the ledger errs toward not re-sending.
+- **Never materializes an entry.** `set_image_ledger` writes only onto an
+  existing entry and returns `False` otherwise; `get_image_ledger` returns
+  `None` for a key with no entry. That `None` is what tells the prompt path a
+  session is stateless (cron, subagent, the direct client outside a manager)
+  and must keep its ledger in memory on its own handle — so no row accretes
+  per stateless session. An empty ledger removes the field.
+- **Normalized at the point of retention.** The write bounds the digest list,
+  drops anything that is not a 64-hex-character digest and clamps the byte
+  count, so a hand-edited or corrupt record can neither grow the row nor be
+  read as anything but a smaller ledger.
+
+The ACP layer holds a session KEY and nothing that reaches the manager, and a
+throwaway `SessionMap()` is read-only by this class's contract, so the LIVE map
+is registered once, by `SessionManager.__init__`, through
+`image_ledger.set_image_ledger_store`; the prompt path reads and writes through
+that registration. On the event loop the write is a `_save` like every other
+per-conversation field — a dirty mark and a deferred flush, never an inline disk
+write.
+
 ## Slack Thread Linking
 
 Sessions can be linked to Slack threads via `SessionMap` fields

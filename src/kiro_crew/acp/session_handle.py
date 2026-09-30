@@ -175,6 +175,7 @@ from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating  # noqa: F40
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.image_ledger import SessionImageBudget
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.recovery.ladder import InfraError, classify_infra_error
@@ -948,6 +949,10 @@ class AcpSessionHandle:
         # host-supplied and is never used for either. Empty for a pooled session
         # nobody has claimed yet, which the execute path refuses.
         self._session_key = session_key
+        # Per-session image dedup + budget over the built prompt blocks. Reads
+        # the session key at call time because ``bind_session_key`` rebinds a
+        # pooled handle to its owner on claim.
+        self._image_budget = SessionImageBudget(lambda: self._session_key)
         self._listed_hooks = kas_wire.ListedHookStore()
         # Strong references to in-flight hook executions: the loop holds only a
         # weak one, and a collected task would leave its request unanswered.
@@ -1386,6 +1391,12 @@ class AcpSessionHandle:
                 message,
                 allow_image=self._runtime.supports_image_prompt,
             )
+            # The per-session layer over the finished list: a payload already
+            # in this conversation is not re-sent, and the session's inlined
+            # bytes stay under the backend's request-body ceiling. It also
+            # strips the builder's host-side annotations, so this is what
+            # makes the list a wire payload.
+            prompt_blocks = await self._image_budget.apply(prompt_blocks)
             # Content-free outbound STRUCTURE diagnostics: one
             # line per turn build recording block counts, per-type counts, and
             # the serialized byte size — NEVER any block text or bytes — so an

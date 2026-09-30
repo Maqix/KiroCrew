@@ -14,6 +14,15 @@ Keeping one builder matters: both paths need the same path-to-image
 conversion, so a single implementation stops any channel from shipping a
 filesystem path to the model as text.
 
+The list this module returns is HOST-SIDE, not yet the wire payload: every
+image block carries a ``_source`` annotation (``image_ledger.IMAGE_BLOCK_SOURCE_KEY``)
+that the per-session dedup and budget layer in :mod:`kiro_crew.image_ledger`
+reads and strips. Both prompt paths run that layer
+(``image_ledger.SessionImageBudget.apply``) over the finished list before
+``session/prompt`` is sent, so a payload already in the conversation is not
+re-sent and the session's inlined bytes stay under the backend's request-body
+ceiling.
+
 Wire shape (per docs/reference/kiro-cli/acp.md):
 
 .. code-block:: json
@@ -33,6 +42,7 @@ import os
 from pathlib import Path
 
 from kiro_crew.hooks import is_unc_shape, safe_read_file_bytes, unc_probe_allowed
+from kiro_crew.image_ledger import IMAGE_BLOCK_SOURCE_KEY
 
 # The path grammar and the history scrubber live in the LEAF module
 # kiro_crew.image_refs for the same reason the Pillow machinery lives in
@@ -217,7 +227,17 @@ def build_prompt_blocks(
             out_bytes, out_mime = downscaled
             data = base64.b64encode(out_bytes).decode("ascii")
             seen.add(raw)
-            images.append({"type": "image", "data": data, "mimeType": out_mime})
+            # The source annotation is HOST-SIDE: the per-session budget layer
+            # (kiro_crew.image_ledger) reads it to rewrite this block's marker
+            # when it drops the block, and strips it before the wire.
+            images.append(
+                {
+                    "type": "image",
+                    "data": data,
+                    "mimeType": out_mime,
+                    IMAGE_BLOCK_SOURCE_KEY: {"name": path.name, "path": raw},
+                }
+            )
             text = text.replace(raw, f"[image: {path.name}]")
 
     return [{"type": "text", "text": text}, *images]

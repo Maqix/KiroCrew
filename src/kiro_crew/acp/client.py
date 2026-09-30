@@ -229,6 +229,7 @@ from kiro_crew.hooks import (
     get_global_hook_store,
 )
 from kiro_crew.identity_stores import IDENTITY_STORE_ROOTS
+from kiro_crew.image_ledger import SessionImageBudget
 from kiro_crew.kiro_cli import known_kiro_cli_dirs, resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import (
     STUB_SESSION_TOKEN_ENV,
@@ -5924,6 +5925,10 @@ class AcpClient:
         self._pi_gate_request_tool: dict[str, str] = {}
         self._pi_gate_denied_ids: set[str] = set()
         self._session_key = session_key
+        # Per-session image dedup + budget over the built prompt blocks; the
+        # same layer AcpSessionHandle applies, so neither prompt path can
+        # re-send a payload the conversation already carries.
+        self._image_budget = SessionImageBudget(lambda: self._session_key or "")
         # When set, this client emits a per-tool-call SEL audit from the ACP
         # dispatch loop. Used by app/worker-pool clients (e.g. code-review-sage,
         # knowledge llm_pool) that have no external audit loop. Left None for
@@ -13824,14 +13829,16 @@ class AcpClient:
     async def _send_prompt(self, message: str) -> int:
         # Shared with AcpSessionHandle.prompt via prompt_blocks so the two paths
         # cannot drift.
+        #
+        # Offloaded: see the note in session_handle.prompt -- image reads and
+        # base64 encoding must not block the event loop. The per-session
+        # dedup + budget layer then makes the list a wire payload (it strips
+        # the builder's host-side annotations), exactly as the handle does.
+        blocks = await asyncio.to_thread(build_prompt_blocks, message)
+        blocks = await self._image_budget.apply(blocks)
         return await self._send_request(
             METHOD_PROMPT,
-            {
-                "sessionId": self._session_id,
-                # Offloaded: see the note in session_handle.prompt -- image
-                # reads and base64 encoding must not block the event loop.
-                "prompt": await asyncio.to_thread(build_prompt_blocks, message),
-            },
+            {"sessionId": self._session_id, "prompt": blocks},
         )
 
     async def _read_prompt_response(self, req_id: int, timeout: float) -> str:
