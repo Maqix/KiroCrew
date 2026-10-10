@@ -2512,7 +2512,7 @@ export default function MembersPage() {
     if (besideRef.current) setDockedOpen(true)
     else setOverlayOpen(true)
   }, [setDockedOpen])
-  const { openFile, openArtifact, saveFile } = usePanelDocumentActions({
+  const { openFile, openWorkingTreeDiff, openArtifact, saveFile } = usePanelDocumentActions({
     tabsCtl,
     slotRef: activeSlotRef,
     queryClient,
@@ -5074,6 +5074,7 @@ export default function MembersPage() {
             onActiveTabChange: setShownTabId,
             projectDir,
             onFileOpen: openFile,
+            onOpenWorkingTreeDiff: openWorkingTreeDiff,
             onArtifactOpen: openArtifact,
             onFileSave: saveFile,
             leadingTabs,
