@@ -1215,7 +1215,8 @@ _INERT_FLAGS = {
 }
 _INERT_WORD_OWNER_RE = re.compile(r"git\s+commit\s")
 _INERT_MASK_RE = re.compile(r"'[^']*'|\"[^\"$`\\]*\"")
-_INERT_PLAIN_RE = re.compile(r"[\w./:=@%+, \t\n;&-]*")
+_INERT_PLAIN_RE = re.compile(r"(?:[\w./:=@%+, \t\n;&-]|\$path\b)*")
+_INERT_ASSIGN_RE = re.compile(r"([a-z_]\w*)=(?:[\w./:@%+,-]|\$path\b)*")
 
 #: kiro-cli's display prefix on a shell call's title, lowercased like the views.
 _SHELL_TITLE_PREFIX = "running: "
@@ -1301,8 +1302,25 @@ def _inert_mask(m: re.Match[str]) -> str:
 def _inert_segment(words: list[str]) -> bool:
     """Whether one masked segment is ``cd <dir>`` or an allowlisted ``git`` verb whose
     every flag is allowlisted, so nothing opens an editor, pager or config write that
-    could run the text; a commit needs a message.
+    could run the text; a commit needs a message. A push alone may carry a
+    ``PATH`` prefix, bare or after ``env``.
     """
+    env = words[:1] == ["env"]
+    words = words[1:] if env else words
+    prefix = 0
+    while prefix < len(words) and (m := _INERT_ASSIGN_RE.fullmatch(words[prefix])):
+        # Only ``PATH``: it can change which ``git`` runs, not the argv the
+        # per-line floor judges, while a ``GIT_*``, ``BASH_ENV`` or ``ENV`` value
+        # can rewrite the refspec mapping or make a shell that git starts source
+        # the message file. Its value is plain characters plus ``$PATH``.
+        if m.group(1) != "path":
+            return False
+        prefix += 1
+    words = words[prefix:]
+    if (env or prefix) and (not prefix or words[:2] != ["git", "push"]):
+        return False
+    if not words or any("$" in w for w in words):
+        return False
     head, *args = words
     if head == "cd":
         return len(args) == 1 and not args[0].startswith("-")

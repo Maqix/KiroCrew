@@ -516,7 +516,13 @@ def _url_payload_command(n: int) -> str:
 #: hint is shown only when moving the push onto its own line clears the floor,
 #: moving only at unquoted separators and reading every nested shell payload.
 #: The proof reads through one exact leading ``running: `` (kiro-cli's shell title).
-_PACKAGE_LINE_BUDGET = 32_730
+#:
+#: Raised again, from 32,730, for the push prefix in that allowlist: a push may set
+#: ``PATH`` first, bare or after a plain ``env``, to plain text or ``$PATH``, so a
+#: feature push behind it after a multi-line message reads as on its own line. No
+#: other variable, ``env`` option or prefixed command is admitted, and each form
+#: has a real-bash oracle row.
+_PACKAGE_LINE_BUDGET = 32_748
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
