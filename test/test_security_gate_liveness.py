@@ -366,7 +366,13 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 29,573, for the one ``pinned-order`` entry in
 #: ``paths._CREW_SECRET_LEAVES``: the person's pinned-session order is fenced from
 #: agent file tools like ``tag-grants`` beside it.
-_PACKAGE_LINE_BUDGET = 29_574
+#:
+#: Raised again, from 29,574, for ``shell_normalizer._gh_data_newlines_as_spaces``
+#: and its two callers: a ``git push`` line inside a literal ``gh pr|issue|release``
+#: text-flag value is read as the one word bash hands gh. One closed shape, read
+#: over ``_iter_shell_chars`` steps, and every other command keeps its per-line
+#: push reading.
+_PACKAGE_LINE_BUDGET = 29_663
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
