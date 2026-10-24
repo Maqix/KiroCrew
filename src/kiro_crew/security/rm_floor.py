@@ -11,6 +11,11 @@ import re
 from ..trust_patterns import ENV_ASSIGNMENT_RE
 from . import shell_normalizer as _shell
 from .denied_rules import BUILTIN_DENIED_RULES
+from .shell_normalizer_span import _close_paren_walk
+
+#: A word that is a ``NAME=`` or ``NAME+=`` assignment prefix. Matched only at a
+#: word's START (an unquoted name), so ``"x"=1`` and a bare command never count.
+_ASSIGNMENT_WORD_RE = re.compile(r"[A-Za-z_]\w*\+?=")
 
 _RM_FLOOR_RULE_IDS = {
     "root": "local-destructive-rm-rf-root",
@@ -56,6 +61,11 @@ def _pull_trailing_fd_prefix(seg: "list[str]") -> str:
     return joined[match.start() :]
 
 
+class _UnreadSpan(ValueError):
+    """A double-quoted ``$(`` span the reader could not close before the text
+    ended. The gate's floor catches it and refuses with the unread note."""
+
+
 def _can_fire(command: str) -> bool:
     return bool(_CAN_FIRE_RE.search(command))
 
@@ -73,6 +83,81 @@ def _target_kind(word: str) -> "str | None":
     if word.startswith("/") and base == "":
         return "root"
     return "home" if base in _HOME_WORDS else None
+
+
+def _rm_operand_position(text: str) -> bool:
+    """True when *text* -- a segment up to a double-quoted ``$(`` -- ends in
+    OPERAND position: a command word has already completed, and the still-open
+    word that holds the ``$(`` is an ordinary argument, not an assignment value,
+    a redirection operator, or a redirection target.
+
+    The capped-span fail-closed synthesises a ``~`` so a ``~`` a capped,
+    unreadable ``$(…)`` could hide as an ``rm`` OPERAND is still seen as a home
+    target. That only holds where the span IS an operand. A LEADING redirection
+    (``>"$(…capped…)" rm -fr ~``) puts the span in the redirection TARGET: there
+    the old not-an-assignment check let the fake ``~`` go in, and
+    ``_rm_wipe_targets`` stepped the ``>`` redirection over it, took the
+    ``~`` as the program, and skipped the segment -- so the real ``rm -fr ~``
+    after it was never read and bash ran a home wipe. So the fake operand is
+    appended ONLY here. The open word is classified exactly as bash orders a
+    simple command: assignment prefixes, then redirections (each with its own
+    glued or separate target), then the command word, then operands -- and the
+    synthetic ``~`` is an operand, so it needs a completed command word before
+    it and an open word that is itself an operand."""
+    in_single = in_double = False
+    word_open = False
+    word_start = 0
+    skip_target = False
+    command_done = False
+
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if in_single:
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if c == "\\":
+            if not word_open:
+                word_open, word_start = True, i
+            i += 2
+            continue
+        if c in "'\"":
+            if not word_open:
+                word_open, word_start = True, i
+            if c == "'":
+                if not in_double:
+                    in_single = True
+            elif not in_single:
+                in_double = not in_double
+            i += 1
+            continue
+        if c in " \t" and not in_double:
+            if word_open:
+                word = text[word_start:i]
+                if skip_target:
+                    skip_target = False  # consumed a separate redirection target
+                elif _ASSIGNMENT_WORD_RE.match(word):
+                    pass  # an assignment prefix, before the command word
+                else:
+                    is_redirection, skip_target = _shell._push_token_redirection(word)
+                    if not is_redirection:
+                        command_done = True  # the command word (or an operand) completed
+            word_open = False
+            i += 1
+            continue
+        if not word_open:
+            word_open, word_start = True, i
+        i += 1
+    if not word_open:
+        return False
+    word = text[word_start:]
+    if skip_target or _ASSIGNMENT_WORD_RE.match(word):
+        return False  # a redirection target, or an assignment value
+    if _shell._push_token_redirection(word)[0]:
+        return False  # a redirection operator (with a glued target)
+    return command_done
 
 
 def _segments(command: str) -> "list[str]":
@@ -93,9 +178,42 @@ def _segments(command: str) -> "list[str]":
             if step.state == 2 and text.startswith("$(", step.offset):
                 # bash reads "$(…)" from an unquoted start, then the double quote resumes
                 body = text[step.offset + 2 :]
-                close, proven = _shell._matching_close_paren(body, 0)
-                out.extend(_segments(body[: close - 1 if proven else close]))
-                seg.append("\0")
+                hits: list[bool] = []
+                close, proven, _, capped = _close_paren_walk(body, arith_hits=hits)
+                # A span the reader could not prove hid wherever its real ``)``
+                # and the operand after it are. When it ran to the END of its
+                # text -- a heredoc whose delimiter would not parse or never
+                # terminated -- the walk would also resume at the end and drop
+                # every command after the real ``)``. So that case refuses the
+                # WHOLE command (the gate reads it as "could not read it"),
+                # unless the arithmetic rule below finds the real ``)``.
+                # A capped span closed at a GUESS keeps segmenting after the
+                # guess, and its output is read as a home operand, which fails
+                # closed. But only in operand or command position -- a span that
+                # is a ``NAME="`` assignment VALUE feeds a variable, not an
+                # ``rm``, so synthesising a ``~`` there instead inserts a word
+                # before a real ``rm`` later in the segment and that ``rm`` is
+                # then read as an argument of the ``~``, not as the command, so
+                # its home wipe is missed.
+                #
+                # A source ``<<`` after an arithmetic opener (``hits``) may be a
+                # shift, so the heredoc-free reading is checked too. Same close:
+                # no doubt. Heredoc reading runs to the END: bash shifts, or the
+                # heredoc never ends and the syntax error runs nothing, so the
+                # shift close is used and its text read with no heredocs (an
+                # ``rm`` after ``$((1<<2))⏎`` is a command). Any other mismatch
+                # (``"$(echo $((1<<X))⏎)" ~ ; : '⏎X⏎)'`` hides the ``~``) refuses.
+                shifted = False
+                if not proven and (hits or close >= len(body)):
+                    a_close, a_proven, _, _ = _close_paren_walk(body, heredocs=False)
+                    if hits and close >= len(body) and a_proven:
+                        close, proven, shifted = a_close, True, True
+                    elif close >= len(body) or not (hits and a_close == close):
+                        raise _UnreadSpan(command)
+                inner = body[: close - 1 if proven else close]
+                out.extend(_segments(inner.replace("<<", "  ") if shifted else inner))
+                fail_closed = not proven and capped
+                seg.append('\0" ~ "' if fail_closed and _rm_operand_position("".join(seg)) else "\0")
                 in_redirect = False
                 resume, resume_state = pos + step.offset + 2 + close, 2
                 break

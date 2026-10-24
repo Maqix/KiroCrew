@@ -171,6 +171,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         warm_own_host_names,
     )
     from kiro_crew.security.argv_floor_self import (  # noqa: F401
+        _ARITH_CONTEXT_RE,
         _DEV_MODE_CONFIRM_FLAG,
         _RAW_ASSIGNMENT_RE,
         _SELF_CLOUD_DESTRUCTIVE_VERBS,
@@ -179,6 +180,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SELF_FLOOR_QUOTE_JUNK_RE,
         _SELF_IMPORT_RE,
         _SELF_MODULE_SPELLINGS,
+        _arith_shift_possible,
         _bare_kill_raw_bodies,
         _is_credential_mint,
         _is_dev_mode_out_of_root_confirm,
@@ -291,6 +293,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _dequote_token,
         _ends_argv,
         _glob_could_expand_to,
+        _heredoc_agnostic_close,
         _is_mint_verb,
         _is_self_program,
         _iter_shell_chars,

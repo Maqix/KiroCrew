@@ -46,6 +46,7 @@ from .shell_normalizer import (
     _decode_printf_escapes,
     _ends_argv,
     _glob_could_expand_to,
+    _heredoc_agnostic_close,
     _is_mint_verb,
     _is_self_program,
     _iter_shell_chars,
@@ -437,7 +438,19 @@ def _kill_prefix_keeps_anchor(words: "list[tuple[str, bool]]", word: "list[str]"
     return not words and _shell_normalizer._program_basename("".join(word)) == "kill"
 
 
-def _bare_kill_raw_bodies(source: str) -> "list[str]":
+#: An arithmetic context (``$((``, ``((``, ``$[``, an array subscript ``a[``, a
+#: compound assignment ``=(``) before a ``<<``: bash may read that ``<<`` as a
+#: shift, so :func:`_bare_kill_raw_bodies` also walks the text with no heredocs.
+_ARITH_CONTEXT_RE = re.compile(r"\(\(|\$\[|\w\[|=\(")
+
+
+def _arith_shift_possible(source: str) -> bool:
+    """True when an arithmetic opener comes before a ``<<`` in *source*."""
+    match = _ARITH_CONTEXT_RE.search(source)
+    return match is not None and source.find("<<", match.end()) >= 0
+
+
+def _bare_kill_raw_bodies(source: str, heredocs: bool = True) -> "list[str]":
     """Substitution bodies inside a bare ``kill``'s own argv, read from the RAW text.
 
     The token walk in :func:`_is_self_kill` bounds the same window with
@@ -493,16 +506,26 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     ``kill``).  A syntax quote still OPENS a word -- ``''#`` is the word ``#``,
     not a comment -- which the ``open_word`` flag carries.
 
-    An UNPROVEN span (parens that never balance) takes the whole remainder as
-    the body and ends the walk.  That cannot under-detect: bash cannot execute
-    past an unterminated substitution either (the whole line is a syntax
-    error), so there is no later command to lose -- while the remainder still
-    reaches the name search attributed to the CURRENT segment, which is what
-    keeps the decoyed-and-unbalanced spelling detected.
+    A span the HEREDOC rule left unproven still CLOSES at a ``)`` before the
+    heredoc body line, so the walk RESUMES past that close: the later top-level
+    opener bash runs as a sibling -- the decoyed ``$k $(printf ')' ; pgrep -f
+    kirocrew)`` only this raw walk catches -- is still reached.  The
+    whole-remainder over-read (which names a target glued after the close) is
+    recorded ONCE per walk, attributed to the current segment.  Only a span
+    that TRULY never balances ends the walk, and that cannot under-detect: bash
+    cannot execute past an unterminated substitution either (the whole line is
+    a syntax error), so there is no later command to lose -- while the remainder
+    still reaches the name search attributed to the CURRENT segment, which is
+    what keeps the decoyed-and-unbalanced spelling detected.
 
     A top-level ``#`` starting a word begins a comment, which ends at the next
     newline; the skip lands ON that newline so the segment boundary it carries
     is still honoured.
+
+    With ``heredocs=False`` no ``<<`` opens a heredoc. The caller walks that way
+    TOO when :func:`_arith_shift_possible`: bash shifts at ``x=$(echo
+    $((1<<X))⏎)``, but the heredoc reading can close past a decoyed sibling
+    ``$k $(...)``, whose bodies then fall to the ``x=`` segment and are dropped.
 
     This pass is a UNION with the token walk, never a replacement: the tokens
     carry resolutions the raw text does not (``p=$(pgrep -f kirocrew); kill $p``
@@ -516,6 +539,13 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     word: list[str] = []
     glued = False
     open_word = False  # a word has begun, even if only as quote syntax (``''``)
+    over_read = True  # the whole-remainder over-read is emitted once per walk
+
+    def span_close(text: str) -> "tuple[int, bool]":
+        if heredocs:
+            return _matching_close_paren(text)
+        rel = _heredoc_agnostic_close(text)
+        return rel, rel < len(text)
 
     def end_word() -> None:
         nonlocal glued, open_word
@@ -586,8 +616,9 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
                 # bash parses the body in a fresh context, so the span is
                 # proven from the slice at NEUTRAL state -- and the walk
                 # resumes with the OUTER state carried across the jump.
-                rel, proven = _matching_close_paren(source[off + 2 :], 0)
-                body = source[off + 2 : off + 1 + rel] if proven else source[off + 2 :]
+                rel, proven = span_close(source[off + 2 :])
+                span_body = source[off + 2 : off + 1 + rel]
+                body = span_body if proven or rel < len(source) - (off + 2) else source[off + 2 :]
                 # An EMPTY substitution expands to NOTHING, so the word
                 # CONTINUES across it -- ``kill$()`` runs ``kill`` (the same
                 # glue-evasion ``_EMPTY_SUBST_RE`` undoes for the token walk;
@@ -607,6 +638,18 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
                 if not fresh_word and not _kill_prefix_keeps_anchor(words, word):
                     glued = True
                 record_body(body)
+                # A span the heredoc rule left UNPROVEN still CLOSES (a ``)``
+                # before the heredoc body line): resume after that close so the
+                # later top-level opener bash runs as a sibling -- the decoyed
+                # ``$k $(printf ')' ; pgrep -f kirocrew)`` only this raw walk
+                # catches -- is still reached.  The whole-remainder over-read
+                # (which names a target glued after the close) is attributed to
+                # this same segment, but emitted ONCE: re-queuing it at every
+                # opener of a heredoc RUN was O(n^2) at the 20 KB scan cap, and
+                # the later openers are reached structurally by the resumed walk.
+                if not proven and over_read:
+                    over_read = False
+                    record_body(source[off + 2 :])
                 if fresh_word:
                     # A word that IS a substitution stands where its OUTPUT
                     # stands: ``$(echo kill) $(pgrep -f <name>)`` runs kill.
@@ -614,10 +657,13 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
                     # bodies in the segment do not share this one's index.
                     words.append((_static_substitution_output(body), False))
                 end_word()
-                if not proven:
-                    i = n
-                    jumped = True
-                    break
+                # Resume past the close (``off + 2 + rel``). A span the heredoc
+                # rule never closes (``$((1<<2))`` + newline) resumes at the
+                # heredoc-agnostic close, so a sibling ``$k $(...)`` is still
+                # walked; only a span that truly never balances lands at ``n``
+                # -- bash cannot execute past it either.
+                if not proven and rel >= n - (off + 2):
+                    rel = _heredoc_agnostic_close(source[off + 2 :])
                 i = off + 2 + rel
                 state, ansi = step.state, step.ansi
                 jumped = True
@@ -649,20 +695,23 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
                 break
             if step.active:
                 if ch in "<>" and source.startswith("(", off + 1):
-                    rel, proven = _matching_close_paren(source[off + 2 :], 0)
+                    rel, proven = span_close(source[off + 2 :])
                     fresh_word = not word and not open_word
                     if not fresh_word and not _kill_prefix_keeps_anchor(words, word):
                         glued = True
-                    record_body(source[off + 2 : off + 1 + rel] if proven else source[off + 2 :])
+                    record_body(source[off + 2 : off + 1 + rel])
+                    # Same as the ``$(`` branch: resume past an unproven-but-
+                    # closed span, and emit the whole-remainder over-read ONCE.
+                    if not proven and over_read:
+                        over_read = False
+                        record_body(source[off + 2 :])
                     if fresh_word:
                         # A process substitution expands to a /dev/fd PATH,
                         # never to its own stdout -- no static output here.
                         words.append(("\x00", False))
                     end_word()
-                    if not proven:
-                        i = n
-                        jumped = True
-                        break
+                    if not proven and rel >= n - (off + 2):
+                        rel = _heredoc_agnostic_close(source[off + 2 :])
                     i = off + 2 + rel
                     state, ansi = step.state, step.ansi
                     jumped = True
@@ -829,7 +878,10 @@ def _is_self_kill(text_lower: str) -> bool:
         # transform DESTROYS (``${PATH/usr/|'kiro''crew'|zz-}``; the ``pkill``
         # leg searches the same view per argument).  See the helper's docstring for
         # why the transform is not ``_normalize_operand``.
-        for body in _bare_kill_raw_bodies(source):
+        bodies = _bare_kill_raw_bodies(source)
+        if _arith_shift_possible(source):
+            bodies += _bare_kill_raw_bodies(source, heredocs=False)
+        for body in bodies:
             if _SELF_NAME_RE.search(_debracket(body)) or _SELF_NAME_RE.search(
                 _resolve_param_defaults(body)
             ):
